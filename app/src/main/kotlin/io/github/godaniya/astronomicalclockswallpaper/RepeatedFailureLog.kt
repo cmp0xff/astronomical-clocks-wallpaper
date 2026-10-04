@@ -20,12 +20,14 @@ internal class RepeatedFailureLog(
 ) {
     private var consecutiveFailures = 0
 
-    fun recordFailure(error: Throwable) {
+    fun recordFailure(error: Throwable? = null, detail: String? = null) {
         consecutiveFailures++
         if (consecutiveFailures == 1) {
-            log(message, error)
+            val text = if (detail != null) "$message: $detail" else message
+            log(text, error)
         } else if (consecutiveFailures % SUMMARY_EVERY == 0) {
-            log("$message (repeated $consecutiveFailures times, latest: ${describe(error)})", null)
+            val latest = if (error != null) ", latest: ${describe(error)}" else ""
+            log("$message (repeated $consecutiveFailures times$latest)", null)
         }
     }
 

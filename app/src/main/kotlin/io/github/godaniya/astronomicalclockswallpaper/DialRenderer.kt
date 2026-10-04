@@ -27,6 +27,21 @@ internal class DialRenderer {
             close()
         }
 
+    // A degenerate or undersized surface lasts until the framework recreates it, which can span
+    // many ticks, so both skips below are bounded like the other per-frame failure sites.
+    private val emptyCanvasLog =
+        RepeatedFailureLog(
+            tag = TAG,
+            message = "skipping render: empty canvas",
+            level = Log.WARN,
+        )
+    private val undersizedDialLog =
+        RepeatedFailureLog(
+            tag = TAG,
+            message = "skipping dial: radius below minimum",
+            level = Log.WARN,
+        )
+
     /** Each frame uses civil time and geometric values from the caller's single instant. */
     fun renderDial(
         canvas: Canvas,
@@ -35,13 +50,13 @@ internal class DialRenderer {
         layers: DialLayers = DialLayers(),
     ) {
         if (canvas.width <= 0 || canvas.height <= 0) {
-            Log.w(TAG, "skipping render: empty canvas ${canvas.width}x${canvas.height}")
+            emptyCanvasLog.recordFailure(detail = "${canvas.width}x${canvas.height}")
             return
         }
         canvas.drawColor(DialStyle.BACKGROUND)
         val radius = minOf(a = canvas.width, b = canvas.height) * RADIUS_FRACTION
         if (radius < MIN_DIAL_RADIUS) {
-            Log.w(TAG, "skipping dial: radius $radius < minimum $MIN_DIAL_RADIUS")
+            undersizedDialLog.recordFailure(detail = "$radius < $MIN_DIAL_RADIUS")
             return
         }
         val checkpoint = canvas.save()
@@ -76,6 +91,9 @@ internal class DialRenderer {
         } finally {
             canvas.restoreToCount(checkpoint)
         }
+        // Only a frame that ran to completion ends the episode, so a throw leaves both counters alone.
+        emptyCanvasLog.recordSuccess()
+        undersizedDialLog.recordSuccess()
     }
 
     private fun drawCivilScale(canvas: Canvas) {
@@ -171,14 +189,31 @@ internal class DialRenderer {
     }
 }
 
-/** Contains argument and canvas-state failures while preserving the scheduled per-second redraw. */
-internal fun containRenderFailure(draw: () -> Unit) {
-    try {
-        draw()
-    } catch (e: IllegalArgumentException) {
-        Log.e(TAG, "skipping frame: invalid render argument: ${e.message.orEmpty()}", e)
-    } catch (e: IllegalStateException) {
-        Log.e(TAG, "skipping frame: canvas in an invalid state: ${e.message.orEmpty()}", e)
+/** Contains argument and canvas-state failures while bounding repeated per-frame error logs. */
+internal class RenderFailureContainment {
+    private val renderArgumentLog =
+        RepeatedFailureLog(
+            tag = TAG,
+            message = "skipping frame: invalid render argument",
+            level = Log.ERROR,
+        )
+    private val renderStateLog =
+        RepeatedFailureLog(
+            tag = TAG,
+            message = "skipping frame: canvas in an invalid state",
+            level = Log.ERROR,
+        )
+
+    fun containRenderFailure(draw: () -> Unit) {
+        try {
+            draw()
+            renderArgumentLog.recordSuccess()
+            renderStateLog.recordSuccess()
+        } catch (e: IllegalArgumentException) {
+            renderArgumentLog.recordFailure(e, detail = e.message.orEmpty())
+        } catch (e: IllegalStateException) {
+            renderStateLog.recordFailure(e, detail = e.message.orEmpty())
+        }
     }
 }
 

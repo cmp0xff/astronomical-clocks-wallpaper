@@ -80,6 +80,8 @@ class AstronomicalClocksWallpaperService : WallpaperService() {
                 level = Log.WARN,
             )
 
+        private val wallpaperFrame = WallpaperFrame()
+
         init {
             // Keep a strong listener reference for this engine's lifetime. Updates only replace the
             // cached snapshot; hidden engines must not acquire a surface or schedule a tick.
@@ -184,7 +186,7 @@ class AstronomicalClocksWallpaperService : WallpaperService() {
         }
 
         private fun drawFrame() {
-            drawWallpaperFrame(frameHolder ?: surfaceHolder) { canvas ->
+            wallpaperFrame.drawWallpaperFrame(frameHolder ?: surfaceHolder) { canvas ->
                 val instant = clock.instant()
                 val snapshot = settings
                 val location = snapshot.location

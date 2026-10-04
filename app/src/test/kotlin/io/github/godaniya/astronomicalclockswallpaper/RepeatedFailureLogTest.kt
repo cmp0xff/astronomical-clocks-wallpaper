@@ -2,6 +2,8 @@ package io.github.godaniya.astronomicalclockswallpaper
 
 import android.util.Log
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -80,6 +82,35 @@ class RepeatedFailureLogTest {
         val entries = ShadowLog.getLogsForTag(TAG)
         assertEquals(2, entries.size)
         assertEquals(MESSAGE, entries.last().msg)
+    }
+
+    @Test
+    fun failureWithoutThrowableLogs() {
+        log.recordFailure()
+        val entry = ShadowLog.getLogsForTag(TAG).single()
+        assertEquals(Log.ERROR, entry.type)
+        assertEquals(MESSAGE, entry.msg)
+        assertNull(entry.throwable)
+    }
+
+    @Test
+    fun failureWithDetailLogsDetail() {
+        val failure = IllegalArgumentException("bad argument")
+        log.recordFailure(failure, detail = "bad argument")
+        val entry = ShadowLog.getLogsForTag(TAG).single()
+        assertEquals(Log.ERROR, entry.type)
+        assertEquals("$MESSAGE: bad argument", entry.msg)
+        assertSame(failure, entry.throwable)
+    }
+
+    @Test
+    fun summaryWithoutThrowable() {
+        repeat(60) { log.recordFailure() }
+        val entries = ShadowLog.getLogsForTag(TAG)
+        assertEquals(2, entries.size)
+        assertEquals(Log.ERROR, entries.last().type)
+        assertTrue(entries.last().msg.contains("repeated 60 times"))
+        assertFalse(entries.last().msg.contains("latest:"))
     }
 
     private companion object {
