@@ -1,11 +1,43 @@
 # Astronomical Clock Wallpaper agent guidance
 
-Read [README.md](README.md) for developer entry points and
-[docs/design.md](docs/design.md) for the product contract. GitHub issues and
-milestones track implementation and release planning. This independent Android
-project targets a personal Android device, with a personal APK first and possible
-store distribution later. [docs/development.md](docs/development.md) defines the
-pinned toolchain, strict checking policy, and individually justified exceptions.
+This document defines operational protocols, quality guardrails, and metadata
+standards for AI coding assistants and autonomous agents operating in this
+repository.
+
+Read [README.md](README.md) for public project context, [CONTRIBUTING.md](CONTRIBUTING.md)
+for shared engineering and testing standards, [docs/design.md](docs/design.md) for the product
+contract, and [docs/orloj.md](docs/orloj.md) for detailed astronomical geometry. [docs/development.md](docs/development.md)
+defines the pinned toolchain, strict checking policy, and justified exceptions.
+
+## Machine operational guardrails
+
+Agents must observe the project's quality, stability, and release boundaries:
+
+- **Follow contributor engineering standards**: Adhere strictly to the quality,
+  reputation, and testing proportionality principles established in
+  [CONTRIBUTING.md](CONTRIBUTING.md).
+- **Milestone and distribution boundaries**: Trunk (`main`) is an active development
+  branch. Do not configure, propose, or trigger external distribution channels,
+  rolling public releases (such as F-Droid or Play Store), or CI deployment actions
+  without explicit milestone direction from the owner.
+- **Inviolable quality gates**: Never bypass, lower, or suppress compiler warnings,
+  detekt analysis, or Android Lint rules (`allWarningsAsErrors = true`). Do not
+  introduce baseline files or blanket `@Suppress` annotations. Fix the underlying
+  code. Narrowly-scoped, justified exceptions are recorded in
+  [docs/development.md](docs/development.md#rule-exceptions); preserve those
+  annotations and record any new exception there and in the PR.
+- **Live wallpaper lifecycle contract**: Live wallpapers execute in the device
+  background. Maintain the strict visibility contract: render exclusively when
+  visible; never trigger continuous background polling, GPS location requests,
+  or wake locks while the surface is hidden or destroyed.
+- **Dependency hygiene**: Do not introduce new external libraries or bundled assets
+  without explicit necessity, owner approval, and complete license and provenance
+  verification, licensed compatibly with the intended distribution and pinned to
+  an exact upstream version, revision, or checksum, recorded in
+  [docs/dependencies.md](docs/dependencies.md).
+- **Honest verification**: Never claim physical-device verification or firmware
+  qualification without actual execution on hardware. Transparently record unrun
+  checks and emulator limitations in pull requests.
 
 ## Working defaults
 
@@ -25,30 +57,12 @@ pinned toolchain, strict checking policy, and individually justified exceptions.
 - Keep changes small and readable. Add meaningful tests for behavior changes;
   documentation-only work needs appropriate content and link checks.
 
-## Test scope and proportionality
-
-- Before adding a test, identify the distinct, plausible production regression it
-  catches and check whether existing coverage already catches it.
-- Prefer extending an existing test or adding a small table of cases. Do not
-  automatically create a test for every function, type, or implementation branch.
-- Test observable production behavior. Avoid tests of fake implementations,
-  generated getters, language guarantees, or assertions that reproduce the implementation.
-- Test at the lowest effective layer. Repeat a scenario at another layer only
-  when it protects against a different failure, such as incorrect Canvas rendering
-  despite correct geometry.
-- Choose meaningful boundary cases instead of multiplying every combination of
-  settings, locations, themes, and platform versions. Use small local helpers
-  without introducing a generic testing framework.
-- Preserve independent astronomical references and meaningful migration,
-  malformed-data, permission-race, cancellation, and lifecycle coverage. Similar
-  tests involving different stores or callbacks can protect different failures.
-- For reversible, low-impact changes, existing tests, compilation, lint, and
-  inspection may be sufficient. New tests must provide additional regression value.
-- Remove obsolete or redundant tests when changing behavior, checking that unique
-  assertions remain covered. Do not optimize for test counts, coverage percentages,
-  or line-count quotas.
-
 ## Architecture and product constraints
+
+The product contract is defined authoritatively in [docs/design.md](docs/design.md),
+detailed projection geometry in [docs/orloj.md](docs/orloj.md), and astronomy
+implementation limits in [docs/astronomy.md](docs/astronomy.md). Key machine
+constraints include:
 
 - Use Kotlin, Canvas, and `WallpaperService` with a small settings app. Keep
   astronomy calculations separable from Android lifecycle and drawing code.
@@ -56,25 +70,8 @@ pinned toolchain, strict checking policy, and individually justified exceptions.
 - Use Astronomy Engine, pin its version or source revision, and retain its
   notices. Record provenance and licenses for all dependencies and bundled data
   or artwork. Draw original artwork; avoid proprietary SDKs.
-- Request current location during initial setup using Android's built-in location
-  API and accept approximate results. Handle denial, disabled location, failure,
-  and timeout with an offline city chooser or coordinate entry. Persist the
-  observing location and provide an explicit refresh from settings; do not add
-  continuous background location tracking.
-- Use Prague Orloj as the visual and projection reference, adapting the geometry
-  to the selected observing site, including southern-hemisphere and polar sites.
-- The selected site supplies astronomy coordinates and the geographic timezone
-  for civil time, including DST. Derive both displays from the same instant.
-  Changing the site updates both; changing the phone timezone changes neither
-  the saved site nor its civil clock. Before selection, use the phone timezone
-  for the civil clock and hide site-dependent astronomy.
-- All location input methods must establish the site's geographic timezone;
-  capturing the phone timezone alone is an implementation limitation, not the
-  contract. Runtime calculations and manual setup must work offline.
-- Support home and lit lock screens, subject to physical-device verification. Always
-  On Display and interactive sky exploration are outside the first release.
-- Render only while visible. Verify wake, surface recreation, process recreation,
-  and time/timezone changes. Record actual firmware when testing on the physical device.
+- Respect the observing-site contract: one selected site anchors both astronomy
+  and civil time. Support home and lit lock screens; render only while visible.
 - Log (don't silently swallow) render/surface no-op and failure paths so field issues
   are diagnosable.
 - Keep signing keys, passwords, local SDK paths, and private device data out of
@@ -215,8 +212,9 @@ tests must cite independent reference data, units, coordinate frames, and
 tolerances, including hemisphere and polar cases. Device reports must distinguish
 physical-device results from emulator checks and state the Android version, source
 revision, and SHA-256 of the tested APK. Keep device identifiers and precise private
-locations out of public reports. Record limitations and unresolved failures in the
-issue and PR; do not silently weaken acceptance criteria.
+locations out of public reports (see [CONTRIBUTING.md](CONTRIBUTING.md#physical-device-testing-and-privacy)).
+Record limitations and unresolved failures in the issue and PR; do not silently
+weaken acceptance criteria.
 
 ### Device verification tiers
 

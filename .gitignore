@@ -46,6 +46,7 @@ keystores/
 
 # Project guidance is versioned even when a contributor globally ignores it.
 !AGENTS.md
+!CONTRIBUTING.md
 
 # Optional project-local SDK downloads
 .android-sdk/
