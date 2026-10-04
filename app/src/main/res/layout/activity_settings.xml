@@ -73,6 +73,12 @@
       android:layout_height="wrap_content"
       android:minHeight="48dp"
       android:text="@string/sun_layer" />
+    <CheckBox
+      android:id="@+id/moon_layer"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:minHeight="48dp"
+      android:text="@string/moon_layer" />
     <TextView
       android:layout_width="match_parent"
       android:layout_height="wrap_content"

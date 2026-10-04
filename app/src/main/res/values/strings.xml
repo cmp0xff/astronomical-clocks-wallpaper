@@ -21,5 +21,6 @@
   <string name="location_manual_source">manual</string>
   <string name="zodiac_ring">Zodiac ring</string>
   <string name="sun_layer">Sun</string>
+  <string name="moon_layer">Moon</string>
   <string name="dial_location_help">Save an observing location to show the zodiac and sky geometry. Without one, only the civil clock is shown.</string>
 </resources>

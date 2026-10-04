@@ -12,4 +12,12 @@ internal object DialStyle {
     const val TWILIGHT: Int = 0xFF9C6438.toInt()
     const val NIGHT: Int = 0xFF152433.toInt()
     const val HAND: Int = 0xFFF4E5B8.toInt()
+    const val MOON_ILLUMINATED: Int = 0xFFE8EEF5.toInt()
+
+    // The Moon marker rides the zodiac band, and ZodiacRenderer fills that band with NIGHT, so the
+    // shadow tone must be its own colour: at NIGHT the unlit two-thirds of the disc vanished into
+    // its background and only the gold rim separated a crescent from the band. This slate is 45
+    // RGB units from NIGHT and at least 42 from every other entry, so the disc reads as a sphere
+    // whether it is over the band (zodiac on) or the plain grid (zodiac off).
+    const val MOON_SHADOW: Int = 0xFF2C3E50.toInt()
 }

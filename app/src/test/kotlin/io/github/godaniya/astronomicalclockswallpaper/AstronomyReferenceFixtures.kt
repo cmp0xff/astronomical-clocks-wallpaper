@@ -136,10 +136,14 @@ internal data class EventFixture(
  */
 internal data class CatalogEpochFixture(val name: String, val rightAscensionDeg: Double, val declinationDeg: Double)
 
-/** A lunar phase instant published by USNO, and which phase it is. */
-internal data class LunarPhaseFixture(val instant: Instant, val phase: String) {
-    val isFull: Boolean get() = phase == "Full Moon"
-}
+/**
+ * A lunar phase instant published by USNO, and which phase it is.
+ *
+ * [phaseLongitudeDeg] is the phase angle the instant is named for: 0 new, 90 first quarter,
+ * 180 full, 270 last quarter. Naming it per row rather than deriving it from [phase] keeps the
+ * expected value an independent claim instead of a restatement of the label.
+ */
+internal data class LunarPhaseFixture(val instant: Instant, val phase: String, val phaseLongitudeDeg: Double)
 
 /**
  * The constellation the Sun stands in at a fixture instant, from the IAU boundaries.
@@ -691,13 +695,42 @@ internal val catalogEpochFixtures: List<CatalogEpochFixture> =
         CatalogEpochFixture(name = "Bellatrix", rightAscensionDeg = 81.28278416, declinationDeg = 6.34973451),
     )
 
-// Lunar phase instants published by USNO (aa.usno.navy.mil/api/moon/phases/year).
+// Lunar phase instants published by USNO (aa.usno.navy.mil/api/moon/phases/year). The two
+// quarter instants were added 2026-10-04 from the same source: an elongation error that
+// vanishes at new and full — a swapped sign, for one — still moves the quarters, so a table
+// holding only those two phases cannot tell the waxing side from the waning one.
 internal val lunarPhaseFixtures: List<LunarPhaseFixture> =
     listOf(
-        LunarPhaseFixture(instant = Instant.parse("2026-01-03T10:03:00Z"), phase = "Full Moon"),
-        LunarPhaseFixture(instant = Instant.parse("2026-01-18T19:52:00Z"), phase = "New Moon"),
-        LunarPhaseFixture(instant = Instant.parse("2026-08-12T17:37:00Z"), phase = "New Moon"),
-        LunarPhaseFixture(instant = Instant.parse("2026-09-26T16:49:00Z"), phase = "Full Moon"),
+        LunarPhaseFixture(
+            instant = Instant.parse("2026-01-03T10:03:00Z"),
+            phase = "Full Moon",
+            phaseLongitudeDeg = 180.0,
+        ),
+        LunarPhaseFixture(
+            instant = Instant.parse("2026-01-10T15:48:00Z"),
+            phase = "Last Quarter",
+            phaseLongitudeDeg = 270.0,
+        ),
+        LunarPhaseFixture(
+            instant = Instant.parse("2026-01-18T19:52:00Z"),
+            phase = "New Moon",
+            phaseLongitudeDeg = 0.0,
+        ),
+        LunarPhaseFixture(
+            instant = Instant.parse("2026-01-26T04:47:00Z"),
+            phase = "First Quarter",
+            phaseLongitudeDeg = 90.0,
+        ),
+        LunarPhaseFixture(
+            instant = Instant.parse("2026-08-12T17:37:00Z"),
+            phase = "New Moon",
+            phaseLongitudeDeg = 0.0,
+        ),
+        LunarPhaseFixture(
+            instant = Instant.parse("2026-09-26T16:49:00Z"),
+            phase = "Full Moon",
+            phaseLongitudeDeg = 180.0,
+        ),
     )
 
 // The Sun's constellation from the IAU boundaries at the USNO season instants

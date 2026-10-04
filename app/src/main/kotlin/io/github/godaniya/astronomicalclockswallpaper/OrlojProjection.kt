@@ -49,7 +49,9 @@ internal class OrlojProjection(private val geometry: DialGeometry) {
         )
     private val obliquityRad = Math.toRadians(geometry.trueObliquityDeg)
     private val siderealRad = Math.toRadians(geometry.localSiderealAngleDeg)
-    private val isSouthern = geometry.latitudeDeg < 0
+
+    /** Whether the plate is drawn for a southern site, which inverts the sky content radially. */
+    val isSouthern: Boolean = geometry.latitudeDeg < 0
     private val zodiacCenterSign = if (isSouthern) 1.0 else -1.0
     private val latitudeRad = Math.toRadians(abs(geometry.latitudeDeg))
     private val cancerRadius = tan(QUARTER_TURN_RAD / 2 + obliquityRad / 2)
@@ -69,6 +71,17 @@ internal class OrlojProjection(private val geometry: DialGeometry) {
     /** The Sun's projected position, or `null` when no longitude has been calculated. */
     val sunPoint: DialPoint? get() = geometry.sunLongitudeDeg?.let(::eclipticPoint)
 
+    /** The Moon's projected position, or `null` when no longitude has been calculated. */
+    val moonPoint: DialPoint? get() = geometry.moonLongitudeDeg?.let(::eclipticPoint)
+
+    /**
+     * Projects a body at ecliptic [longitudeDeg] onto the dial's ecliptic ring.
+     *
+     * Ecliptic latitude is deliberately ignored. The Sun's is under an arcminute, while the Moon's
+     * reaches about 5.1 degrees, but on the reference instrument both pointers ride the ecliptic
+     * ring, so the ring — not the body's true place — is what the dial shows. A body's angle around
+     * the ring is therefore exact, and its displacement off the ring is a convention.
+     */
     fun eclipticPoint(longitudeDeg: Double): DialPoint {
         val longitude = Math.toRadians(longitudeDeg)
         val equatorialX = cos(longitude)

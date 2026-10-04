@@ -14,6 +14,7 @@ internal class DialRenderer {
     private val plate = OrlojPlateRenderer()
     private val zodiac = ZodiacRenderer()
     private val sun = SunRenderer()
+    private val moon = MoonRenderer()
     private val hand =
         Path().apply {
             moveTo(0f, -HAND_LENGTH)
@@ -56,6 +57,20 @@ internal class DialRenderer {
             val sunPoint = projection?.sunPoint
             if (sunPoint != null && layers.isSunEnabled) {
                 sun.draw(canvas, sunPoint)
+            }
+            // The marker needs both a projected position and a phase, so like the Sun it is drawn
+            // only when the geometry carries them; the caller owns that suppression.
+            if (projection != null && layers.isMoonEnabled) {
+                val moonPoint = projection.moonPoint
+                val moonPhase = geometry.moonPhaseLongitudeDeg
+                if (moonPoint != null && moonPhase != null) {
+                    moon.draw(
+                        canvas = canvas,
+                        point = moonPoint,
+                        phaseLongitudeDeg = moonPhase,
+                        southernHemisphere = projection.isSouthern,
+                    )
+                }
             }
             drawCivilHand(canvas, state.hourAngle)
         } finally {

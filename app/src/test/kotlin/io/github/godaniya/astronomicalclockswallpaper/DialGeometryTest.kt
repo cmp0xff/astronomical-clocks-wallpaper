@@ -43,6 +43,18 @@ class DialGeometryTest {
                     "Sun longitude at ${fixture.instant} differs by ${sunDifference * SECONDS_PER_DEGREE} arcsec",
                     abs(sunDifference) <= SUN_TOLERANCE_DEG,
                 )
+                val moon = geometry.moonLongitudeDeg ?: error("no Moon longitude at ${fixture.instant}")
+                val moonDifference = angleDifferenceDeg(first = moon, second = fixture.moonLongitudeDeg)
+                assertTrue(
+                    "Moon longitude at ${fixture.instant} differs by ${moonDifference * SECONDS_PER_DEGREE} arcsec",
+                    abs(moonDifference) <= MOON_LONGITUDE_TOLERANCE_DEG,
+                )
+                val moonPhase = geometry.moonPhaseLongitudeDeg ?: error("no Moon phase at ${fixture.instant}")
+                val phaseDifference = angleDifferenceDeg(first = moonPhase, second = fixture.moonPhaseLongitudeDeg)
+                assertTrue(
+                    "Moon phase at ${fixture.instant} differs by ${phaseDifference * SECONDS_PER_DEGREE} arcsec",
+                    abs(phaseDifference) <= MOON_PHASE_TOLERANCE_DEG,
+                )
             }
         }
     }
@@ -70,6 +82,9 @@ class DialGeometryTest {
         val reference = calculator.dialGeometry(instant, location())
         for (latitude in listOf(-90.0, -33.87, 0.0, 50.0, 90.0)) {
             val geometry = calculator.dialGeometry(instant, location(latitude = latitude))
+            // The comparison covers the Sun and Moon longitudes as well as the angles: those are
+            // geocentric, so a southern or polar site must carry exactly the same lunar and solar
+            // values as a northern one and only differ in the latitude it records.
             assertEquals(reference.copy(latitudeDeg = latitude), geometry)
         }
     }
@@ -89,10 +104,16 @@ class DialGeometryTest {
         for (angle in listOf(-0.1, 360.0, Double.NaN, Double.POSITIVE_INFINITY)) {
             assertRejected { valid.copy(sunLongitudeDeg = angle) }
         }
-        // An uncalculated Sun is a supported state, not an error: it is what suppresses the
-        // marker for a geometry that carries no site, and it must not trip the range check.
+        for (angle in listOf(-0.1, 360.0, Double.NaN, Double.POSITIVE_INFINITY)) {
+            assertRejected { valid.copy(moonLongitudeDeg = angle) }
+            assertRejected { valid.copy(moonPhaseLongitudeDeg = angle) }
+        }
+        // An uncalculated Sun or Moon is a supported state, not an error: it is what suppresses
+        // the marker for a geometry that carries no site, and it must not trip the range check.
         assertNull(valid.sunLongitudeDeg)
         assertNull(valid.copy(sunLongitudeDeg = null).sunLongitudeDeg)
+        assertNull(valid.moonLongitudeDeg)
+        assertNull(valid.moonPhaseLongitudeDeg)
     }
 
     private fun assertRejected(create: () -> DialGeometry) {
@@ -122,6 +143,15 @@ class DialGeometryTest {
         // The engine's largest residual against the ERFA Sun column is 0.000434 degree
         // (1.56 arcseconds); see DialGeometryFixture.kt for how this bound was chosen.
         const val SUN_TOLERANCE_DEG = 0.001
+
+        // The engine's largest residual against the ERFA Moon columns is 0.0016397 degree
+        // (5.90 arcseconds) in longitude and 0.0061575 degree (22.17 arcseconds) in phase
+        // longitude. Both bounds are set from those measurements, not from the Sun's: see
+        // DialGeometryFixture.kt for the two independent lunar theories and the engine
+        // `moonPhase` offset behind them. Even so they sit far below the ~5.1 degree ecliptic
+        // latitude the marker drops and far below any frame, epoch, or quadrant error.
+        const val MOON_LONGITUDE_TOLERANCE_DEG = 0.003
+        const val MOON_PHASE_TOLERANCE_DEG = 0.01
         const val SECONDS_PER_DEGREE = 3600.0
         const val RATE_TOLERANCE_DEG = 0.00000001
     }

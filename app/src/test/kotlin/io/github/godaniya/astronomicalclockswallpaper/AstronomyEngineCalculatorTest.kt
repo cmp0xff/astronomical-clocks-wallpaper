@@ -65,28 +65,50 @@ class AstronomyEngineCalculatorTest {
 
     @Test
     fun lunarPhasesMatchUsnoInstants() {
-        // The table is the only external reference for the Moon's phase, and an empty or
-        // one-sided table would make every comparison below vanish without failing.
-        assertTrue("no full-moon fixture", lunarPhaseFixtures.any { it.isFull })
-        assertTrue("no new-moon fixture", lunarPhaseFixtures.any { !it.isFull })
-        // New-moon fixtures land just below 360 degrees, so both phase comparisons must wrap.
+        // The table is the only external reference for the Moon's phase. An elongation error that
+        // vanishes at the nodes — subtracting the Moon from the Sun instead of the reverse, say —
+        // leaves new and full untouched but turns every quarter inside out, so a table holding
+        // only those two phases would not catch it.
+        assertEquals(
+            "the table must cover all four named phases",
+            setOf("New Moon", "First Quarter", "Full Moon", "Last Quarter"),
+            lunarPhaseFixtures.map { it.phase }.toSet(),
+        )
         for (fixture in lunarPhaseFixtures) {
             val sky = calculator.sky(fixture.instant, GREENWICH.location)
             val where = "${fixture.phase} at ${fixture.instant}"
-            val phaseFromNew =
-                abs(angleDifferenceDeg(first = sky.moon.phaseLongitudeDeg, second = NEW_MOON_LONGITUDE_DEG))
-            val phaseFromFull =
-                abs(angleDifferenceDeg(first = sky.moon.phaseLongitudeDeg, second = FULL_MOON_LONGITUDE_DEG))
-            if (fixture.isFull) {
-                assertTrue("$where phase longitude", phaseFromFull <= PHASE_TOLERANCE_DEG)
-                assertTrue("$where illuminated fraction", sky.moon.phaseFraction >= FULL_FRACTION)
-                assertTrue("$where phase angle", sky.moon.phaseAngleDeg <= FULL_PHASE_ANGLE_DEG)
-                assertTrue("$where magnitude", sky.moon.magnitude < FULL_MOON_MAGNITUDE_LIMIT)
-            } else {
-                assertTrue("$where phase longitude", phaseFromNew <= PHASE_TOLERANCE_DEG)
-                assertTrue("$where illuminated fraction", sky.moon.phaseFraction <= NEW_FRACTION)
-                assertTrue("$where phase angle", sky.moon.phaseAngleDeg >= NEW_PHASE_ANGLE_DEG)
+            // New-moon fixtures land just below 360 degrees, so the comparison must wrap.
+            val skyDifference =
+                angleDifferenceDeg(
+                    first = sky.moon.phaseLongitudeDeg,
+                    second = fixture.phaseLongitudeDeg,
+                )
+            assertTrue("$where phase longitude", abs(skyDifference) <= PHASE_TOLERANCE_DEG)
+            when (fixture.phase) {
+                "New Moon" -> {
+                    assertTrue("$where illuminated fraction", sky.moon.phaseFraction <= NEW_FRACTION)
+                    assertTrue("$where phase angle", sky.moon.phaseAngleDeg >= NEW_PHASE_ANGLE_DEG)
+                }
+
+                "Full Moon" -> {
+                    assertTrue("$where illuminated fraction", sky.moon.phaseFraction >= FULL_FRACTION)
+                    assertTrue("$where phase angle", sky.moon.phaseAngleDeg <= FULL_PHASE_ANGLE_DEG)
+                    assertTrue("$where magnitude", sky.moon.magnitude < FULL_MOON_MAGNITUDE_LIMIT)
+                }
+
+                else -> {
+                    // A quarter is half lit whatever its phase angle sign, which is exactly what a
+                    // swapped elongation preserves; the named phase longitude above is what pins it.
+                    assertEquals("$where illuminated fraction", HALF_FRACTION, sky.moon.phaseFraction, QUARTER_FRACTION)
+                }
             }
+
+            val geom = calculator.dialGeometry(fixture.instant, GREENWICH.location)
+            val moonLon = requireNotNull(geom.moonLongitudeDeg) { "$where dialGeometry Moon longitude" }
+            val moonPhase = requireNotNull(geom.moonPhaseLongitudeDeg) { "$where dialGeometry Moon phase" }
+            assertTrue(moonLon >= 0.0 && moonLon < FULL_TURN_DEGREES)
+            val geometryDifference = angleDifferenceDeg(first = moonPhase, second = fixture.phaseLongitudeDeg)
+            assertTrue("$where dialGeometry phase longitude", abs(geometryDifference) <= PHASE_TOLERANCE_DEG)
         }
     }
 
@@ -334,8 +356,11 @@ class AstronomyEngineCalculatorTest {
         const val PLANET_TOLERANCE_DEG = 0.008
         const val MAGNITUDE_TOLERANCE = 0.2
         const val PHASE_TOLERANCE_DEG = 0.01
-        const val NEW_MOON_LONGITUDE_DEG = 0.0
-        const val FULL_MOON_LONGITUDE_DEG = 180.0
+        const val HALF_FRACTION = 0.5
+
+        // USNO publishes a quarter to the minute, and the engine's phase differs from the
+        // geometric elongation by about 20 arcseconds, under 0.006 degree of lunar motion.
+        const val QUARTER_FRACTION = 0.01
         const val FULL_FRACTION = 0.99
         const val NEW_FRACTION = 0.01
         const val FULL_PHASE_ANGLE_DEG = 5.0

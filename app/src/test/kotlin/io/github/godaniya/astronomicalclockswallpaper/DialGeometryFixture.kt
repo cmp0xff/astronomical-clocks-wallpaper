@@ -81,6 +81,55 @@ import java.time.Instant
  *
  * The rows cover all four 2026 seasons plus adjacent instants across a UTC date boundary.
  * Times label evaluation instants; they do not claim to be exact equinox/solstice events.
+ *
+ * moonLongitudeDeg and moonPhaseLongitudeDeg were added 2026-10-04 with the same pyerfa
+ * 2.0.1.5 release. moonLongitudeDeg reproduces the quantity the engine's `eclipticGeoMoon`
+ * returns: the Moon's geocentric ecliptic longitude in the true ecliptic and equinox of date.
+ * ERFA has no lunar ephemeris of its own, so the position comes from `eraMoon98`, which ERFA
+ * documents as a full implementation of Meeus's algorithm except that the light-time
+ * correction to the Moon's mean longitude is omitted, and warns is "not IAU-endorsed and
+ * without canonical status". The reduction to the true ecliptic of date is then the same as
+ * the Sun column's, and `tt` is the argument throughout because `moon98` takes TT:
+ *   moon = erfa.moon98(*tt)[0]                  # GCRS position, au
+ *   eqd = erfa.pnm06a(*tt) @ moon
+ *   eps = erfa.obl06(*tt) + erfa.nut06a(*tt)[1]
+ *   lon = math.degrees(math.atan2(eqd[1]*math.cos(eps) + eqd[2]*math.sin(eps), eqd[0])) % 360.0
+ *
+ * moonPhaseLongitudeDeg is that column reduced against the Sun column above:
+ * (moonLongitudeDeg - sunLongitudeDeg) % 360, which is the engine's `moonPhase` definition,
+ * the Moon's ecliptic longitude less the Sun's, 0 at new and 180 at full. Both are geometric
+ * and geocentric: no aberration, no refraction, and no lunar parallax, which reaches about
+ * one degree and is the largest single term these columns leave out.
+ *
+ * Residuals measured against the pinned engine over these seven instants: moonLongitudeDeg
+ * within 0.0016397 degree (5.90 arcsecond) and moonPhaseLongitudeDeg within 0.0061575 degree
+ * (22.17 arcsecond). Both are far larger than the Sun column's, and the tolerances in
+ * DialGeometryTest are set from them rather than from the Sun's. Two effects drive the Moon's
+ * larger residual, and both are model differences rather than defects: the two sides use
+ * independent lunar theories — the engine's Brown-derived Improved Lunar Ephemeris of 1954 by
+ * way of Montenbruck and Pfleger, against Meeus's truncated series in `eraMoon98`, whose own
+ * documented RMS error against ELP/MPP02 is 2.9 arcsecond and whose worst case is 18.3 — and
+ * the engine predicts Delta-T where this recipe uses the leap-second table, about 6 seconds of
+ * TT and so about 3.3 arcsecond of lunar motion. The phase column carries one more
+ * near-constant offset: the engine's `moonPhase` is not its own `eclipticGeoMoon().lon` less
+ * its own `sunPosition().elon`. Measured over these instants that difference runs from -19.85
+ * to -21.18 arcsecond, and its cause was not isolated here.
+ *
+ * Second, independent source. JPL Horizons (DE441), geocentric observer, target Moon (301),
+ * quantity 31 gives ObsEcLon at each instant that falls on its one-minute step grid, against
+ * this fixture's column (difference in arcsecond):
+ *   2026-01-01T00:00:00Z   66.7156363   -4.47
+ *   2026-03-20T14:46:00Z   20.5157800   +3.81
+ *   2026-06-21T00:00:00Z  168.6969009   +2.80
+ *   2026-09-23T00:05:00Z  315.7193686   +1.11
+ *   2026-12-21T20:50:00Z   58.9978538   -0.83
+ *   2026-03-21T00:00:00Z   26.0443167   +3.14
+ * The seventh instant, 2026-03-20T23:59:59Z, is not corroborated this way: the Horizons
+ * interface snaps a sub-minute start time onto its step grid and returned the 23:59:00 row,
+ * 32 arcsecond away, so no Horizons value is claimed for it. Query: CENTER='500@399',
+ * QUANTITIES='31', STEP_SIZE='1 m'. Across the corroborated instants Horizons, `eraMoon98`
+ * and the engine agree to within 6 arcsecond of one another, so the engine is not the outlier
+ * and this column is a genuine independent check rather than a restatement of it.
  */
 
 /** Greenwich true-of-date angles from the independent ERFA computation described above. */
@@ -89,6 +138,8 @@ internal data class DialGeometryFixture(
     val greenwichSiderealAngleDeg: Double,
     val trueObliquityDeg: Double,
     val sunLongitudeDeg: Double,
+    val moonLongitudeDeg: Double,
+    val moonPhaseLongitudeDeg: Double,
 )
 
 internal val geometryFixtures: List<DialGeometryFixture> =
@@ -98,41 +149,55 @@ internal val geometryFixtures: List<DialGeometryFixture> =
             greenwichSiderealAngleDeg = 100.662223880875,
             trueObliquityDeg = 23.438137227782,
             sunLongitudeDeg = 280.568492619233,
+            moonLongitudeDeg = 66.716879317567,
+            moonPhaseLongitudeDeg = 146.148386698335,
         ),
         DialGeometryFixture(
             instant = Instant.parse("2026-03-20T14:46:00Z"),
             greenwichSiderealAngleDeg = 39.649369936616,
             trueObliquityDeg = 23.438406235100,
             sunLongitudeDeg = 0.000006215121,
+            moonLongitudeDeg = 20.514722178048,
+            moonPhaseLongitudeDeg = 20.514715962927,
         ),
         DialGeometryFixture(
             instant = Instant.parse("2026-06-21T00:00:00Z"),
             greenwichSiderealAngleDeg = 269.208537339434,
             trueObliquityDeg = 23.437975731881,
             sunLongitudeDeg = 89.665697696424,
+            moonLongitudeDeg = 168.696123865105,
+            moonPhaseLongitudeDeg = 79.030426168682,
         ),
         DialGeometryFixture(
             instant = Instant.parse("2026-09-23T00:05:00Z"),
             greenwichSiderealAngleDeg = 3.113096710875,
             trueObliquityDeg = 23.438125248960,
             sunLongitudeDeg = 179.999872297327,
+            moonLongitudeDeg = 315.719059055739,
+            moonPhaseLongitudeDeg = 135.719186758412,
         ),
         DialGeometryFixture(
             instant = Instant.parse("2026-12-21T20:50:00Z"),
             greenwichSiderealAngleDeg = 42.938088902050,
             trueObliquityDeg = 23.437637299363,
             sunLongitudeDeg = 269.999737210750,
+            moonLongitudeDeg = 58.998085276712,
+            moonPhaseLongitudeDeg = 148.998348065962,
         ),
         DialGeometryFixture(
             instant = Instant.parse("2026-03-20T23:59:59Z"),
             greenwichSiderealAngleDeg = 178.524381893801,
             trueObliquityDeg = 23.438400611018,
             sunLongitudeDeg = 0.382364988191,
+            moonLongitudeDeg = 26.043279106285,
+            moonPhaseLongitudeDeg = 25.660914118094,
         ),
         DialGeometryFixture(
             instant = Instant.parse("2026-03-21T00:00:00Z"),
             greenwichSiderealAngleDeg = 178.528559968142,
             trueObliquityDeg = 23.438400610836,
             sunLongitudeDeg = 0.382376490221,
+            moonLongitudeDeg = 26.043445766928,
+            moonPhaseLongitudeDeg = 25.661069276708,
         ),
     )

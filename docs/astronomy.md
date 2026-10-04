@@ -12,7 +12,7 @@ The existing `Sky` contract and UTC event window remain unchanged.
 | `SkyState.kt` | The result types: `Sky`, `Horizontal`, per-body state, `EventKind`, `RiseSetEvent` |
 | `AstronomyCalculator.kt` | The interface, and the time and event-window contract |
 | `AstronomyEngineCalculator.kt` | The implementation, backed by Astronomy Engine |
-| `DialGeometry.kt` | Sidereal angle, true obliquity of date, and saved observer latitude |
+| `DialGeometry.kt` | Sidereal angle, true obliquity of date, saved observer latitude, and the Sun's and Moon's ecliptic longitudes |
 | `StarCatalog.kt` | The bundled Hipparcos bright stars and their proper-motion arithmetic |
 
 Every one of them is free of `android.*` imports. Combined with `java.time` being available
@@ -66,7 +66,11 @@ previously phone-tagged records. The offline city chooser is
 In `Sky`, the ecliptic frame appears in the phase longitude, the Moon's elongation from the Sun
 along the ecliptic. Every other angle in `Sky` is horizontal or equatorial. The separate
 `DialGeometry` result adds true obliquity from the ecliptic-to-equatorial rotation of date
-for the projected zodiac; the reference grid does not reuse refracted body positions.
+for the projected zodiac; the reference grid does not reuse refracted body positions. Its Sun and
+Moon longitudes are the frame the dial plots, not the sky it shows: both are **geometric** ecliptic
+longitudes in the true ecliptic and equinox of date, so the topocentric, aberration-corrected and
+refracted positions above are not what the markers ride. See [orloj.md](orloj.md) for the dial's
+own frame, and `DialGeometryFixture.kt` for the independent reference angles and tolerances.
 
 Positions of the Sun, Moon, and planets are computed with `Aberration.Corrected` at
 `EquatorEpoch.OfDate`, then converted with `Refraction.Normal`. This is the standard topocentric

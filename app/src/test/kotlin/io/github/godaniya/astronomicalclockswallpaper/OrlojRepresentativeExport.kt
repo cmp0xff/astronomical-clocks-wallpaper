@@ -9,7 +9,9 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import java.io.File
-import java.time.LocalTime
+import java.time.Instant
+import java.time.ZoneId
+import java.time.ZoneOffset
 
 /**
  * Generates representative Orloj dial Canvas PNGs for visual inspection.
@@ -29,24 +31,20 @@ class OrlojRepresentativeExport {
         }
         val sites =
             listOf(
-                "prague" to 50.08,
-                "sydney" to -33.87,
-                "equator" to 0.0,
-                "north-pole" to 90.0,
-                "south-pole" to -90.0,
+                "prague" to site(latitude = 50.08, longitude = 14.42, zoneId = PRAGUE),
+                "sydney" to site(latitude = -33.87, longitude = 151.21, zoneId = SYDNEY),
+                "equator" to site(latitude = 0.0, longitude = 0.0, zoneId = ZoneOffset.UTC),
+                "north-pole" to site(latitude = 90.0, longitude = 0.0, zoneId = ZoneOffset.UTC),
+                "south-pole" to site(latitude = -90.0, longitude = 0.0, zoneId = ZoneOffset.UTC),
             )
-        for ((name, latitude) in sites) {
+        val calculator = AstronomyEngineCalculator()
+        val exportInstant = Instant.parse("2026-10-04T15:15:36Z")
+        for ((name, site) in sites) {
             val bitmap = Bitmap.createBitmap(IMAGE_WIDTH, IMAGE_HEIGHT, Bitmap.Config.ARGB_8888)
             DialRenderer().renderDial(
                 canvas = Canvas(bitmap),
-                state = clockState(LocalTime.of(15, 15, 36)),
-                geometry =
-                    DialGeometry(
-                        localSiderealAngleDeg = 37.0,
-                        trueObliquityDeg = 23.44,
-                        latitudeDeg = latitude,
-                        sunLongitudeDeg = ILLUSTRATIVE_SUN_LONGITUDE_DEG,
-                    ),
+                state = clockState(exportInstant.atZone(site.zoneId).toLocalTime()),
+                geometry = calculator.dialGeometry(exportInstant, site),
             )
             File(directory, "$name-api${Build.VERSION.SDK_INT}.png").outputStream().use { output ->
                 bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)
@@ -54,15 +52,25 @@ class OrlojRepresentativeExport {
         }
     }
 
+    private fun site(latitude: Double, longitude: Double, zoneId: ZoneId): ObservingLocation =
+        MANUAL_LOCATION.copy(latitude = latitude, longitude = longitude, zoneId = zoneId)
+
     private companion object {
         const val IMAGE_WIDTH = 1080
         const val IMAGE_HEIGHT = 1600
 
-        // The exported geometry above is synthetic — a fixed sidereal angle and clock reading,
-        // not a real instant — so the Sun has no true longitude to carry. This is a fixed
-        // illustrative longitude, not a claim about the Sun at any date: 45 degrees is mid-Taurus,
-        // an interior point of the 30-60 compartment, chosen to stay clear of the 0-degree Aries
-        // star and of every compartment divider so the marker is unmistakable in the exports.
-        const val ILLUSTRATIVE_SUN_LONGITUDE_DEG = 45.0
+        // Each site states its own zone rather than inheriting another site's. The equator and
+        // polar rows are neutral reference points with no civil zone of their own, so they state
+        // UTC outright; every meridian meets at the poles, so longitude 0 is a stated choice for
+        // them and not a borrowed Prague meridian.
+        val MANUAL_LOCATION =
+            ObservingLocation(
+                latitude = 0.0,
+                longitude = 0.0,
+                source = ObservingLocation.Source.MANUAL,
+                zoneId = ZoneOffset.UTC,
+            )
+        val PRAGUE: ZoneId = ZoneId.of("Europe/Prague")
+        val SYDNEY: ZoneId = ZoneId.of("Australia/Sydney")
     }
 }

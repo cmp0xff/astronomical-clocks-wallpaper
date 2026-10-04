@@ -13,6 +13,7 @@ internal class DialSettingsStore(context: Context) {
         return DialLayers(
             isZodiacRingEnabled = enabled(snapshot, KEY_ZODIAC_RING),
             isSunEnabled = enabled(snapshot, KEY_SUN),
+            isMoonEnabled = enabled(snapshot, KEY_MOON),
         )
     }
 
@@ -29,6 +30,7 @@ internal class DialSettingsStore(context: Context) {
             .edit()
             .putBoolean(KEY_ZODIAC_RING, layers.isZodiacRingEnabled)
             .putBoolean(KEY_SUN, layers.isSunEnabled)
+            .putBoolean(KEY_MOON, layers.isMoonEnabled)
             .apply()
     }
 
@@ -43,5 +45,6 @@ internal class DialSettingsStore(context: Context) {
     private companion object {
         const val KEY_ZODIAC_RING = "zodiac_ring"
         const val KEY_SUN = "sun"
+        const val KEY_MOON = "moon"
     }
 }

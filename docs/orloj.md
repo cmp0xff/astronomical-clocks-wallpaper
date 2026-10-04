@@ -3,23 +3,33 @@
 The wallpaper uses accurate astronomical geometry with an original Canvas design inspired by
 the Prague Orloj. This is the foundation for #5. It includes the civil clock, zodiac,
 equator, tropics, horizon, and astronomical-night boundary. Sun rendering is implemented in #27;
-Moon position and illuminated phase are tracked in #28. Other astronomy layers, display size,
+Moon position and illuminated phase are implemented in #28. Other astronomy layers, display size,
 position and brightness controls, calendar artwork, apostles, historical hour systems, and
 mechanical approximations remain outside this slice. It does not complete all of #5.
 
 ## Astronomical frame
 
 `AstronomyCalculator.dialGeometry(instant, location)` returns an Android-free
-`DialGeometry`: local apparent sidereal angle, true obliquity of date, observer latitude, and the
-Sun's ecliptic longitude, all in degrees. The pinned engine's `siderealTime` gives Greenwich
+`DialGeometry`: local apparent sidereal angle, true obliquity of date, observer latitude, the Sun's
+ecliptic longitude, the Moon's geocentric ecliptic longitude, and the Moon's phase longitude, all in
+degrees. The pinned engine's `siderealTime` gives Greenwich
 apparent sidereal hours;
 multiplying by 15 and adding east-positive longitude gives the local angle. The public
 `rotationEctEqd` rotation of the ecliptic y-axis into the true equator of date gives true obliquity.
 The Sun's longitude is a **geometric** longitude in the true ecliptic and equinox of date: the
 engine's `sunPosition` applies light-time retardation and the IAU 2006 precession–nutation matrix,
 but not annual aberration or gravitational light deflection, so its value sits about 20.49 arcseconds
-from an apparent place. It is `null` in a `DialGeometry` built without it, and a null longitude
-suppresses the marker rather than inventing a position.
+from an apparent place.
+
+The Moon's longitude is the same kind of quantity from `eclipticGeoMoon`: geocentric, in the true
+ecliptic and equinox of date, carrying precession and nutation. It is more purely geometric than the
+Sun's, because that path applies no light-time retardation either, and it is geocentric rather than
+topocentric, so the lunar horizontal parallax of up to about one degree is not applied. The phase
+longitude comes from the engine's `moonPhase`, the Moon's ecliptic longitude less the Sun's reduced
+to `[0, 360)`, so 0° is new, 90° first quarter, 180° full and 270° last quarter; it is not
+bit-identical to subtracting the two longitudes above, because the engine reduces those two bodies
+by a path of its own. Every one of these fields is `null` in a `DialGeometry` built without it, and
+a null longitude suppresses the marker rather than inventing a position.
 No engine types cross the new geometry interface. Existing body positions and UTC event windows
 retain their earlier contracts; the foundation does not compute the full body/event list per frame.
 
@@ -93,17 +103,41 @@ The Roman scale shows 24 civil hours: XII at the top, XXIV at the bottom, VI on 
 on the right. One hand follows saved-site civil time including DST. Its angle is independent of
 the zodiac's sidereal rotation; it is not a solar position marker.
 
-**Zodiac ring** and **Sun** default to enabled and persist across recreation. The first controls the
-rotating zodiac and its labels; the second controls the radiant golden Sun marker on the ecliptic ring
-together with the day/twilight/night shading and its horizon and astronomical-night boundaries — with it
-off the plate degrades to a clean instrument grid, keeping the tropics, the equator, and the outer rim.
-With the Sun layer on, the marker is drawn only when the geometry carries a Sun longitude; a geometry
-without one (such as test or offline plate geometries constructed without a solar position), or an absent
-geometry when no site is saved, shows no marker at all.
+**Zodiac ring**, **Sun**, and **Moon** default to enabled and persist across recreation. The first
+controls the rotating zodiac and its labels; the second controls the radiant golden Sun marker on the
+ecliptic ring together with the day/twilight/night shading and its horizon and astronomical-night
+boundaries — with it off the plate degrades to a clean instrument grid, keeping the tropics, the
+equator, and the outer rim. With the Sun layer on, the marker is drawn only when the geometry carries a
+Sun longitude; a geometry without one (such as test or offline plate geometries constructed without a
+solar position), or an absent geometry when no site is saved, shows no marker at all. The third controls
+the astronomical Moon marker, drawn on the same ecliptic ring with its illuminated phase; it needs both
+a lunar longitude and a phase longitude, so a geometry missing either shows no lunar marker.
 The toggle was renamed from "Day and night" to "Sun" before release; a stored value under the old
 `day_and_night` key is ignored rather than migrated, so the layer returns to its enabled default. Without
 a saved site, layer checkboxes in Settings are disabled and only the civil clock is shown, using the
 phone timezone. Settings explains that an observing location is required for sky geometry.
+
+### Moon marker conventions
+
+The Moon marker is a disc placed on the ecliptic ring at the Moon's geocentric longitude, so it shares
+the Sun marker's ring convention: **ecliptic latitude is dropped**, and the Moon's, which reaches about
+±5.1°, is not drawn. The angle around the ring is exact; the displacement off it is a convention of the
+instrument. Geocentric rather than topocentric placement is also a decision, not an omission — the
+lunar horizontal parallax is under a degree, and the reference instrument's Moon pointer is likewise a
+geocentric place.
+
+Waxing phases light the **right** limb and waning phases the **left** one, as seen from a northern site:
+the terminator is parameterized directly by the phase longitude, so the lit fraction runs from nothing
+at 0° (new) through the right half at 90° (first quarter), the full disc at 180° (full), and the left
+half at 270° (last quarter). Southern sites **mirror the disc horizontally**, so the lit limb sides
+swap. This is a stated screen-space convention, not a consequence of the plate inversion, which
+point-reflects the sky through the dial centre: the marker keeps one orientation around the whole ring
+rather than turning its bright limb to face the Sun marker, which the dial also draws. The orientation,
+the phase limbs and the hemisphere flip are pinned by pixel assertions in `DialRendererTest`.
+
+At conjunction the two markers project to the same point, and the Moon is drawn after the Sun, so the
+Moon's disc — dark at new moon — covers the Sun's core while its rays remain visible. That is the
+intended order, not a rendering failure: the dial draws the nearer body in front.
 
 The projection places a body at `x = r sin H`, `y = −r cos H` for hour angle `H`, so the marker's
 bearing from the dial centre is the Sun's hour angle, with noon at the top of the Roman scale. Whether

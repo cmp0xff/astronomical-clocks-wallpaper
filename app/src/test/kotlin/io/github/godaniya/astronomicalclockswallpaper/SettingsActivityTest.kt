@@ -195,8 +195,10 @@ class SettingsActivityTest {
             val activity = controller.setup().get()
             val zodiac = activity.findViewById<CheckBox>(R.id.zodiac_ring)
             val sun = activity.findViewById<CheckBox>(R.id.sun_layer)
+            val moon = activity.findViewById<CheckBox>(R.id.moon_layer)
             assertFalse(zodiac.isEnabled)
             assertFalse(sun.isEnabled)
+            assertFalse(moon.isEnabled)
 
             activity.findViewById<EditText>(R.id.latitude_input).setText("50.0")
             activity.findViewById<EditText>(R.id.longitude_input).setText("14.4")
@@ -204,6 +206,7 @@ class SettingsActivityTest {
 
             assertTrue(zodiac.isEnabled)
             assertTrue(sun.isEnabled)
+            assertTrue(moon.isEnabled)
         }
     }
 

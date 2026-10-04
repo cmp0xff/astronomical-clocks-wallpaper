@@ -23,7 +23,7 @@ class DialSettingsStoreTest {
     @Test
     fun layersDefaultToEnabled() {
         assertEquals(
-            DialLayers(isZodiacRingEnabled = true, isSunEnabled = true),
+            DialLayers(isZodiacRingEnabled = true, isSunEnabled = true, isMoonEnabled = true),
             DialSettingsStore(application)
                 .load(),
         )
@@ -33,13 +33,16 @@ class DialSettingsStoreTest {
     fun choicesSurviveNewStore() {
         for (isZodiacEnabled in listOf(false, true)) {
             for (isSun in listOf(false, true)) {
-                val expected =
-                    DialLayers(
-                        isZodiacRingEnabled = isZodiacEnabled,
-                        isSunEnabled = isSun,
-                    )
-                DialSettingsStore(application).save(expected)
-                assertEquals(expected, DialSettingsStore(application).load())
+                for (isMoon in listOf(false, true)) {
+                    val expected =
+                        DialLayers(
+                            isZodiacRingEnabled = isZodiacEnabled,
+                            isSunEnabled = isSun,
+                            isMoonEnabled = isMoon,
+                        )
+                    DialSettingsStore(application).save(expected)
+                    assertEquals(expected, DialSettingsStore(application).load())
+                }
             }
         }
     }
@@ -65,7 +68,7 @@ class DialSettingsStoreTest {
             .putBoolean("sun", false)
             .apply()
         assertEquals(
-            DialLayers(isZodiacRingEnabled = true, isSunEnabled = false),
+            DialLayers(isZodiacRingEnabled = true, isSunEnabled = false, isMoonEnabled = true),
             DialSettingsStore(application)
                 .load(),
         )
@@ -87,26 +90,31 @@ class DialSettingsStoreTest {
             val activity = controller.setup().get()
             val zodiac = activity.findViewById<CheckBox>(R.id.zodiac_ring)
             val sun = activity.findViewById<CheckBox>(R.id.sun_layer)
+            val moon = activity.findViewById<CheckBox>(R.id.moon_layer)
             assertTrue(zodiac.isEnabled)
             assertTrue(sun.isEnabled)
+            assertTrue(moon.isEnabled)
             assertTrue(zodiac.isChecked)
             assertTrue(sun.isChecked)
+            assertTrue(moon.isChecked)
             zodiac.performClick()
             assertEquals(
-                DialLayers(isZodiacRingEnabled = false, isSunEnabled = true),
+                DialLayers(isZodiacRingEnabled = false, isSunEnabled = true, isMoonEnabled = true),
                 DialSettingsStore(activity)
                     .load(),
             )
             sun.performClick()
+            moon.performClick()
             controller.recreate()
             val recreated = controller.get()
             assertTrue(recreated.findViewById<CheckBox>(R.id.zodiac_ring).isEnabled)
             assertTrue(recreated.findViewById<CheckBox>(R.id.sun_layer).isEnabled)
             assertFalse(recreated.findViewById<CheckBox>(R.id.zodiac_ring).isChecked)
             assertFalse(recreated.findViewById<CheckBox>(R.id.sun_layer).isChecked)
+            assertFalse(recreated.findViewById<CheckBox>(R.id.moon_layer).isChecked)
             recreated.findViewById<CheckBox>(R.id.zodiac_ring).performClick()
             assertEquals(
-                DialLayers(isZodiacRingEnabled = true, isSunEnabled = false),
+                DialLayers(isZodiacRingEnabled = true, isSunEnabled = false, isMoonEnabled = false),
                 DialSettingsStore(activity)
                     .load(),
             )

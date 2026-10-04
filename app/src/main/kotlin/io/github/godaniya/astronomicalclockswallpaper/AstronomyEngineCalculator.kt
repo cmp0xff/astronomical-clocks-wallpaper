@@ -10,6 +10,7 @@ import io.github.cosinekitty.astronomy.Time
 import io.github.cosinekitty.astronomy.Topocentric
 import io.github.cosinekitty.astronomy.Vector
 import io.github.cosinekitty.astronomy.constellation
+import io.github.cosinekitty.astronomy.eclipticGeoMoon
 import io.github.cosinekitty.astronomy.equator
 import io.github.cosinekitty.astronomy.horizon
 import io.github.cosinekitty.astronomy.illumination
@@ -29,12 +30,18 @@ import kotlin.math.sin
 /**
  * The production [AstronomyCalculator], backed by Astronomy Engine.
  *
- * Every Solar System body is reduced the same way: the engine gives topocentric equatorial
+ * Every Solar System body in [sky] is reduced the same way: the engine gives topocentric equatorial
  * coordinates of date with aberration corrected, [horizon] turns those into azimuth and altitude,
  * and the altitude is adjusted for the standard atmosphere with [Refraction.Normal]. Fixed stars
  * cannot go through [equator], because they are not Solar System bodies, so [StarCatalog] supplies
  * their J2000 place and proper motion and [rotationEqjHor] carries it to the horizon. See
  * `docs/astronomy.md` for frames, units, and tolerances.
+ *
+ * [dialGeometry] is the exception. It asks the engine for a geometric, geocentric ecliptic
+ * longitude of date instead — no aberration, no refraction, and for the Moon no light-time
+ * retardation either — because the dial plots a body's place on the ecliptic ring rather than the
+ * direction it appears in the sky. The Sun and Moon are the two bodies that path carries, and
+ * [DialGeometry] records the frame each longitude is in.
  *
  * Three small conventions recur below.
  *
@@ -56,12 +63,15 @@ internal class AstronomyEngineCalculator : AstronomyCalculator {
         val eclipticAxis = Vector(x = 0.0, y = 1.0, z = 0.0, t = engineTime)
         val equatorialAxis = rotationEctEqd(engineTime).rotate(eclipticAxis)
         val sunEcliptic = sunPosition(engineTime)
+        val moonEcliptic = eclipticGeoMoon(engineTime)
         return DialGeometry(
             localSiderealAngleDeg =
                 (siderealTime(engineTime) * DEGREES_PER_HOUR + location.longitude).mod(FULL_TURN_DEGREES),
             trueObliquityDeg = Math.toDegrees(atan2(y = equatorialAxis.z, x = equatorialAxis.y)),
             latitudeDeg = location.latitude,
             sunLongitudeDeg = sunEcliptic.elon.mod(FULL_TURN_DEGREES),
+            moonLongitudeDeg = moonEcliptic.lon.mod(FULL_TURN_DEGREES),
+            moonPhaseLongitudeDeg = moonPhase(engineTime).mod(FULL_TURN_DEGREES),
         )
     }
 
