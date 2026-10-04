@@ -9,6 +9,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import java.io.File
+import java.time.Duration
 import java.time.Instant
 import java.time.ZoneId
 import java.time.ZoneOffset
@@ -50,6 +51,18 @@ class OrlojRepresentativeExport {
                 bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)
             }
         }
+
+        val pragueSite = site(latitude = 50.08, longitude = 14.42, zoneId = PRAGUE)
+        val exportInstantPlus30m = exportInstant.plus(Duration.ofMinutes(THIRTY_MINUTES))
+        val bitmap30m = Bitmap.createBitmap(IMAGE_WIDTH, IMAGE_HEIGHT, Bitmap.Config.ARGB_8888)
+        DialRenderer().renderDial(
+            canvas = Canvas(bitmap30m),
+            state = clockState(exportInstantPlus30m.atZone(pragueSite.zoneId).toLocalTime()),
+            geometry = calculator.dialGeometry(exportInstantPlus30m, pragueSite),
+        )
+        File(directory, "prague-plus-30m-api${Build.VERSION.SDK_INT}.png").outputStream().use { output ->
+            bitmap30m.compress(Bitmap.CompressFormat.PNG, 100, output)
+        }
     }
 
     private fun site(latitude: Double, longitude: Double, zoneId: ZoneId): ObservingLocation =
@@ -58,6 +71,7 @@ class OrlojRepresentativeExport {
     private companion object {
         const val IMAGE_WIDTH = 1080
         const val IMAGE_HEIGHT = 1600
+        const val THIRTY_MINUTES = 30L
 
         // Each site states its own zone rather than inheriting another site's. The equator and
         // polar rows are neutral reference points with no civil zone of their own, so they state

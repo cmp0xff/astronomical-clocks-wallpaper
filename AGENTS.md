@@ -217,3 +217,17 @@ physical-device results from emulator checks and state the Android version, sour
 revision, and SHA-256 of the tested APK. Keep device identifiers and precise private
 locations out of public reports. Record limitations and unresolved failures in the
 issue and PR; do not silently weaken acceptance criteria.
+
+### Device verification tiers
+
+The physical device is a single shared resource; do not hold it for real-time waits.
+
+- **No device pass** for changes with no on-screen or lifecycle effect (logging, build,
+  documentation, pure logic covered by host tests). State "device checks not run" and why.
+- **Time-dependent visuals** (anything that moves with the clock): use the debug-only virtual clock
+  from [docs/device-testing.md](docs/device-testing.md#virtual-time) instead of waiting. A 30-minute
+  advance takes one broadcast, not 30 minutes. `scripts/device-smoke-test.py` runs this check.
+- **Lifecycle, reboot, lock screen, and release sign-off** need the full manual pass.
+
+Ask before installing over, resizing, or otherwise changing a device another session is using, and
+restore any setting you change.

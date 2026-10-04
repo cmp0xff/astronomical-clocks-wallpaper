@@ -115,6 +115,7 @@ PR. Removing a finding by lowering global severity or excluding production/test 
 | Lint `GradleDependency` | Same network-discovered-upgrade category as `NewerVersionAvailable`; keeping it active would reintroduce the same non-hermetic failure. | All modules, via `app/lint.xml` |
 | detekt `TooGenericExceptionCaught` | `runTick` catches `Exception` to keep the wallpaper tick loop alive across unexpected drawing exceptions while letting VM `Error` propagate. | Only `ClockEngine.runTick`, annotated in source |
 | detekt `TooGenericExceptionCaught` | `dialGeometryOrNull` catches `RuntimeException` around `dialGeometry` to fall back to the 24-hour civil dial rather than blanking the frame on geometry calculation failures. | Only `ClockEngine.dialGeometryOrNull`, annotated in source |
+| Lint `UnspecifiedRegisterReceiverFlag` | `registerDebugReceiver` calls the 2-argument `registerReceiver` on API < 33 when `RECEIVER_EXPORTED` is unavailable; lint requires annotating the API 33+ branch guard. | Only `AstronomicalClocksWallpaperService.registerDebugReceiver`, annotated in source |
 
 Upstream defaults remain the starting point, including per-rule defaults for test documentation and
 magic numbers. Tests are still compiled with the same strict compiler and analyzed with type resolution;
