@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+  android:layout_width="match_parent"
+  android:layout_height="wrap_content"
+  android:orientation="vertical"
+  android:paddingTop="8dp">
+  <EditText
+    android:id="@+id/timezone_filter"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginStart="24dp"
+    android:layout_marginEnd="24dp"
+    android:hint="@string/timezone_filter_hint"
+    android:imeOptions="actionDone"
+    android:importantForAutofill="no"
+    android:inputType="text"
+    android:maxLines="1" />
+  <!-- Fixed height: the dialog frame replaces the root's own layout parameters, so a weighted or
+       measured list would collapse. The list scrolls inside this box. -->
+  <FrameLayout
+    android:layout_width="match_parent"
+    android:layout_height="240dp">
+    <ListView
+      android:id="@+id/timezone_list"
+      android:layout_width="match_parent"
+      android:layout_height="match_parent"
+      android:choiceMode="singleChoice" />
+    <TextView
+      android:id="@+id/timezone_empty"
+      android:layout_width="match_parent"
+      android:layout_height="match_parent"
+      android:gravity="center"
+      android:text="@string/timezone_no_matches"
+      android:visibility="gone" />
+  </FrameLayout>
+</LinearLayout>

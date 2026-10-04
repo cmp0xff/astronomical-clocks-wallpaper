@@ -56,6 +56,12 @@
       android:importantForAutofill="no"
       android:inputType="numberDecimal|numberSigned" />
     <Button
+      android:id="@+id/select_timezone"
+      android:layout_width="wrap_content"
+      android:layout_height="wrap_content"
+      android:minHeight="48dp"
+      android:text="@string/choose_timezone_title" />
+    <Button
       android:id="@+id/save_location"
       android:layout_width="wrap_content"
       android:layout_height="wrap_content"

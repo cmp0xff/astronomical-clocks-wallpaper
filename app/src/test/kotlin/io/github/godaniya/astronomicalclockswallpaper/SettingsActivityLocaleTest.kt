@@ -1,7 +1,9 @@
 package io.github.godaniya.astronomicalclockswallpaper
 
 import android.annotation.SuppressLint
+import android.app.AlertDialog
 import android.content.SharedPreferences
+import android.os.Looper
 import android.widget.Button
 import android.widget.EditText
 import org.junit.Assert.assertEquals
@@ -11,7 +13,9 @@ import org.junit.runner.RunWith
 import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowAlertDialog
 import org.robolectric.shadows.ShadowToast
 import java.time.ZoneId
 import java.util.Locale
@@ -145,6 +149,7 @@ class SettingsActivityLocaleTest {
             // Edit latitude, leave seeded longitude (< 1e-3) untouched, save again
             activity.findViewById<EditText>(R.id.latitude_input).setText("45.0")
             activity.findViewById<Button>(R.id.save_location).performClick()
+            acceptEstimatedZone()
             val edited = LocationStore(activity).load()
             assertEquals(45.0, edited?.latitude ?: 0.0, 0.0)
             assertEquals(initialLongitude, edited?.longitude ?: 0.0, 0.0)
@@ -158,6 +163,7 @@ class SettingsActivityLocaleTest {
         expectedLongitude: Double,
         expectedLocale: Locale = Locale.GERMANY,
     ) {
+        val expectedZoneId = TimeZoneLookup.lookup(latitude = expectedLatitude, longitude = expectedLongitude)
         Robolectric.buildActivity(SettingsActivity::class.java).use { controller ->
             val activity = controller.setup().get()
             enterCoordinates(
@@ -167,12 +173,13 @@ class SettingsActivityLocaleTest {
                 expectedLocale = expectedLocale,
             )
             activity.findViewById<Button>(R.id.save_location).performClick()
+            acceptEstimatedZone()
             assertEquals(
                 ObservingLocation(
                     latitude = expectedLatitude,
                     longitude = expectedLongitude,
                     source = ObservingLocation.Source.MANUAL,
-                    zoneId = ZoneId.systemDefault(),
+                    zoneId = expectedZoneId,
                 ),
                 LocationStore(activity).load(),
             )
@@ -191,6 +198,16 @@ class SettingsActivityLocaleTest {
             assertNull(LocationStore(activity).load())
             assertEquals(activity.getString(R.string.location_invalid), ShadowToast.getTextOfLatestToast())
         }
+    }
+
+    // A zone that came from the nearest-anchor lookup is presented as an estimate and must be
+    // confirmed before it is written; accepting it is the path these tests exercise. The dialog
+    // dispatches its button click through a message on the main looper, so the write it triggers
+    // has not happened until that looper drains.
+    private fun acceptEstimatedZone() {
+        val dialog = ShadowAlertDialog.getLatestDialog() as AlertDialog
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick()
+        shadowOf(Looper.getMainLooper()).idle()
     }
 
     private fun enterCoordinates(

@@ -6,7 +6,15 @@
   <string name="preview_unavailable">Wallpaper preview is unavailable on this device.</string>
   <string name="location_unset">No observing location set.</string>
   <string name="location_details">%1$s, %2$s (%3$s)\nTimezone: %4$s</string>
-  <string name="location_timezone_help">A saved site keeps its timezone. Refreshing the location updates the coordinates only; saving edited coordinates captures the phone’s timezone. Coordinates do not determine the timezone.</string>
+  <string name="location_timezone_help">A saved site keeps its timezone when the phone timezone changes. Using current location resolves the geographic timezone for the acquired fix; manual coordinates infer the geographic timezone or use the selected timezone.</string>
+  <string name="select_timezone">Timezone: %1$s</string>
+  <string name="choose_timezone_title">Select timezone</string>
+  <string name="timezone_filter_hint">Filter timezones</string>
+  <string name="timezone_no_matches">No matching timezone</string>
+  <string name="estimated_timezone_title">Estimated timezone</string>
+  <string name="estimated_timezone_message">Timezone %1$s was estimated from the nearest IANA reference point and can be wrong near a border.</string>
+  <string name="estimated_timezone_save">Save</string>
+  <string name="estimated_timezone_choose">Choose…</string>
   <string name="use_current_location">Use current location</string>
   <string name="refresh_location">Refresh location</string>
   <string name="save_location">Save coordinates</string>

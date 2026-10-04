@@ -2,6 +2,7 @@ package io.github.godaniya.astronomicalclockswallpaper
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.app.AlertDialog
 import android.content.Context
 import android.location.Location
 import android.location.LocationManager
@@ -20,9 +21,9 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowAlertDialog
 import org.robolectric.shadows.ShadowToast
 import java.time.Duration
-import java.time.ZoneId
 
 /** Checks that a completed manual choice or destroyed activity cannot receive an old acquisition. */
 @RunWith(RobolectricTestRunner::class)
@@ -66,6 +67,7 @@ class SettingsActivityAcquisitionTest {
             listener.onLocationChanged(location())
             shadowOf(Looper.getMainLooper()).idle()
 
+            acceptEstimatedZone()
             val stored = requireNotNull(LocationStore(activity).load())
             assertEquals(ObservingLocation.Source.CURRENT_COARSE, stored.source)
 
@@ -103,13 +105,14 @@ class SettingsActivityAcquisitionTest {
             assertEquals(1, locationShadow.networkListeners().size)
             locationShadow.simulateLocation(LocationManager.NETWORK_PROVIDER, location())
             shadowOf(Looper.getMainLooper()).idle()
+            acceptEstimatedZone()
 
             assertEquals(
                 ObservingLocation(
                     latitude = 37.42,
                     longitude = -122.08,
                     source = ObservingLocation.Source.CURRENT_COARSE,
-                    zoneId = ZoneId.systemDefault(),
+                    zoneId = TimeZoneLookup.lookup(latitude = 37.42, longitude = -122.08),
                 ),
                 LocationStore(activity).load(),
             )
@@ -139,22 +142,34 @@ class SettingsActivityAcquisitionTest {
         activity.findViewById<EditText>(R.id.latitude_input).setText("45.5")
         activity.findViewById<EditText>(R.id.longitude_input).setText("-120.25")
         activity.findViewById<Button>(R.id.save_location).performClick()
+        acceptEstimatedZone()
     }
 
     private fun assertManualLocation(activity: SettingsActivity) {
+        val expectedZone = TimeZoneLookup.lookup(latitude = 45.5, longitude = -120.25)
         assertEquals(
             ObservingLocation(
                 latitude = 45.5,
                 longitude = -120.25,
                 source = ObservingLocation.Source.MANUAL,
-                zoneId = ZoneId.systemDefault(),
+                zoneId = expectedZone,
             ),
             LocationStore(activity).load(),
         )
         assertEquals(
-            "45.5000, -120.2500 (manual)\nTimezone: ${ZoneId.systemDefault().id}",
+            "45.5000, -120.2500 (manual)\nTimezone: ${expectedZone.id}",
             activity.findViewById<TextView>(R.id.location_current).text.toString(),
         )
+    }
+
+    // A zone that came from the nearest-anchor lookup is presented as an estimate and must be
+    // confirmed before it is written; accepting it is the path these tests exercise. The dialog
+    // dispatches its button click through a message on the main looper, so the write it triggers
+    // has not happened until that looper drains.
+    private fun acceptEstimatedZone() {
+        val dialog = ShadowAlertDialog.getLatestDialog() as AlertDialog
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick()
+        shadowOf(Looper.getMainLooper()).idle()
     }
 
     private fun location(): Location {

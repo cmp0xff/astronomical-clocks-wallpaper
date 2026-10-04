@@ -1,13 +1,15 @@
 # Dependency and artwork provenance
 
 All application source and the placeholder Canvas/vector dial are original project work under
-[Apache-2.0](../LICENSE). No city catalog, location library, or external artwork is bundled. The
-astronomy engine and the star catalogue arrived with #4 and are recorded below.
+[Apache-2.0](../LICENSE). No political city catalog, location library, or external artwork is bundled. The
+astronomy engine and the star catalogue arrived with #4, and the IANA tzdb anchor coordinates arrived with #21,
+as recorded below.
 
 | Input | Source | License / use |
 | --- | --- | --- |
 | Astronomy Engine (Kotlin/JVM) commit `61dc070` | [cosinekitty/astronomy](https://github.com/cosinekitty/astronomy/tree/61dc07020aaa6885d2c7f688a4d82beaf6edb9ef), tag `v2.1.19`, built on demand by [JitPack](https://jitpack.io/#cosinekitty/astronomy) | MIT; runtime, pinned to a full commit SHA |
 | Hipparcos bright-star catalogue (V < 1.65, 26 stars) | [ESA 1997, CDS I/239/hip_main](https://cdsarc.cds.unistra.fr/viz-bin/cat/I/239) via VizieR | Public astronomical data; transcribed into `StarCatalog.kt` |
+| IANA Time Zone Database (tzdb `zone.tab`), release `2026e` | [IANA Time Zone Database](https://data.iana.org/time-zones/tz-link.html); [release tarball](https://data.iana.org/time-zones/releases/tzdata2026e.tar.gz) | Public domain; coordinate anchors transcribed into `TimeZoneLookup.kt` |
 | Kotlin standard library 2.4.10 | [JetBrains Kotlin](https://github.com/JetBrains/kotlin/tree/v2.4.10) | Apache-2.0; runtime |
 | JetBrains annotations 13.0 (transitive) | [java-annotations](https://github.com/JetBrains/java-annotations) | Apache-2.0; Kotlin's annotation dependency |
 | Android framework API | [Android Open Source Project](https://source.android.com/) | Device-provided framework; SDK governed by Android SDK terms |
@@ -19,6 +21,20 @@ astronomy engine and the star catalogue arrived with #4 and are recorded below.
 | Robolectric 4.17 | [Robolectric](https://github.com/robolectric/robolectric/tree/robolectric-4.17) | MIT; tests only |
 | Hamcrest (JUnit transitive dependency) | [Hamcrest](https://github.com/hamcrest/JavaHamcrest) | BSD-3-Clause; tests only |
 | Eclipse Temurin 21.0.12.1+1 | [Adoptium](https://github.com/adoptium/temurin21-binaries/releases/tag/jdk-21.0.12.1%2B1); macOS via the [`temurin@21` Homebrew cask](https://formulae.brew.sh/cask/temurin%4021) | GPL-2.0 with Classpath Exception; build/test JDK only |
+
+The tzdb anchor data was diffed against the published releases rather than taken on trust. Every one
+of the 418 zones in release `2026e`'s `zone.tab` is transcribed into `TimeZoneLookup.kt` and no
+transcribed identifier is absent from that table; release `2025b`'s `zone.tab` agrees zone-for-zone
+with the same table. Every transcribed coordinate is within 4.44e-05 degrees of the published value,
+which is the four-decimal rounding the transcription uses. Verified tarballs: release `2026e`
+`sha256 b26882805f26aac59d5b222978e6580484b834ccdc98be89df2f05a6dc53a652`, release `2025b`
+`sha256 11810413345fc7805017e27ea9fa4885fd74cd61b2911711ad038f5d28d71474`.
+
+Six of those identifiers post-date the tzdb an API 26 device can carry — `America/Ciudad_Juarez`,
+`America/Coyhaique`, `America/Nuuk`, `Asia/Qostanay`, `Europe/Kyiv`, and `Pacific/Kanton` are all
+absent from tzdata `2017a`'s zone definitions, while every identifier `TimeZoneLookup.ZONE_ALIASES`
+maps them to is present there. That map and the 2017a check are what keep a device with an old tzdb
+from failing to save; `TimeZoneLookupTest` exercises the lookup with that old tzdb simulated.
 
 Resolved dependency graphs can be inspected with `./gradlew :app:dependencies` and
 `./gradlew :app:dependencyInsight --configuration debugRuntimeClasspath --dependency kotlin-stdlib`.

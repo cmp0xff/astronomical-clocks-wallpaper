@@ -2,6 +2,7 @@ package io.github.godaniya.astronomicalclockswallpaper
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.app.AlertDialog
 import android.app.WallpaperManager
 import android.content.ComponentName
 import android.content.Context
@@ -27,6 +28,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowAlertDialog
 import org.robolectric.shadows.ShadowToast
 import java.time.ZoneId
 import java.util.TimeZone
@@ -68,7 +70,9 @@ class SettingsActivityTest {
             activity.findViewById<EditText>(R.id.latitude_input).setText("45.5")
             activity.findViewById<EditText>(R.id.longitude_input).setText("-120.25")
             activity.findViewById<Button>(R.id.save_location).performClick()
-            val expected = "45.5000, -120.2500 (manual)\nTimezone: ${ZoneId.systemDefault().id}"
+            acceptEstimatedZone()
+            val expectedZone = TimeZoneLookup.lookup(latitude = 45.5, longitude = -120.25)
+            val expected = "45.5000, -120.2500 (manual)\nTimezone: ${expectedZone.id}"
             assertEquals(expected, activity.findViewById<TextView>(R.id.location_current).text.toString())
             controller.recreate()
             assertEquals(
@@ -90,7 +94,9 @@ class SettingsActivityTest {
             activity.findViewById<EditText>(R.id.latitude_input).setText("10.0")
             activity.findViewById<EditText>(R.id.longitude_input).setText("20.0")
             activity.findViewById<Button>(R.id.save_location).performClick()
-            val expected = "10.0000, 20.0000 (manual)\nTimezone: ${ZoneId.systemDefault().id}"
+            acceptEstimatedZone()
+            val expectedZone = TimeZoneLookup.lookup(latitude = 10.0, longitude = 20.0)
+            val expected = "10.0000, 20.0000 (manual)\nTimezone: ${expectedZone.id}"
 
             shadowOf(activity.application).grantPermissions(Manifest.permission.ACCESS_COARSE_LOCATION)
             val locationManager = activity.getSystemService(Context.LOCATION_SERVICE) as LocationManager
@@ -103,7 +109,7 @@ class SettingsActivityTest {
                     latitude = 10.0,
                     longitude = 20.0,
                     source = ObservingLocation.Source.MANUAL,
-                    zoneId = ZoneId.systemDefault(),
+                    zoneId = expectedZone,
                 ),
                 LocationStore(activity).load(),
             )
@@ -123,8 +129,10 @@ class SettingsActivityTest {
                 location(latitude = 37.42, longitude = -122.08),
             )
             shadowOf(Looper.getMainLooper()).idle()
+            acceptEstimatedZone()
+            val expectedZone = TimeZoneLookup.lookup(latitude = 37.42, longitude = -122.08)
             assertEquals(
-                "37.4200, -122.0800 (current)\nTimezone: ${ZoneId.systemDefault().id}",
+                "37.4200, -122.0800 (current)\nTimezone: ${expectedZone.id}",
                 activity.findViewById<TextView>(R.id.location_current).text.toString(),
             )
             assertEquals(
@@ -132,7 +140,7 @@ class SettingsActivityTest {
                     latitude = 37.42,
                     longitude = -122.08,
                     source = ObservingLocation.Source.CURRENT_COARSE,
-                    zoneId = ZoneId.systemDefault(),
+                    zoneId = expectedZone,
                 ),
                 LocationStore(activity).load(),
             )
@@ -204,6 +212,7 @@ class SettingsActivityTest {
             activity.findViewById<EditText>(R.id.longitude_input).setText("14.4")
             activity.findViewById<Button>(R.id.save_location).performClick()
 
+            acceptEstimatedZone()
             assertTrue(zodiac.isEnabled)
             assertTrue(sun.isEnabled)
             assertTrue(moon.isEnabled)
@@ -338,6 +347,10 @@ class SettingsActivityTest {
 
             activity.findViewById<Button>(R.id.save_location).performClick()
 
+            // -0.0 and 0.0 name the same place, so this Save takes the unchanged path and must not
+            // reach the estimate dialog. The toast is what distinguishes the two branches now that
+            // the write itself sits behind a confirmation.
+            assertEquals(activity.getString(R.string.location_unchanged), ShadowToast.getTextOfLatestToast())
             val saved = requireNotNull(LocationStore(activity).load())
             assertEquals(ObservingLocation.Source.CURRENT_COARSE, saved.source)
             assertEquals(ZoneId.of("Europe/Prague"), saved.zoneId)
@@ -365,6 +378,7 @@ class SettingsActivityTest {
             activity.findViewById<EditText>(R.id.latitude_input).setText("51.5074")
             activity.findViewById<Button>(R.id.save_location).performClick()
 
+            acceptEstimatedZone()
             val updated = LocationStore(activity).load()
             assertEquals(51.5074, updated?.latitude ?: 0.0, 0.0)
             assertEquals(originalLng, updated?.longitude ?: 0.0, 0.0)
@@ -386,6 +400,7 @@ class SettingsActivityTest {
                 location(latitude = fixLat, longitude = fixLng),
             )
             shadowOf(Looper.getMainLooper()).idle()
+            acceptEstimatedZone()
 
             assertEquals(
                 "37.4220012345",
@@ -441,6 +456,14 @@ class SettingsActivityTest {
                     .toString(),
             )
         }
+    }
+
+    // A zone that came from the nearest-anchor lookup is presented as an estimate and must be
+    // confirmed before it is written; accepting it is the path these tests exercise.
+    private fun acceptEstimatedZone() {
+        val dialog = ShadowAlertDialog.getLatestDialog() as AlertDialog
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick()
+        shadowOf(Looper.getMainLooper()).idle()
     }
 
     private fun location(latitude: Double, longitude: Double): Location {
