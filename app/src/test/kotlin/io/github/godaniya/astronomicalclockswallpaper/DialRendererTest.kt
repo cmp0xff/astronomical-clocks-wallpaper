@@ -63,46 +63,53 @@ class DialRendererTest {
 
     @Test
     fun zodiacLabelsAreCentred() {
-        val projection = OrlojProjection(prague)
-        for (index in 0 until 12) {
-            // Keep the civil hand away from the probed boundary and sign centre.
-            val time = if (index in 5..7) LocalTime.NOON else LocalTime.MIDNIGHT
-            val bitmap = render(time = time, geometry = prague)
-            val boundary = projection.eclipticPoint(index * 30.0)
-            val centre = projection.eclipticPoint(index * 30.0 + 15.0)
-            assertTrue(
-                "Label must be present near sign centre $index",
-                hasLabelPixelNear(bitmap, centre),
-            )
-            assertFalse(
-                "Label must be absent near boundary $index",
-                hasLabelPixelNear(bitmap, boundary),
-            )
+        val sites = listOf(prague, prague.copy(latitudeDeg = -33.87))
+        for (site in sites) {
+            val projection = OrlojProjection(site)
+            for (index in 0 until 12) {
+                // Keep the civil hand away from the probed boundary and sign centre.
+                val time = if (index in 5..7) LocalTime.NOON else LocalTime.MIDNIGHT
+                val bitmap = render(time = time, geometry = site)
+                val boundary = projection.eclipticPoint(index * 30.0)
+                val centre = projection.eclipticPoint(index * 30.0 + 15.0)
+                assertTrue(
+                    "Label must be present near sign centre $index for latitude ${site.latitudeDeg}",
+                    hasLabelPixelNear(bitmap, centre),
+                )
+                assertFalse(
+                    "Label must be absent near boundary $index for latitude ${site.latitudeDeg}",
+                    hasLabelPixelNear(bitmap, boundary),
+                )
+            }
         }
     }
 
     @Test
     fun zodiacDividersSplitRing() {
-        val projection = OrlojProjection(prague)
-        for (index in 0 until 12) {
-            // Keep the civil hand away from the probed boundary.
-            val time = if (index in 5..7) LocalTime.NOON else LocalTime.MIDNIGHT
-            val bitmap = render(time = time, geometry = prague)
-            val boundary = projection.eclipticPoint(index * 30.0)
-            // Each divider runs along the ray from the dial centre through its boundary point, so it
-            // crosses the offset ring obliquely rather than square to it. Samples run along that ray
-            // at up to 7 px from the boundary point. The band half-span is 9.4-10.3 px there, so the
-            // ends stay inside the night band and the samples can only find a divider. The star at
-            // index 0 spans 5 px from its centre, so it cannot stand in for that divider.
-            assertTrue(
-                "Divider $index must paint GOLD across the night band at its boundary",
-                dividerGoldSamples(bitmap, boundary) >= DIVIDER_GOLD_SAMPLES,
-            )
-            val inside = projection.eclipticPoint(index * 30.0 + 5.0)
-            assertTrue(
-                "Interior of compartment $index must show NIGHT background",
-                containsColorNear(bitmap, inside, DialStyle.NIGHT),
-            )
+        val sites = listOf(prague, prague.copy(latitudeDeg = -33.87))
+        for (site in sites) {
+            val projection = OrlojProjection(site)
+            for (index in 0 until 12) {
+                // Keep the civil hand away from the probed boundary.
+                val time = if (index in 5..7) LocalTime.NOON else LocalTime.MIDNIGHT
+                val bitmap = render(time = time, geometry = site)
+                val boundary = projection.eclipticPoint(index * 30.0)
+                // Each divider runs along the ray from the dial centre through its boundary point, so it
+                // crosses the offset ring obliquely rather than square to it. Samples run along that ray
+                // at up to 7 px from the boundary point. The band half-span is 9.4-10.3 px there, so the
+                // ends stay inside the night band and the samples can only find a divider. The star at
+                // index 0 spans 5 px from its centre, so it cannot stand in for that divider.
+                assertTrue(
+                    "Divider $index must paint GOLD across the night band at its boundary " +
+                        "for latitude ${site.latitudeDeg}",
+                    dividerGoldSamples(bitmap, boundary) >= DIVIDER_GOLD_SAMPLES,
+                )
+                val inside = projection.eclipticPoint(index * 30.0 + 5.0)
+                assertTrue(
+                    "Interior of compartment $index must show NIGHT background for latitude ${site.latitudeDeg}",
+                    containsColorNear(bitmap, inside, DialStyle.NIGHT),
+                )
+            }
         }
     }
 
@@ -132,6 +139,10 @@ class DialRendererTest {
             goldAreaNear(bitmap, expectedEquinox, radius = STAR_PROBE_RADIUS) -
                 goldAreaNear(rotated, expectedEquinox, radius = STAR_PROBE_RADIUS) > STAR_GOLD_PIXELS,
         )
+        assertTrue(
+            "The vernal-equinox star must arrive at the rotated equinox as sidereal time advances",
+            zodiacGoldAdded(rotatedPrague, expectedRotatedEquinox) > STAR_GOLD_PIXELS,
+        )
     }
 
     @Test
@@ -160,6 +171,10 @@ class DialRendererTest {
             "The southern star must leave the unrotated equinox as sidereal time advances",
             goldAreaNear(sydneyBitmap, expectedEquinox, radius = STAR_PROBE_RADIUS) -
                 goldAreaNear(rotated, expectedEquinox, radius = STAR_PROBE_RADIUS) > STAR_GOLD_PIXELS,
+        )
+        assertTrue(
+            "The southern star must arrive at the rotated equinox as sidereal time advances",
+            zodiacGoldAdded(rotatedSydney, expectedRotatedEquinox) > STAR_GOLD_PIXELS,
         )
     }
 
@@ -540,12 +555,13 @@ class DialRendererTest {
     }
 
     private fun zodiacGoldAdded(geometry: DialGeometry, point: DialPoint): Int {
-        val withZodiac = render(time = LocalTime.MIDNIGHT, geometry = geometry)
+        val plain = DialLayers(isSunEnabled = false)
+        val withZodiac = render(time = LocalTime.MIDNIGHT, geometry = geometry, layers = plain)
         val withoutZodiac =
             render(
                 time = LocalTime.MIDNIGHT,
                 geometry = geometry,
-                layers = DialLayers(isZodiacRingEnabled = false),
+                layers = plain.copy(isZodiacRingEnabled = false),
             )
         return goldAreaNear(withZodiac, point, radius = STAR_PROBE_RADIUS) -
             goldAreaNear(withoutZodiac, point, radius = STAR_PROBE_RADIUS)

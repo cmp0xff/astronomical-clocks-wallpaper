@@ -83,38 +83,46 @@ internal class ZodiacRenderer {
     private fun rayCircleDistance(directionX: Double, directionY: Double, center: DialPoint, radius: Double): Double {
         val centerSquared = center.x * center.x + center.y * center.y
         val projectionAlong = directionX * center.x + directionY * center.y
-        return projectionAlong + sqrt(projectionAlong * projectionAlong - centerSquared + radius * radius)
+        val rawDiscriminant = projectionAlong * projectionAlong - centerSquared + radius * radius
+        val discriminant = maxOf(a = 0.0, b = rawDiscriminant)
+        return projectionAlong + sqrt(discriminant)
     }
 
     private fun drawEquinoxStar(canvas: Canvas, projection: OrlojProjection) {
         val point = projection.eclipticPoint(0.0)
         val checkpoint = canvas.save()
-        canvas.translate(point.x.toFloat(), point.y.toFloat())
-        paint.style = Paint.Style.FILL
-        paint.color = DialStyle.GOLD
-        canvas.drawPath(equinoxStarPath, paint)
-        canvas.restoreToCount(checkpoint)
+        try {
+            canvas.translate(point.x.toFloat(), point.y.toFloat())
+            paint.style = Paint.Style.FILL
+            paint.color = DialStyle.GOLD
+            canvas.drawPath(equinoxStarPath, paint)
+        } finally {
+            canvas.restoreToCount(checkpoint)
+        }
     }
 
     private fun drawSigns(canvas: Canvas, projection: OrlojProjection) {
         val checkpoint = canvas.save()
-        canvas.scale(1 / DialStyle.TEXT_UNITS, 1 / DialStyle.TEXT_UNITS)
-        paint.style = Paint.Style.FILL
-        paint.color = DialStyle.HAND
-        paint.typeface = SIGNS_TYPEFACE
-        paint.textAlign = Paint.Align.CENTER
-        paint.textSize = SIGN_SIZE * DialStyle.TEXT_UNITS
-        val textOffset = -(paint.ascent() + paint.descent()) / CENTER_DIVISOR
-        for ((index, sign) in SIGNS.withIndex()) {
-            val point = projection.eclipticPoint(index * DEGREES_PER_SIGN + SIGN_OFFSET_DEG)
-            canvas.drawText(
-                sign,
-                point.x.toFloat() * DialStyle.TEXT_UNITS,
-                point.y.toFloat() * DialStyle.TEXT_UNITS + textOffset,
-                paint,
-            )
+        try {
+            canvas.scale(1 / DialStyle.TEXT_UNITS, 1 / DialStyle.TEXT_UNITS)
+            paint.style = Paint.Style.FILL
+            paint.color = DialStyle.HAND
+            paint.typeface = SIGNS_TYPEFACE
+            paint.textAlign = Paint.Align.CENTER
+            paint.textSize = SIGN_SIZE * DialStyle.TEXT_UNITS
+            val textOffset = -(paint.ascent() + paint.descent()) / CENTER_DIVISOR
+            for ((index, sign) in SIGNS.withIndex()) {
+                val point = projection.eclipticPoint(index * DEGREES_PER_SIGN + SIGN_OFFSET_DEG)
+                canvas.drawText(
+                    sign,
+                    point.x.toFloat() * DialStyle.TEXT_UNITS,
+                    point.y.toFloat() * DialStyle.TEXT_UNITS + textOffset,
+                    paint,
+                )
+            }
+        } finally {
+            canvas.restoreToCount(checkpoint)
         }
-        canvas.restoreToCount(checkpoint)
     }
 
     private companion object {
