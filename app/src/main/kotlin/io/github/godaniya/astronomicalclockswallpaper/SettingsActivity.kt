@@ -43,8 +43,9 @@ class SettingsActivity : Activity() {
         ).setOnClickListener { requestCurrentLocation(forceFresh = false) }
         findViewById<Button>(R.id.refresh_location).setOnClickListener { requestCurrentLocation(forceFresh = true) }
         findViewById<Button>(R.id.save_location).setOnClickListener { saveManualLocation() }
-        displayLocation(locationStore.load(), seedInputs = savedInstanceState == null)
-        bindDialLayers()
+        val location = locationStore.load()
+        displayLocation(location, seedInputs = savedInstanceState == null)
+        bindDialLayers(hasLocation = location != null)
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -176,6 +177,7 @@ class SettingsActivity : Activity() {
             latitudeInput.setText(formatSeedCoordinate(location.latitude))
             longitudeInput.setText(formatSeedCoordinate(location.longitude))
         }
+        updateDialLayersAvailability(hasLocation = location != null)
     }
 
     private fun formatLocation(location: ObservingLocation): String {

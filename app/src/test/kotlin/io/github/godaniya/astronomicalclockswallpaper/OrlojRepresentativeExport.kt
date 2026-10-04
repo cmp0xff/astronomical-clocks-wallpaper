@@ -45,6 +45,7 @@ class OrlojRepresentativeExport {
                         localSiderealAngleDeg = 37.0,
                         trueObliquityDeg = 23.44,
                         latitudeDeg = latitude,
+                        sunLongitudeDeg = ILLUSTRATIVE_SUN_LONGITUDE_DEG,
                     ),
             )
             File(directory, "$name-api${Build.VERSION.SDK_INT}.png").outputStream().use { output ->
@@ -56,5 +57,12 @@ class OrlojRepresentativeExport {
     private companion object {
         const val IMAGE_WIDTH = 1080
         const val IMAGE_HEIGHT = 1600
+
+        // The exported geometry above is synthetic — a fixed sidereal angle and clock reading,
+        // not a real instant — so the Sun has no true longitude to carry. This is a fixed
+        // illustrative longitude, not a claim about the Sun at any date: 45 degrees is mid-Taurus,
+        // an interior point of the 30-60 compartment, chosen to stay clear of the 0-degree Aries
+        // star and of every compartment divider so the marker is unmistakable in the exports.
+        const val ILLUSTRATIVE_SUN_LONGITUDE_DEG = 45.0
     }
 }

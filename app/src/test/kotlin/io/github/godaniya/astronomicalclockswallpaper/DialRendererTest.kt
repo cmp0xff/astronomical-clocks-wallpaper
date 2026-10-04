@@ -164,6 +164,114 @@ class DialRendererTest {
     }
 
     @Test
+    fun sunMarkerRendersAtPosition() {
+        // The two renders differ only in sunLongitudeDeg, so every changed pixel is the marker:
+        // the plate depends on latitude and obliquity alone through plateKey, and the zodiac ring
+        // and civil hand are identical. A GOLD-presence probe would instead be satisfied by the
+        // ring's own gold rims, and comparing against a Sun-off render would flip the whole
+        // day/twilight/night plate — about 625 pixels of a 25x25 box — rather than the marker.
+        val atFirst = prague.copy(sunLongitudeDeg = 90.0)
+        val atSecond = prague.copy(sunLongitudeDeg = 210.0)
+        val firstPoint = OrlojProjection(atFirst).eclipticPoint(90.0)
+        val secondPoint = OrlojProjection(atSecond).eclipticPoint(210.0)
+        val first = render(geometry = atFirst)
+        val second = render(geometry = atSecond)
+        assertTrue(
+            "Sun marker must leave the 90° point",
+            changedPixelsNear(first = first, second = second, point = firstPoint) > 20,
+        )
+        assertTrue(
+            "Sun marker must appear at the 210° point",
+            changedPixelsNear(first = first, second = second, point = secondPoint) > 20,
+        )
+    }
+
+    @Test
+    fun noSunMarkerWithoutLongitude() {
+        // #27 requires missing-location behavior to be explicit and never to invent a sky
+        // position. A null longitude must suppress the marker; a fabricated default would paint a
+        // whole disc and its rays here. The equator circle also crosses this point and is GOLD, so
+        // the probe takes a gold *area* delta against the same render with 0° set: the circle
+        // contributes the same thin stroke to both, the invented marker hundreds of pixels more.
+        val unknown = prague.copy(sunLongitudeDeg = null)
+        val fabricated = prague.copy(sunLongitudeDeg = 0.0)
+        val invented = OrlojProjection(fabricated).eclipticPoint(0.0)
+        val layers = DialLayers(isZodiacRingEnabled = false)
+        val withoutSun = render(time = LocalTime.MIDNIGHT, geometry = unknown, layers = layers)
+        val withFabricatedSun = render(time = LocalTime.MIDNIGHT, geometry = fabricated, layers = layers)
+        assertTrue(
+            "An invented 0° longitude must add marker gold the unknown longitude does not",
+            goldAreaNear(withFabricatedSun, invented) - goldAreaNear(withoutSun, invented) > 20,
+        )
+    }
+
+    @Test
+    fun noSunMarkerWhenSunLayerOff() {
+        // When the Sun layer is disabled, the marker must not be drawn even if the geometry
+        // carries a valid Sun longitude. With the zodiac ring disabled, the rest of the dial
+        // (civil scale, hand, and blank plate grid) is independent of sunLongitudeDeg.
+        // A Sun-off render with an explicit longitude must therefore match a Sun-off render
+        // with unknown longitude pixel-for-pixel; if the layer toggle failed to suppress the
+        // marker, the explicit longitude would paint gold marker pixels at its projected point.
+        val withSun = prague.copy(sunLongitudeDeg = 90.0)
+        val withoutSun = prague.copy(sunLongitudeDeg = null)
+        val sunOff = DialLayers(isZodiacRingEnabled = false, isSunEnabled = false)
+        val renderedWithSun = render(time = LocalTime.MIDNIGHT, geometry = withSun, layers = sunOff)
+        val renderedWithoutSun = render(time = LocalTime.MIDNIGHT, geometry = withoutSun, layers = sunOff)
+        assertTrue(
+            "Disabling the Sun layer must leave no marker even when longitude is present",
+            renderedWithSun.sameAs(renderedWithoutSun),
+        )
+
+        val sunPoint = OrlojProjection(withSun).eclipticPoint(90.0)
+        val sunOn = DialLayers(isZodiacRingEnabled = false, isSunEnabled = true)
+        val renderedOn = render(time = LocalTime.MIDNIGHT, geometry = withSun, layers = sunOn)
+        assertTrue(
+            "Enabling the Sun layer must draw the marker at the projected point",
+            goldAreaNear(renderedOn, sunPoint) - goldAreaNear(renderedWithSun, sunPoint) > 20,
+        )
+    }
+
+    @Test
+    fun sunMarkerMovesWithSunLongitude() {
+        val sun0 = prague.copy(sunLongitudeDeg = 0.0)
+        val sun90 = prague.copy(sunLongitudeDeg = 90.0)
+        val proj0 = OrlojProjection(sun0)
+        val proj90 = OrlojProjection(sun90)
+        val bmp0 = render(geometry = sun0)
+        val bmp90 = render(geometry = sun90)
+        assertTrue(
+            "Sun marker should move away from 0° position when longitude is 90°",
+            changedPixelsNear(first = bmp0, second = bmp90, point = proj0.eclipticPoint(0.0)) > 20,
+        )
+        assertTrue(
+            "Sun marker should appear at 90° position",
+            changedPixelsNear(first = bmp0, second = bmp90, point = proj90.eclipticPoint(90.0)) > 20,
+        )
+    }
+
+    @Test
+    fun sunRendersOnSouthernPlate() {
+        // Same discriminator as the northern case, on the south-pole plate, where no Sun test had
+        // isolating coverage before. Both renders share the plate, the ring, and the hand.
+        val sydney = DialGeometry(localSiderealAngleDeg = 0.0, trueObliquityDeg = 23.44, latitudeDeg = -33.87)
+        val atFirst = sydney.copy(sunLongitudeDeg = 90.0)
+        val atSecond = sydney.copy(sunLongitudeDeg = 210.0)
+        val firstPoint = OrlojProjection(atFirst).eclipticPoint(90.0)
+        val secondPoint = OrlojProjection(atSecond).eclipticPoint(210.0)
+        val first = render(geometry = atFirst)
+        val second = render(geometry = atSecond)
+        assertTrue(
+            "Southern Sun marker must leave the 90° point",
+            changedPixelsNear(first = first, second = second, point = firstPoint) > 20,
+        )
+        assertTrue(
+            "Southern Sun marker must appear at the 210° point",
+            changedPixelsNear(first = first, second = second, point = secondPoint) > 20,
+        )
+    }
+
+    @Test
     fun civilHandMatchesCardinalHours() {
         val hours = listOf(12 to 0.0, 18 to 90.0, 0 to 180.0, 6 to 270.0)
         for ((hour, angle) in hours) {
@@ -264,10 +372,11 @@ class DialRendererTest {
         val sign = OrlojProjection(prague).eclipticPoint(210.0)
         assertTrue(changedPixelsNear(first = original, second = rotated, point = sign) > 20)
         // The background plate depends on latitude and obliquity, not sidereal rotation.
-        assertTrue(
-            render(geometry = prague, layers = DialLayers(isZodiacRingEnabled = false))
-                .sameAs(render(geometry = later, layers = DialLayers(isZodiacRingEnabled = false))),
-        )
+        val plateFirst = Bitmap.createBitmap(SIZE, SIZE, Bitmap.Config.ARGB_8888)
+        val plateSecond = Bitmap.createBitmap(SIZE, SIZE, Bitmap.Config.ARGB_8888)
+        OrlojPlateRenderer().draw(Canvas(plateFirst), OrlojProjection(prague), isSunEnabled = true)
+        OrlojPlateRenderer().draw(Canvas(plateSecond), OrlojProjection(later), isSunEnabled = true)
+        assertTrue(plateFirst.sameAs(plateSecond))
     }
 
     @Test

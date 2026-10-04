@@ -66,6 +66,9 @@ internal class OrlojProjection(private val geometry: DialGeometry) {
             radius = (1 + capricornRadius) / 2,
         )
 
+    /** The Sun's projected position, or `null` when no longitude has been calculated. */
+    val sunPoint: DialPoint? get() = geometry.sunLongitudeDeg?.let(::eclipticPoint)
+
     fun eclipticPoint(longitudeDeg: Double): DialPoint {
         val longitude = Math.toRadians(longitudeDeg)
         val equatorialX = cos(longitude)

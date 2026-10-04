@@ -2,7 +2,7 @@
 
 The wallpaper uses accurate astronomical geometry with an original Canvas design inspired by
 the Prague Orloj. This is the foundation for #5. It includes the civil clock, zodiac,
-equator, tropics, horizon, and astronomical-night boundary. Sun rendering is tracked in #27;
+equator, tropics, horizon, and astronomical-night boundary. Sun rendering is implemented in #27;
 Moon position and illuminated phase are tracked in #28. Other astronomy layers, display size,
 position and brightness controls, calendar artwork, apostles, historical hour systems, and
 mechanical approximations remain outside this slice. It does not complete all of #5.
@@ -10,10 +10,16 @@ mechanical approximations remain outside this slice. It does not complete all of
 ## Astronomical frame
 
 `AstronomyCalculator.dialGeometry(instant, location)` returns an Android-free
-`DialGeometry`: local apparent sidereal angle, true obliquity of date, and observer latitude,
-all in degrees. The pinned engine's `siderealTime` gives Greenwich apparent sidereal hours;
+`DialGeometry`: local apparent sidereal angle, true obliquity of date, observer latitude, and the
+Sun's ecliptic longitude, all in degrees. The pinned engine's `siderealTime` gives Greenwich
+apparent sidereal hours;
 multiplying by 15 and adding east-positive longitude gives the local angle. The public
 `rotationEctEqd` rotation of the ecliptic y-axis into the true equator of date gives true obliquity.
+The Sun's longitude is a **geometric** longitude in the true ecliptic and equinox of date: the
+engine's `sunPosition` applies light-time retardation and the IAU 2006 precession–nutation matrix,
+but not annual aberration or gravitational light deflection, so its value sits about 20.49 arcseconds
+from an apparent place. It is `null` in a `DialGeometry` built without it, and a null longitude
+suppresses the marker rather than inventing a position.
 No engine types cross the new geometry interface. Existing body positions and UTC event windows
 retain their earlier contracts; the foundation does not compute the full body/event list per frame.
 
@@ -88,13 +94,22 @@ on the right. One hand follows saved-site civil time including DST. Its angle is
 the zodiac's sidereal rotation; it is not a solar position marker.
 
 **Zodiac ring** and **Sun** default to enabled and persist across recreation. The first controls the
-rotating zodiac and its labels; the second controls the day/twilight/night shading together with the
-horizon and astronomical-night boundaries it draws — with it off the plate degrades to a clean
-instrument grid, keeping the tropics, the equator, and the outer rim. The solar marker itself
-arrives with #27, when this layer gains it. The toggle was renamed from "Day and night" to "Sun"
-before release; a stored value under the old `day_and_night` key is ignored rather than migrated, so
-the layer returns to its enabled default. Without a saved site, only the civil clock is shown, using
-the phone timezone. Settings explains that an observing location is required for sky geometry.
+rotating zodiac and its labels; the second controls the radiant golden Sun marker on the ecliptic ring
+together with the day/twilight/night shading and its horizon and astronomical-night boundaries — with it
+off the plate degrades to a clean instrument grid, keeping the tropics, the equator, and the outer rim.
+With the Sun layer on, the marker is drawn only when the geometry carries a Sun longitude; a geometry
+without one (such as test or offline plate geometries constructed without a solar position), or an absent
+geometry when no site is saved, shows no marker at all.
+The toggle was renamed from "Day and night" to "Sun" before release; a stored value under the old
+`day_and_night` key is ignored rather than migrated, so the layer returns to its enabled default. Without
+a saved site, layer checkboxes in Settings are disabled and only the civil clock is shown, using the
+phone timezone. Settings explains that an observing location is required for sky geometry.
+
+The projection places a body at `x = r sin H`, `y = −r cos H` for hour angle `H`, so the marker's
+bearing from the dial centre is the Sun's hour angle, with noon at the top of the Roman scale. Whether
+that reading is local apparent solar time, and how it is offset from the civil hand, is
+[#57](https://github.com/godaniya/astronomical-clocks-wallpaper/issues/57); this layer guarantees the
+geometric bearing only.
 
 Each engine listens for location and layer changes, maintains one immutable settings snapshot,
 and draws each frame from one instant. Updates take effect on the next visible tick. Hidden
@@ -126,9 +141,13 @@ The geometry reference tests use independently generated ERFA/SOFA fixtures with
 time-scale conventions, and tolerances documented in
 [`DialGeometryFixture.kt`](../app/src/test/kotlin/io/github/godaniya/astronomicalclockswallpaper/DialGeometryFixture.kt).
 They assume UT1 = UTC and TT − UTC = 69.184 seconds; the pinned engine uses modeled DeltaT.
-The comparison tolerances (0.0001° sidereal angle, 0.00003° obliquity) describe agreement with
+The comparison tolerances (0.0001° sidereal angle, 0.00003° obliquity, and 0.001° for the Sun
+longitude added in #27) describe agreement with
 those fixtures, not physical UT1 accuracy. Omitting measured DUT1 can shift sidereal angle by
-up to 13.5 arcseconds. Analytic projection
+up to 13.5 arcseconds. The Sun column's frame, generator, and the reason for its 0.001° bound are
+recorded there too; its largest residual against the engine is 0.000434° (1.56″), and JPL Horizons
+independently gives the same instant's geocentric Sun to within 0.374″, which is what fixes the
+value as geometric and aberration-free. Analytic projection
 tests cover equinoxes/solstices, circle tangencies, rotation direction, northern/southern sites,
 the equator, poles, day/night classification, the southern mirror of the altitude field, and the
 point-reflected southern zodiac. Robolectric tests cover layer persistence,
@@ -140,6 +159,6 @@ comparisons produce false positives across environments (see [device-testing.md]
 Representative PNGs for visual inspection are explicitly exported under `app/build/reports/orloj` with
 `./gradlew exportRepresentativeImages`.
 
-Run `./gradlew qualityGate :app:assembleDebug` and `scripts/verify-apk.sh`. These tests do not
-establish physical-device home or lit-lock-screen correctness, frame cost, or battery behavior.
-See [device-testing.md](device-testing.md) for the unrun physical-device checks.
+Run `./gradlew qualityGate :app:assembleDebug` and `scripts/verify-apk.sh`. Physical-device home and
+lit-lock-screen correctness for the Sun marker (#27) are documented in [device-testing.md](device-testing.md);
+frame cost and battery behavior remain unrun and are tracked in #6.

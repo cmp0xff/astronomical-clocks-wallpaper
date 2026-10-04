@@ -19,6 +19,7 @@ import io.github.cosinekitty.astronomy.rotationEqjHor
 import io.github.cosinekitty.astronomy.searchAltitude
 import io.github.cosinekitty.astronomy.searchRiseSet
 import io.github.cosinekitty.astronomy.siderealTime
+import io.github.cosinekitty.astronomy.sunPosition
 import java.time.Instant
 import java.time.temporal.ChronoUnit
 import kotlin.math.atan2
@@ -54,11 +55,13 @@ internal class AstronomyEngineCalculator : AstronomyCalculator {
         // in the true equatorial frame. Use the public rotation API to recover true obliquity.
         val eclipticAxis = Vector(x = 0.0, y = 1.0, z = 0.0, t = engineTime)
         val equatorialAxis = rotationEctEqd(engineTime).rotate(eclipticAxis)
+        val sunEcliptic = sunPosition(engineTime)
         return DialGeometry(
             localSiderealAngleDeg =
                 (siderealTime(engineTime) * DEGREES_PER_HOUR + location.longitude).mod(FULL_TURN_DEGREES),
             trueObliquityDeg = Math.toDegrees(atan2(y = equatorialAxis.z, x = equatorialAxis.y)),
             latitudeDeg = location.latitude,
+            sunLongitudeDeg = sunEcliptic.elon.mod(FULL_TURN_DEGREES),
         )
     }
 

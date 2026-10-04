@@ -12,6 +12,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 import org.robolectric.shadows.ShadowLog
+import java.time.ZoneId
 
 /** Verifies default layer choices, persistence, and the Settings controls that change them. */
 @RunWith(RobolectricTestRunner::class)
@@ -74,10 +75,20 @@ class DialSettingsStoreTest {
 
     @Test
     fun settingsTogglesPersist() {
+        LocationStore(application).save(
+            ObservingLocation(
+                latitude = 50.0875,
+                longitude = 14.4206,
+                source = ObservingLocation.Source.MANUAL,
+                zoneId = ZoneId.systemDefault(),
+            ),
+        )
         Robolectric.buildActivity(SettingsActivity::class.java).use { controller ->
             val activity = controller.setup().get()
             val zodiac = activity.findViewById<CheckBox>(R.id.zodiac_ring)
             val sun = activity.findViewById<CheckBox>(R.id.sun_layer)
+            assertTrue(zodiac.isEnabled)
+            assertTrue(sun.isEnabled)
             assertTrue(zodiac.isChecked)
             assertTrue(sun.isChecked)
             zodiac.performClick()
@@ -89,6 +100,8 @@ class DialSettingsStoreTest {
             sun.performClick()
             controller.recreate()
             val recreated = controller.get()
+            assertTrue(recreated.findViewById<CheckBox>(R.id.zodiac_ring).isEnabled)
+            assertTrue(recreated.findViewById<CheckBox>(R.id.sun_layer).isEnabled)
             assertFalse(recreated.findViewById<CheckBox>(R.id.zodiac_ring).isChecked)
             assertFalse(recreated.findViewById<CheckBox>(R.id.sun_layer).isChecked)
             recreated.findViewById<CheckBox>(R.id.zodiac_ring).performClick()

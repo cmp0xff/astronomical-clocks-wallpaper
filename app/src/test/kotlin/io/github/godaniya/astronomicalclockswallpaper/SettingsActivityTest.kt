@@ -11,11 +11,13 @@ import android.location.Location
 import android.location.LocationManager
 import android.os.Looper
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.TextView
 import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -183,6 +185,25 @@ class SettingsActivityTest {
             activity.findViewById<Button>(R.id.save_location).performClick()
             assertEquals(activity.getString(R.string.location_invalid), ShadowToast.getTextOfLatestToast())
             assertNull(LocationStore(activity).load())
+        }
+    }
+
+    @Test
+    @SuppressLint("SetTextI18n")
+    fun layerTogglesNeedLocation() {
+        Robolectric.buildActivity(SettingsActivity::class.java).use { controller ->
+            val activity = controller.setup().get()
+            val zodiac = activity.findViewById<CheckBox>(R.id.zodiac_ring)
+            val sun = activity.findViewById<CheckBox>(R.id.sun_layer)
+            assertFalse(zodiac.isEnabled)
+            assertFalse(sun.isEnabled)
+
+            activity.findViewById<EditText>(R.id.latitude_input).setText("50.0")
+            activity.findViewById<EditText>(R.id.longitude_input).setText("14.4")
+            activity.findViewById<Button>(R.id.save_location).performClick()
+
+            assertTrue(zodiac.isEnabled)
+            assertTrue(sun.isEnabled)
         }
     }
 

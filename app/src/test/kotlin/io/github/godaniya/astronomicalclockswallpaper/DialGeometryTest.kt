@@ -1,6 +1,7 @@
 package io.github.godaniya.astronomicalclockswallpaper
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.time.Instant
@@ -36,6 +37,12 @@ class DialGeometryTest {
                     OBLIQUITY_TOLERANCE_DEG,
                 )
                 assertTrue(geometry.localSiderealAngleDeg >= 0.0 && geometry.localSiderealAngleDeg < FULL_TURN_DEGREES)
+                val sun = geometry.sunLongitudeDeg ?: error("no Sun longitude at ${fixture.instant}")
+                val sunDifference = angleDifferenceDeg(first = sun, second = fixture.sunLongitudeDeg)
+                assertTrue(
+                    "Sun longitude at ${fixture.instant} differs by ${sunDifference * SECONDS_PER_DEGREE} arcsec",
+                    abs(sunDifference) <= SUN_TOLERANCE_DEG,
+                )
             }
         }
     }
@@ -79,6 +86,13 @@ class DialGeometryTest {
         for (latitude in listOf(-90.1, 90.1, Double.NaN, Double.POSITIVE_INFINITY)) {
             assertRejected { valid.copy(latitudeDeg = latitude) }
         }
+        for (angle in listOf(-0.1, 360.0, Double.NaN, Double.POSITIVE_INFINITY)) {
+            assertRejected { valid.copy(sunLongitudeDeg = angle) }
+        }
+        // An uncalculated Sun is a supported state, not an error: it is what suppresses the
+        // marker for a geometry that carries no site, and it must not trip the range check.
+        assertNull(valid.sunLongitudeDeg)
+        assertNull(valid.copy(sunLongitudeDeg = null).sunLongitudeDeg)
     }
 
     private fun assertRejected(create: () -> DialGeometry) {
@@ -104,6 +118,11 @@ class DialGeometryTest {
         const val SEASON_COUNT = 4
         const val SIDEREAL_TOLERANCE_DEG = 0.0001
         const val OBLIQUITY_TOLERANCE_DEG = 0.00003
+
+        // The engine's largest residual against the ERFA Sun column is 0.000434 degree
+        // (1.56 arcseconds); see DialGeometryFixture.kt for how this bound was chosen.
+        const val SUN_TOLERANCE_DEG = 0.001
+        const val SECONDS_PER_DEGREE = 3600.0
         const val RATE_TOLERANCE_DEG = 0.00000001
     }
 }

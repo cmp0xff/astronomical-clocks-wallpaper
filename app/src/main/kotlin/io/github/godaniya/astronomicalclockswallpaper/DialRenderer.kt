@@ -13,6 +13,7 @@ internal class DialRenderer {
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val plate = OrlojPlateRenderer()
     private val zodiac = ZodiacRenderer()
+    private val sun = SunRenderer()
     private val hand =
         Path().apply {
             moveTo(0f, -HAND_LENGTH)
@@ -51,6 +52,10 @@ internal class DialRenderer {
             plate.draw(canvas, projection, layers.isSunEnabled)
             if (projection != null && layers.isZodiacRingEnabled) {
                 zodiac.draw(canvas, projection)
+            }
+            val sunPoint = projection?.sunPoint
+            if (sunPoint != null && layers.isSunEnabled) {
+                sun.draw(canvas, sunPoint)
             }
             drawCivilHand(canvas, state.hourAngle)
         } finally {
