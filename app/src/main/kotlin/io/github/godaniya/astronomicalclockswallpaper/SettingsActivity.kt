@@ -50,7 +50,7 @@ class SettingsActivity : Activity() {
         findViewById<Button>(R.id.refresh_location).setOnClickListener { requestCurrentLocation(forceFresh = true) }
         findViewById<Button>(R.id.save_location).setOnClickListener { saveManualLocation() }
         selectTimezoneButton.setOnClickListener {
-            val current = manualZone ?: locationStore.load(repair = false)?.zoneId ?: ZoneId.systemDefault()
+            val current = manualZone ?: locationStore.load()?.zoneId ?: ZoneId.systemDefault()
             showTimeZonePickerDialog(currentZone = current) { chosen ->
                 manualZone = chosen
                 isManualZoneExplicit = true
@@ -174,7 +174,7 @@ class SettingsActivity : Activity() {
         }
         locationProvider.cancel()
         val zoneId = manualZone ?: TimeZoneLookup.lookup(latitude, longitude)
-        val stored = locationStore.load(repair = false)
+        val stored = locationStore.load()
         val isUnchanged =
             stored != null &&
                 latitude == stored.latitude &&

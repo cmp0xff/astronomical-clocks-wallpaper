@@ -26,7 +26,11 @@ class LocationStoreTest {
         for (zoneName in listOf("Europe/Prague", "Australia/Sydney", "+05:45", "UTC")) {
             val location = observingLocation(ZoneId.of(zoneName))
             store.save(location)
+            val before = preferences().all
+            store.migrateAndRepair()
+            store.migrateAndRepair()
             assertEquals(location, LocationStore(RuntimeEnvironment.getApplication()).load())
+            assertEquals(before, preferences().all)
         }
     }
 
@@ -34,6 +38,7 @@ class LocationStoreTest {
     fun emptyDoesNotCaptureZone() {
         val store = LocationStore(RuntimeEnvironment.getApplication()) { error("must not read device zone") }
         assertNull(store.load())
+        store.migrateAndRepair()
         assertTrue(preferences().all.isEmpty())
     }
 
@@ -56,13 +61,41 @@ class LocationStoreTest {
                 ZoneId.of("Europe/Prague")
             }
 
-        val loaded = store.load(repair = false)
+        val beforeRead = preferences().all
+        val loaded = store.load()
+        assertEquals(beforeRead, preferences().all)
         assertEquals(ZoneId.of("Europe/Prague"), loaded?.zoneId)
         assertEquals(1, zoneReads)
 
         val raw = preferences().getString("location", null)
         val json = JSONObject(requireNotNull(raw))
         assertEquals("Invalid/Zone", json.getString("zoneId"))
+    }
+
+    @Test
+    fun loadLegacyDoesNotPersist() {
+        preferences()
+            .edit()
+            .putString("latitude", "50.0")
+            .putString("longitude", "14.0")
+            .putString("source", "MANUAL")
+            .apply()
+
+        var zoneReads = 0
+        val store =
+            LocationStore(RuntimeEnvironment.getApplication()) {
+                zoneReads++
+                ZoneId.of("Europe/Prague")
+            }
+
+        val beforeRead = preferences().all
+        val loaded = store.load()
+        assertEquals(beforeRead, preferences().all)
+        assertEquals(ZoneId.of("Europe/Prague"), loaded?.zoneId)
+        assertEquals(50.0, loaded?.latitude ?: 0.0, 0.0)
+        assertEquals(1, zoneReads)
+
+        assertEquals(setOf("latitude", "longitude", "source"), preferences().all.keys)
     }
 
     @Test

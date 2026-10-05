@@ -312,6 +312,7 @@ class SettingsActivityTest {
         prefs.edit().putString("location", record.toString()).apply()
 
         val store = LocationStore(application)
+        store.migrateAndRepair()
         Robolectric.buildActivity(SettingsActivity::class.java).use { controller ->
             val activity = controller.setup().get()
             var writes = 0

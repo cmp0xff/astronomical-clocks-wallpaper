@@ -7,6 +7,7 @@
   <!-- Approximate location only, for the observing location used by astronomy. -->
   <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
   <application
+    android:name=".AstronomicalClocksApplication"
     android:allowBackup="false"
     android:fullBackupContent="false"
     android:dataExtractionRules="@xml/data_extraction_rules"

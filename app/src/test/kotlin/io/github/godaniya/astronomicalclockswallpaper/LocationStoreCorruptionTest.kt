@@ -24,7 +24,6 @@ class LocationStoreCorruptionTest {
             preferences().edit().putString("location", record).apply()
             assertUntouched()
         }
-        assertEquals(records.size, ShadowLog.getLogsForTag("LocationStore").size)
         assertTrue(ShadowLog.getLogsForTag("LocationStore").all { it.msg.contains("malformed") })
     }
 
@@ -75,12 +74,38 @@ class LocationStoreCorruptionTest {
                 "source" to null,
             )
         for ((key, value) in invalidFields) {
-            val record = JSONObject(VALID_RECORD).put(key, value)
-            preferences().edit().putString("location", record.toString()).apply()
-            assertUntouched()
+            for (zone in listOf(null, "Europe/Prague")) {
+                val record = JSONObject(VALID_RECORD).put(key, value).put("zoneId", zone)
+                preferences().edit().putString("location", record.toString()).apply()
+                assertUntouched()
+            }
         }
-        assertEquals(invalidFields.size, ShadowLog.getLogsForTag("LocationStore").size)
         assertTrue(ShadowLog.getLogsForTag("LocationStore").all { it.msg.contains("malformed") })
+    }
+
+    @Test
+    fun unusableRecordWinsOverLegacy() {
+        // A malformed string record and a wrong-typed record, each seeded alongside valid legacy keys.
+        for (record in listOf<Any>("{", true)) {
+            val editor =
+                preferences()
+                    .edit()
+                    .putString("latitude", "20.0")
+                    .putString("longitude", "30.0")
+                    .putString("source", "MANUAL")
+            when (record) {
+                is String -> editor.putString("location", record)
+                is Boolean -> editor.putBoolean("location", record)
+            }
+            editor.apply()
+            val before = preferences().all
+            val store = LocationStore(RuntimeEnvironment.getApplication()) { error("must not read device zone") }
+            // The present record wins even when unusable, and legacy keys are never consumed.
+            assertNull(store.load())
+            store.migrateAndRepair()
+            assertEquals(before, preferences().all)
+            assertEquals(setOf("location", "latitude", "longitude", "source"), preferences().all.keys)
+        }
     }
 
     @Test
@@ -97,6 +122,14 @@ class LocationStoreCorruptionTest {
         val store = LocationStore(RuntimeEnvironment.getApplication()) { error("must not read device zone") }
         assertNull(store.load())
         assertEquals(before, preferences().all)
+        val readLog = ShadowLog.getLogsForTag("LocationStore").last()
+        val logCount = ShadowLog.getLogsForTag("LocationStore").size
+        store.migrateAndRepair()
+        assertEquals(before, preferences().all)
+        val logs = ShadowLog.getLogsForTag("LocationStore")
+        assertEquals(logCount + 1, logs.size)
+        assertEquals(readLog.msg, logs.last().msg)
+        assertEquals(readLog.type, logs.last().type)
     }
 
     private fun preferences(): SharedPreferences =

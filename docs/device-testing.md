@@ -454,8 +454,13 @@ per second; battery and frame-cost qualification remain #6.
 
 The changes in `fix/42-unchanged-save-provenance` prevent an untouched **Save coordinates** action
 from silently converting a `CURRENT_COARSE` site to `MANUAL` and overwriting its preserved geographic
-timezone with the phone's system default timezone. It also makes `LocationStore.load(repair = false)`
-a pure read so that checking coordinates never triggers a repair write.
+timezone with the phone's system default timezone. At the tested revision recorded below,
+`LocationStore.load(repair = false)` provided a pure read so that checking coordinates never
+triggered a repair write. That historical API was replaced in #35: current callers use `load()`,
+which never writes preferences. `AstronomicalClocksApplication.onCreate()` owns
+`migrateAndRepair()` once per process startup, migrating valid legacy records and repairing
+missing or invalid timezones in otherwise usable supported records. Malformed and unsupported
+records remain untouched.
 
 Host verification covers these paths across API 26 and 36 via Robolectric:
 - `SettingsActivityTimezoneTest`: verifies that after acquiring a location on a site with a distinct
@@ -468,7 +473,9 @@ Host verification covers these paths across API 26 and 36 via Robolectric:
 - `SettingsActivityTest`: verifies that an unchanged Save produces zero SharedPreferences writes after
   startup repairs an invalid timezone, shows the distinct "Coordinates unchanged; nothing to save."
   feedback, and verifies that a stored `-0.0` coordinate does not take the edited branch.
-- `LocationStoreTest`: verifies that `load(repair = false)` does not persist repairs.
+- `LocationStoreTest`: at the tested revision, verified that `load(repair = false)` did not persist
+  repairs. Current pure-read and explicit maintenance coverage lives in `LocationStoreMigrationTest`
+  and `LocationStoreCorruptionTest`; `AstronomicalClocksApplicationTest` covers startup ownership.
 
 **Physical-device status.** On 2026-10-03, debug APK
 `aba41ceec2fd69cddd899cb10e0fc8f48477e3c5b90b97b3c25f4ff7c2095c8c`
@@ -1086,3 +1093,40 @@ first-quarter capture, not the full two-hemisphere phase pass. The screenshot pi
 palette unchanged, so the probes match the palette literals exactly, but a capture still cannot
 adjudicate glyph antialiasing; the marker-outline contrast contract in
 [orloj.md](orloj.md#palette-contrast) rests on the palette values, not on these frames.
+
+## Pure-read location storage and startup migration (#35)
+
+Test build: local debug `app-debug.apk` from `refactor/35-pure-location-store-read` at
+`43929d5efbadcfc7f4e43fb2559bd10fd92eb732` (APK SHA-256
+`0234c82610a47a87ff8218a462a5d1350bd899561da17d5c18cb456bc496e5c6`), built from a clean tree at
+that revision and installed with `adb install -r` over the previous build.
+
+Same physical device. Android version: 16 (API 36). Device locale `de-DE`, device timezone
+`Europe/Prague`. Firmware build: withheld (embeds the model identifier).
+
+`AstronomicalClocksApplication.onCreate()` runs `LocationStore.migrateAndRepair()` once per process
+start, and `LocationStore.load()` never writes. Each startup state was written straight into
+`shared_prefs/observing_location.xml` with `run-as` while the process was alive, the process was then
+killed as its own uid (`run-as <pkg> kill -9 <pid>`, which keeps the wallpaper binding, unlike
+`am force-stop`), the framework re-created it, and the log and file were read back. The owner's saved
+Prague site was backed up before the pass and restored afterwards.
+
+| Date | Check | Observed |
+| --- | --- | --- |
+| 2026-10-05 | install over a valid record | `adb install -r` replaced the previous build in place; `dumpsys wallpaper` still named the app's service, and the saved version-1 record was left byte-identical (file mtime unchanged) with no `LocationStore` line: a valid supported record is not rewritten at startup |
+| 2026-10-05 | legacy flat record | Three legacy string keys on disk (`latitude`, `longitude`, `source`) became one version-1 record carrying `zoneId` `Europe/Prague`, with no warning logged |
+| 2026-10-05 | invalid `zoneId` | A version-1 record with `zoneId` `Bad/Zone` and an unknown `retainedField` was repaired once at startup: logcat carried `W LocationStore: repaired invalid observing location timezone 'Bad/Zone'; using Europe/Prague`, and on disk `zoneId` became `Europe/Prague` while `retainedField` was preserved |
+| 2026-10-05 | second launch after repair | Killing and re-creating the process again logged no `LocationStore` line and left the file mtime unchanged, so the repair runs once |
+| 2026-10-05 | malformed record | A record of `{` was left byte-identical on disk (mtime unchanged) and produced two identical warnings at process start, consistent with startup maintenance and the wallpaper's initial read, both `W LocationStore: ignoring malformed observing location record` |
+| 2026-10-05 | restored site | The owner's Prague record was written back and a restart logged nothing; the home screen redrew the dial |
+
+**Limitations.** The device timezone is `Europe/Prague`, the same as the saved site, so the repaired
+fallback zone cannot be distinguished from the site's geographic zone by its value; the repair is
+established by `zoneId` changing from `Bad/Zone` to the device zone, not by the two differing. The
+process was re-created by killing it as its own uid rather than by a reboot, so the framework's service
+restart stands in for a cold boot. Only the four seeded startup states were exercised. No OEM, model,
+firmware, or serial identifiers are recorded.
+
+No device settings were changed for this pass: no `svc power stayon`, `screen_off_pocket`, `font_scale`,
+`wm size`, or night-mode change was needed, and the screen was woken only to capture the dial. The
+wallpaper binding survived every step; the app was never force-stopped or cleared.

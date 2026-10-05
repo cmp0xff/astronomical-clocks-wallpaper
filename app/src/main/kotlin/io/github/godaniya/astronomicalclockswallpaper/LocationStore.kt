@@ -14,13 +14,13 @@ internal class LocationStore(context: Context, private val deviceZone: () -> Zon
     private val preferences: SharedPreferences =
         context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
 
-    fun load(repair: Boolean = true): ObservingLocation? {
+    fun load(): ObservingLocation? {
         // One snapshot also avoids getString's ClassCastException for wrongly typed stored data.
         val stored = preferences.all
-        return if (KEY_RECORD in stored) loadRecord(stored[KEY_RECORD], repair) else loadLegacy(stored, repair)
+        return if (KEY_RECORD in stored) loadRecord(stored[KEY_RECORD]) else loadLegacy(stored)
     }
 
-    private fun loadRecord(raw: Any?, repair: Boolean = true): ObservingLocation? {
+    private fun loadRecord(raw: Any?): ObservingLocation? {
         val record = parseRecord(raw)
         return when {
             record == null || record.opt(KEY_VERSION) !is Int -> {
@@ -38,52 +38,69 @@ internal class LocationStore(context: Context, private val deviceZone: () -> Zon
                     rawLatitude = (record.opt(KEY_LATITUDE) as? Number)?.toDouble(),
                     rawLongitude = (record.opt(KEY_LONGITUDE) as? Number)?.toDouble(),
                     sourceText = record.opt(KEY_SOURCE) as? String,
-                ) { resolveZone(record, repair) }
+                ) { resolveZone(record) }
             }
         }
     }
 
-    private fun parseRecord(raw: Any?): JSONObject? {
-        if (raw !is String) return null
-        return try {
-            val parser = JSONTokener(raw)
-            val record = parser.nextValue() as? JSONObject
-            record?.takeIf { parser.nextClean() == '\u0000' }
-        } catch (_: JSONException) {
-            null
-        }
-    }
+    private fun resolveZone(record: JSONObject): ZoneId = storedZoneOrNull(record) ?: deviceZone()
 
-    private fun resolveZone(record: JSONObject, repair: Boolean = true): ZoneId {
-        val storedZone =
-            try {
-                (record.opt(KEY_ZONE_ID) as? String)?.let(ZoneId::of)
-            } catch (_: DateTimeException) {
-                null
-            }
-        if (storedZone != null) return storedZone
-        val fallback = deviceZone()
-        if (repair) {
-            record.put(KEY_ZONE_ID, fallback.id)
-            persistRecord(record)
-            Log.w(TAG, "repaired missing or invalid observing location timezone")
-        }
-        return fallback
-    }
-
-    private fun loadLegacy(stored: Map<String, *>, repair: Boolean = true): ObservingLocation? {
+    private fun loadLegacy(stored: Map<String, *>): ObservingLocation? {
         if (LEGACY_KEYS.none(stored::containsKey)) return null
-        val location =
-            readLocation(
-                rawLatitude = (stored[KEY_LATITUDE] as? String)?.toDoubleOrNull(),
-                rawLongitude = (stored[KEY_LONGITUDE] as? String)?.toDoubleOrNull(),
-                sourceText = stored[KEY_SOURCE] as? String,
-                zone = deviceZone,
-            )
-        if (repair && location != null) {
-            save(location)
+        return readLocation(
+            rawLatitude = (stored[KEY_LATITUDE] as? String)?.toDoubleOrNull(),
+            rawLongitude = (stored[KEY_LONGITUDE] as? String)?.toDoubleOrNull(),
+            sourceText = stored[KEY_SOURCE] as? String,
+            zone = deviceZone,
+        )
+    }
+
+    fun migrateAndRepair() {
+        val stored = preferences.all
+        if (KEY_RECORD in stored) {
+            repairRecord(stored[KEY_RECORD])
+        } else {
+            val location = loadLegacy(stored)
+            if (location != null) {
+                save(location)
+            }
         }
-        return location
+    }
+
+    private fun repairRecord(raw: Any?) {
+        val record = parseRecord(raw)
+        when {
+            record == null || record.opt(KEY_VERSION) !is Int -> {
+                Log.w(TAG, "ignoring malformed observing location record")
+            }
+
+            record.opt(KEY_VERSION) != RECORD_VERSION -> {
+                Log.w(TAG, "ignoring unsupported observing location version")
+            }
+
+            else -> {
+                val storedZone = storedZoneOrNull(record)
+                // opt() returns null exactly when the key is absent; a stored JSON null is JSONObject.NULL.
+                val rejectedZone = record.opt(KEY_ZONE_ID)
+                val location =
+                    readLocation(
+                        rawLatitude = (record.opt(KEY_LATITUDE) as? Number)?.toDouble(),
+                        rawLongitude = (record.opt(KEY_LONGITUDE) as? Number)?.toDouble(),
+                        sourceText = record.opt(KEY_SOURCE) as? String,
+                    ) { storedZone ?: deviceZone() }
+                if (location != null && storedZone == null) {
+                    record.put(KEY_ZONE_ID, location.zoneId.id)
+                    persistRecord(record)
+                    val diagnosis =
+                        if (rejectedZone == null) {
+                            "absent observing location timezone"
+                        } else {
+                            "invalid observing location timezone '$rejectedZone'"
+                        }
+                    Log.w(TAG, "repaired $diagnosis; using ${location.zoneId.id}")
+                }
+            }
+        }
     }
 
     private fun readLocation(
@@ -138,5 +155,26 @@ internal class LocationStore(context: Context, private val deviceZone: () -> Zon
         const val RECORD_VERSION = 1
         val LEGACY_KEYS = listOf(KEY_LATITUDE, KEY_LONGITUDE, KEY_SOURCE)
         const val TAG = "LocationStore"
+
+        fun parseRecord(raw: Any?): JSONObject? {
+            if (raw !is String) return null
+            return try {
+                val parser = JSONTokener(raw)
+                val record = parser.nextValue() as? JSONObject
+                record?.takeIf { parser.nextClean() == '\u0000' }
+            } catch (_: JSONException) {
+                null
+            }
+        }
+
+        fun storedZoneOrNull(record: JSONObject): ZoneId? {
+            val zone =
+                try {
+                    (record.opt(KEY_ZONE_ID) as? String)?.let(ZoneId::of)
+                } catch (_: DateTimeException) {
+                    null
+                }
+            return zone
+        }
     }
 }

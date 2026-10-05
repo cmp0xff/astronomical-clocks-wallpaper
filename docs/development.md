@@ -136,8 +136,9 @@ on its next visible frame. Each frame resolves civil time from one clock instant
 zone, falling back to the current phone zone only when no usable location is saved.
 
 The location preference now holds one version-1 JSON record containing latitude, longitude,
-source, and zone ID. Valid legacy flat records migrate once using the phone zone at migration;
-a missing or invalid zone in a supported record is repaired without losing coordinates. Malformed
+source, and zone ID. `LocationStore.load()` is a pure read that performs no disk writes; one-time
+startup migration of valid legacy flat records and repair of missing or invalid zones in supported
+records is owned explicitly by `AstronomicalClocksApplication` at process startup. Malformed
 records and unsupported versions are logged and left untouched until the user explicitly saves
 a replacement. Both current-location acquisition and manual coordinate entry resolve the site's
 geographic timezone offline via nearest-anchor lookup against public-domain IANA tzdb reference
