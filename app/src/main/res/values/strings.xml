@@ -22,6 +22,15 @@
   <string name="longitude_hint">Longitude (-180 to 180)</string>
   <string name="location_fetch_failed">Could not get the current location. Enter coordinates manually.</string>
   <string name="location_permission_denied">Location permission denied. Enter coordinates manually.</string>
+  <string name="location_permission_interrupted">Location permission request did not complete. Enter coordinates manually, or try again.</string>
+  <string name="location_permission_title">Current location permission</string>
+  <string name="location_permission_rationale">Approximate location is used to select your observing site when you request it. It is not tracked in the background. You can enter coordinates manually instead.</string>
+  <string name="location_permission_continue">Continue</string>
+  <string name="location_permission_blocked">Android is not offering a location permission prompt. Enter coordinates manually, or retry current location for recovery options.</string>
+  <string name="location_permission_recovery">Current location needs approximate location permission, but Android is not offering a prompt. You can manage permission in app settings, or cancel and enter coordinates manually. If permission was reset, try requesting it again.</string>
+  <string name="location_permission_settings">Open app settings</string>
+  <string name="location_permission_retry">Try permission again</string>
+  <string name="location_permission_settings_unavailable">App settings are unavailable. Enter coordinates manually.</string>
   <string name="location_invalid">Enter a valid latitude and longitude.</string>
   <string name="location_saved">Location saved.</string>
   <string name="location_unchanged">Coordinates unchanged; nothing to save.</string>

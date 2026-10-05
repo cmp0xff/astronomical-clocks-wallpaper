@@ -67,6 +67,12 @@ class SettingsActivityTest {
     fun manualCoordsSurviveRecreate() {
         Robolectric.buildActivity(SettingsActivity::class.java).use { controller ->
             val activity = controller.setup().get()
+            activity.findViewById<Button>(R.id.use_current_location).performClick()
+            activity.onRequestPermissionsResult(
+                REQUEST_LOCATION_PERMISSION,
+                arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION),
+                intArrayOf(PackageManager.PERMISSION_DENIED),
+            )
             activity.findViewById<EditText>(R.id.latitude_input).setText("45.5")
             activity.findViewById<EditText>(R.id.longitude_input).setText("-120.25")
             activity.findViewById<Button>(R.id.save_location).performClick()
@@ -173,6 +179,10 @@ class SettingsActivityTest {
     fun denyCallbackShowsToast() {
         Robolectric.buildActivity(SettingsActivity::class.java).use { controller ->
             val activity = controller.setup().get()
+            shadowOf(activity.packageManager).setShouldShowRequestPermissionRationale(
+                Manifest.permission.ACCESS_COARSE_LOCATION,
+                true,
+            )
             activity.onRequestPermissionsResult(
                 REQUEST_LOCATION_PERMISSION,
                 arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION),

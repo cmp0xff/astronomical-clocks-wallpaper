@@ -27,6 +27,7 @@ import kotlin.math.roundToLong
 class SettingsActivity : Activity() {
     private val locationStore by lazy { LocationStore(applicationContext) }
     private val locationProvider by lazy { LocationProvider(applicationContext) }
+    private val locationPermissionControls by lazy { LocationPermissionControls(this) }
     private val locationCurrent by lazy { findViewById<TextView>(R.id.location_current) }
     private val latitudeInput by lazy { findViewById<EditText>(R.id.latitude_input) }
     private val longitudeInput by lazy { findViewById<EditText>(R.id.longitude_input) }
@@ -98,6 +99,7 @@ class SettingsActivity : Activity() {
     }
 
     override fun onDestroy() {
+        locationPermissionControls.dismissDialog()
         locationProvider.cancel()
         super.onDestroy()
     }
@@ -119,10 +121,14 @@ class SettingsActivity : Activity() {
         val hasPermission =
             checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
         if (!hasPermission) {
-            isForceFreshPending = forceFresh
-            requestPermissions(arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION), REQUEST_LOCATION_PERMISSION)
+            isForceFreshPending = false
+            locationPermissionControls.request {
+                isForceFreshPending = forceFresh
+                requestPermissions(arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION), REQUEST_LOCATION_PERMISSION)
+            }
             return
         }
+        locationPermissionControls.clearDenial()
         fetchCurrentLocation(forceFresh)
     }
 
@@ -131,10 +137,24 @@ class SettingsActivity : Activity() {
         if (requestCode != REQUEST_LOCATION_PERMISSION) {
             return
         }
-        if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
+        val permissionIndex = permissions.indexOf(Manifest.permission.ACCESS_COARSE_LOCATION)
+        // A non-empty callback for another permission can arrive under this request code. Reading
+        // the -1 index as a null result would misreport it as an interruption and consume the
+        // freshness of a still-live request. Ignore it and leave the pending state alone; an empty
+        // result is different and falls through to the interrupted report below.
+        if (permissionIndex == -1 && permissions.isNotEmpty()) {
+            Log.i(TAG, "ignoring location permission result for unrelated permissions")
+            return
+        }
+        val result = grantResults.getOrNull(permissionIndex)
+        if (result == PackageManager.PERMISSION_GRANTED) {
+            locationPermissionControls.clearDenial()
             fetchCurrentLocation(isForceFreshPending)
+        } else if (result == PackageManager.PERMISSION_DENIED) {
+            locationPermissionControls.recordDenial()
         } else {
-            Toast.makeText(this, R.string.location_permission_denied, Toast.LENGTH_LONG).show()
+            Log.i(TAG, "location permission request interrupted; no acquisition started")
+            Toast.makeText(this, R.string.location_permission_interrupted, Toast.LENGTH_LONG).show()
         }
         isForceFreshPending = false
     }

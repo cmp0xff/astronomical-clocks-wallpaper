@@ -127,6 +127,29 @@ See [bootstrap-verification.md](bootstrap-verification.md) for the local positiv
 
 ## Tests and artifacts
 
+Current-location permission is requested only from **Use current location** or
+**Refresh location**. A requestable denial gets a cancellable explanation on retry;
+a non-empty coarse-permission denial with no Android rationale records a private
+recovery observation in `location_permission` preferences, separate from the saved
+site, while a still-promptable denial stores nothing. An empty/interrupted callback
+reports the interruption rather than a denial and records nothing, and a callback
+carrying only unrelated permissions is ignored without consuming the pending
+cache-or-fresh policy. A later explicit retry offers **Open app settings**, **Try
+permission again**, or Cancel. The observation is not an authoritative OS flag:
+grants and requestable rationale clear it, a malformed value is repaired on the
+first tap, and the explicit permission retry handles otherwise ambiguous permission
+resets. A first request is never blocked just because Android reports no rationale.
+An open rationale or recovery dialog is dismissed when the activity is destroyed.
+
+Permission denial and settings navigation never replace the saved site, block
+manual coordinates, or acquire location automatically on return. After changing
+permission in system settings, tap the desired location action again; Use current
+location retains its cache policy, while Refresh location requests a fresh fix.
+An unavailable app-settings activity is logged and reported with a manual-entry
+fallback. This follows Android's
+[runtime-permission guidance](https://developer.android.com/training/permissions/requesting)
+without adding a permission library or background-location permission.
+
 Robolectric tests use API 26 and API 36 environments. They are JVM simulations and do not establish
 physical-device, lit lock-screen, or actual wallpaper surface behavior. API 37 compilation and Android
 Lint additionally check against the selected target. The `ClockEngine` schedules one redraw per whole
