@@ -26,10 +26,7 @@ import java.time.ZoneOffset
 class OrlojRepresentativeExport {
     @Test
     fun exportRepresentativeImages() {
-        val directory = File("build/reports/orloj")
-        if (!directory.exists()) {
-            directory.mkdirs()
-        }
+        REPORT_DIRECTORY.mkdirs()
         val sites =
             listOf(
                 "prague" to site(latitude = 50.08, longitude = 14.42, zoneId = PRAGUE),
@@ -39,29 +36,75 @@ class OrlojRepresentativeExport {
                 "south-pole" to site(latitude = -90.0, longitude = 0.0, zoneId = ZoneOffset.UTC),
             )
         val calculator = AstronomyEngineCalculator()
-        val exportInstant = Instant.parse("2026-10-04T15:15:36Z")
-        for ((name, site) in sites) {
+        for ((appearanceName, palette) in APPEARANCES) {
+            for ((name, site) in sites) {
+                exportSite(
+                    calculator = calculator,
+                    site = site,
+                    name = name,
+                    appearanceName = appearanceName,
+                    palette = palette,
+                )
+            }
+            exportNoLocation(appearanceName, palette)
+        }
+        exportPraguePlus30m(calculator)
+    }
+
+    private fun exportSite(
+        calculator: AstronomyEngineCalculator,
+        site: ObservingLocation,
+        name: String,
+        appearanceName: String,
+        palette: DialPalette,
+    ) {
+        val geometry = calculator.dialGeometry(EXPORT_INSTANT, site)
+        for (isRingEnabled in listOf(true, false)) {
             val bitmap = Bitmap.createBitmap(IMAGE_WIDTH, IMAGE_HEIGHT, Bitmap.Config.ARGB_8888)
             DialRenderer().renderDial(
                 canvas = Canvas(bitmap),
-                state = clockState(exportInstant.atZone(site.zoneId).toLocalTime()),
-                geometry = calculator.dialGeometry(exportInstant, site),
+                state = clockState(EXPORT_INSTANT.atZone(site.zoneId).toLocalTime()),
+                geometry = geometry,
+                layers = DialLayers(isZodiacRingEnabled = isRingEnabled),
+                palette = palette,
             )
-            File(directory, "$name-api${Build.VERSION.SDK_INT}.png").outputStream().use { output ->
-                bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)
+            val ringSuffix = if (isRingEnabled) "" else "-no-ring"
+            savePng(bitmap, "$name-$appearanceName$ringSuffix-api${Build.VERSION.SDK_INT}.png")
+            if (appearanceName == "dark" && isRingEnabled) {
+                // Preserve the names of the pre-appearance dark exports.
+                savePng(bitmap, "$name-api${Build.VERSION.SDK_INT}.png")
             }
         }
+    }
 
-        val pragueSite = site(latitude = 50.08, longitude = 14.42, zoneId = PRAGUE)
-        val exportInstantPlus30m = exportInstant.plus(Duration.ofMinutes(THIRTY_MINUTES))
-        val bitmap30m = Bitmap.createBitmap(IMAGE_WIDTH, IMAGE_HEIGHT, Bitmap.Config.ARGB_8888)
+    // Before a site is selected the dial is drawn without site geometry, so export that state for
+    // each theme as well.
+    private fun exportNoLocation(appearanceName: String, palette: DialPalette) {
+        val bitmap = Bitmap.createBitmap(IMAGE_WIDTH, IMAGE_HEIGHT, Bitmap.Config.ARGB_8888)
         DialRenderer().renderDial(
-            canvas = Canvas(bitmap30m),
+            canvas = Canvas(bitmap),
+            state = clockState(EXPORT_INSTANT.atZone(ZoneOffset.UTC).toLocalTime()),
+            geometry = null,
+            palette = palette,
+        )
+        savePng(bitmap, "no-location-$appearanceName-api${Build.VERSION.SDK_INT}.png")
+    }
+
+    private fun exportPraguePlus30m(calculator: AstronomyEngineCalculator) {
+        val pragueSite = site(latitude = 50.08, longitude = 14.42, zoneId = PRAGUE)
+        val exportInstantPlus30m = EXPORT_INSTANT.plus(Duration.ofMinutes(THIRTY_MINUTES))
+        val bitmap = Bitmap.createBitmap(IMAGE_WIDTH, IMAGE_HEIGHT, Bitmap.Config.ARGB_8888)
+        DialRenderer().renderDial(
+            canvas = Canvas(bitmap),
             state = clockState(exportInstantPlus30m.atZone(pragueSite.zoneId).toLocalTime()),
             geometry = calculator.dialGeometry(exportInstantPlus30m, pragueSite),
         )
-        File(directory, "prague-plus-30m-api${Build.VERSION.SDK_INT}.png").outputStream().use { output ->
-            bitmap30m.compress(Bitmap.CompressFormat.PNG, 100, output)
+        savePng(bitmap, "prague-plus-30m-api${Build.VERSION.SDK_INT}.png")
+    }
+
+    private fun savePng(bitmap: Bitmap, fileName: String) {
+        File(REPORT_DIRECTORY, fileName).outputStream().use { output ->
+            bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)
         }
     }
 
@@ -72,6 +115,14 @@ class OrlojRepresentativeExport {
         const val IMAGE_WIDTH = 1080
         const val IMAGE_HEIGHT = 1600
         const val THIRTY_MINUTES = 30L
+        val REPORT_DIRECTORY = File("build/reports/orloj")
+        val EXPORT_INSTANT: Instant = Instant.parse("2026-10-04T15:15:36Z")
+
+        val APPEARANCES =
+            listOf(
+                "dark" to DialStyle.DARK_PALETTE,
+                "light" to DialStyle.LIGHT_PALETTE,
+            )
 
         // Each site states its own zone rather than inheriting another site's. The equator and
         // polar rows are neutral reference points with no civil zone of their own, so they state

@@ -12,10 +12,25 @@ internal class SunRenderer {
     private val sunPath = buildSunPath()
 
     /** Draws the marker at an already projected [point]; the caller owns suppression. */
-    fun draw(canvas: Canvas, point: DialPoint) {
+    fun draw(
+        canvas: Canvas,
+        point: DialPoint,
+        palette: DialPalette = DialStyle.DARK_PALETTE,
+        isZodiacBandVisible: Boolean = true,
+    ) {
         val checkpoint = canvas.save()
         canvas.translate(point.x.toFloat(), point.y.toFloat())
-        paint.color = DialStyle.GOLD
+        if (!isZodiacBandVisible) {
+            paint.style = Paint.Style.STROKE
+            paint.color = palette.casing
+            paint.strokeWidth = MarkerOutline.CASING_WIDTH
+            canvas.drawPath(sunPath, paint)
+            paint.color = palette.hand
+            paint.strokeWidth = MarkerOutline.INK_WIDTH
+            canvas.drawPath(sunPath, paint)
+        }
+        // Preserve the original gold fill; the outline carries contrast when the band is hidden.
+        paint.color = palette.gold
         paint.style = Paint.Style.FILL
         canvas.drawPath(sunPath, paint)
         canvas.restoreToCount(checkpoint)

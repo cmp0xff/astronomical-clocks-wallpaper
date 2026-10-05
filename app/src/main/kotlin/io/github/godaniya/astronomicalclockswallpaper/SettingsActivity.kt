@@ -36,6 +36,7 @@ class SettingsActivity : Activity() {
     private var isManualZoneExplicit = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        applyAppearanceTheme()
         super.onCreate(savedInstanceState)
         isForceFreshPending = savedInstanceState?.getBoolean(STATE_FORCE_FRESH_PENDING) == true
         setContentView(R.layout.activity_settings)
@@ -86,6 +87,7 @@ class SettingsActivity : Activity() {
             },
         )
         bindDialLayers(hasLocation = location != null)
+        bindAppearanceControls()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {

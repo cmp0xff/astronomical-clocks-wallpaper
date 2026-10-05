@@ -1,6 +1,8 @@
 package io.github.godaniya.astronomicalclockswallpaper
 
+import android.graphics.Rect
 import android.view.View
+import android.view.ViewGroup
 import android.widget.ScrollView
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -43,14 +45,19 @@ class SettingsActivityLayoutTest {
                 R.id.longitude_input,
                 R.id.select_timezone,
                 R.id.save_location,
+                R.id.appearance_system,
+                R.id.appearance_light,
+                R.id.appearance_dark,
                 R.id.zodiac_ring,
                 R.id.sun_layer,
                 R.id.moon_layer,
                 R.id.open_preview,
             ).forEach { id ->
                 val control = activity.findViewById<View>(id)
-                val contentTop = scroll.getChildAt(0).top
-                val controlTop = contentTop + control.top
+                val content = scroll.getChildAt(0) as ViewGroup
+                val bounds = Rect(0, 0, control.width, control.height)
+                content.offsetDescendantRectToMyCoords(control, bounds)
+                val controlTop = content.top + bounds.top
                 scroll.scrollTo(0, controlTop - scroll.paddingTop)
                 assertTrue("Control $id must have visible height", control.height > 0)
                 assertTrue(
@@ -59,7 +66,7 @@ class SettingsActivityLayoutTest {
                 )
                 assertTrue(
                     "Control $id must scroll above the viewport bottom",
-                    contentTop + control.bottom <= scroll.scrollY + scroll.height - scroll.paddingBottom,
+                    content.top + bounds.bottom <= scroll.scrollY + scroll.height - scroll.paddingBottom,
                 )
             }
         }

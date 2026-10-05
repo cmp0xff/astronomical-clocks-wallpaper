@@ -31,24 +31,24 @@ internal class ZodiacRenderer {
             close()
         }
 
-    fun draw(canvas: Canvas, projection: OrlojProjection) {
+    fun draw(canvas: Canvas, projection: OrlojProjection, palette: DialPalette = DialStyle.DARK_PALETTE) {
         val circle = projection.zodiacCircle
         paint.style = Paint.Style.STROKE
-        paint.color = DialStyle.GOLD
+        paint.color = palette.gold
         paint.strokeWidth = RING_OUTER_WIDTH
         canvas.drawCircle(circle.center.x.toFloat(), circle.center.y.toFloat(), circle.radius.toFloat(), paint)
-        paint.color = DialStyle.NIGHT
+        paint.color = palette.zodiacBand
         paint.strokeWidth = RING_INNER_WIDTH
         canvas.drawCircle(circle.center.x.toFloat(), circle.center.y.toFloat(), circle.radius.toFloat(), paint)
-        drawDividers(canvas, projection)
-        drawEquinoxStar(canvas, projection)
-        drawSigns(canvas, projection)
+        drawDividers(canvas, projection, palette)
+        drawEquinoxStar(canvas, projection, palette)
+        drawSigns(canvas, projection, palette)
     }
 
-    private fun drawDividers(canvas: Canvas, projection: OrlojProjection) {
+    private fun drawDividers(canvas: Canvas, projection: OrlojProjection, palette: DialPalette) {
         val circle = projection.zodiacCircle
         paint.style = Paint.Style.STROKE
-        paint.color = DialStyle.GOLD
+        paint.color = palette.gold
         paint.strokeWidth = DIVIDER_WIDTH
         val halfBand = RING_INNER_WIDTH / 2
         for (index in SIGNS.indices) {
@@ -88,25 +88,25 @@ internal class ZodiacRenderer {
         return projectionAlong + sqrt(discriminant)
     }
 
-    private fun drawEquinoxStar(canvas: Canvas, projection: OrlojProjection) {
+    private fun drawEquinoxStar(canvas: Canvas, projection: OrlojProjection, palette: DialPalette) {
         val point = projection.eclipticPoint(0.0)
         val checkpoint = canvas.save()
         try {
             canvas.translate(point.x.toFloat(), point.y.toFloat())
             paint.style = Paint.Style.FILL
-            paint.color = DialStyle.GOLD
+            paint.color = palette.gold
             canvas.drawPath(equinoxStarPath, paint)
         } finally {
             canvas.restoreToCount(checkpoint)
         }
     }
 
-    private fun drawSigns(canvas: Canvas, projection: OrlojProjection) {
+    private fun drawSigns(canvas: Canvas, projection: OrlojProjection, palette: DialPalette) {
         val checkpoint = canvas.save()
         try {
             canvas.scale(1 / DialStyle.TEXT_UNITS, 1 / DialStyle.TEXT_UNITS)
             paint.style = Paint.Style.FILL
-            paint.color = DialStyle.HAND
+            paint.color = palette.hand
             paint.typeface = SIGNS_TYPEFACE
             paint.textAlign = Paint.Align.CENTER
             paint.textSize = SIGN_SIZE * DialStyle.TEXT_UNITS

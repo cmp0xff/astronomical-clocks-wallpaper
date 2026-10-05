@@ -48,12 +48,13 @@ internal class DialRenderer {
         state: ClockState,
         geometry: DialGeometry? = null,
         layers: DialLayers = DialLayers(),
+        palette: DialPalette = DialStyle.DARK_PALETTE,
     ) {
         if (canvas.width <= 0 || canvas.height <= 0) {
             emptyCanvasLog.recordFailure(detail = "${canvas.width}x${canvas.height}")
             return
         }
-        canvas.drawColor(DialStyle.BACKGROUND)
+        canvas.drawColor(palette.background)
         val radius = minOf(a = canvas.width, b = canvas.height) * RADIUS_FRACTION
         if (radius < MIN_DIAL_RADIUS) {
             undersizedDialLog.recordFailure(detail = "$radius < $MIN_DIAL_RADIUS")
@@ -63,15 +64,25 @@ internal class DialRenderer {
         try {
             canvas.translate(canvas.width / CENTER_DIVISOR, canvas.height / CENTER_DIVISOR)
             canvas.scale(radius / OUTER_RADIUS, radius / OUTER_RADIUS)
-            drawCivilScale(canvas)
+            drawCivilScale(canvas, palette)
             val projection = geometry?.let(::OrlojProjection)
-            plate.draw(canvas, projection, layers.isSunEnabled)
+            plate.draw(
+                canvas = canvas,
+                projection = projection,
+                isSunEnabled = layers.isSunEnabled,
+                palette = palette,
+            )
             if (projection != null && layers.isZodiacRingEnabled) {
-                zodiac.draw(canvas, projection)
+                zodiac.draw(canvas, projection, palette)
             }
             val sunPoint = projection?.sunPoint
             if (sunPoint != null && layers.isSunEnabled) {
-                sun.draw(canvas, sunPoint)
+                sun.draw(
+                    canvas = canvas,
+                    point = sunPoint,
+                    palette = palette,
+                    isZodiacBandVisible = layers.isZodiacRingEnabled,
+                )
             }
             // The marker needs both a projected position and a phase, so like the Sun it is drawn
             // only when the geometry carries them; the caller owns that suppression.
@@ -82,12 +93,13 @@ internal class DialRenderer {
                     moon.draw(
                         canvas = canvas,
                         point = moonPoint,
-                        phaseLongitudeDeg = moonPhase,
-                        southernHemisphere = projection.isSouthern,
+                        phase = MoonDiscPhase(longitudeDeg = moonPhase, isSouthern = projection.isSouthern),
+                        palette = palette,
+                        isZodiacBandVisible = layers.isZodiacRingEnabled,
                     )
                 }
             }
-            drawCivilHand(canvas, state.hourAngle)
+            drawCivilHand(canvas, state.hourAngle, palette)
         } finally {
             canvas.restoreToCount(checkpoint)
         }
@@ -96,22 +108,22 @@ internal class DialRenderer {
         undersizedDialLog.recordSuccess()
     }
 
-    private fun drawCivilScale(canvas: Canvas) {
+    private fun drawCivilScale(canvas: Canvas, palette: DialPalette) {
         paint.style = Paint.Style.FILL
-        paint.color = DialStyle.RIM
+        paint.color = palette.rim
         canvas.drawCircle(0f, 0f, OUTER_RADIUS, paint)
         paint.style = Paint.Style.STROKE
-        paint.color = DialStyle.GOLD
+        paint.color = palette.gold
         paint.strokeWidth = RIM_WIDTH
         canvas.drawCircle(0f, 0f, OUTER_RADIUS, paint)
         canvas.drawCircle(0f, 0f, SCALE_INNER_RADIUS, paint)
-        paint.color = DialStyle.MUTED_GOLD
+        paint.color = palette.mutedGold
         paint.strokeWidth = FINE_WIDTH
         canvas.drawCircle(0f, 0f, OUTER_RADIUS - RIM_INSET, paint)
-        drawHours(canvas)
+        drawHours(canvas, palette)
     }
 
-    private fun drawHours(canvas: Canvas) {
+    private fun drawHours(canvas: Canvas, palette: DialPalette) {
         val checkpoint = canvas.save()
         canvas.scale(1 / DialStyle.TEXT_UNITS, 1 / DialStyle.TEXT_UNITS)
         paint.typeface = HOURS_TYPEFACE
@@ -126,7 +138,7 @@ internal class DialRenderer {
                     )
             val x = sin(angle).toFloat()
             val y = -cos(angle).toFloat()
-            paint.color = DialStyle.GOLD
+            paint.color = palette.gold
             paint.style = Paint.Style.FILL
             canvas.drawText(
                 numeral,
@@ -146,16 +158,23 @@ internal class DialRenderer {
         canvas.restoreToCount(checkpoint)
     }
 
-    private fun drawCivilHand(canvas: Canvas, angleDegrees: Float) {
+    private fun drawCivilHand(canvas: Canvas, angleDegrees: Float, palette: DialPalette) {
         val checkpoint = canvas.save()
         canvas.rotate(angleDegrees)
-        paint.color = DialStyle.HAND
+        // The hand crosses both the pale plate and the dark night region, and no single ink clears the
+        // graphics minimum against both (bronze on night measured 1.04:1). The page-toned casing
+        // underlay outlines it over the dark region and disappears over the pale one.
+        paint.color = palette.casing
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = HAND_CASING_WIDTH
+        canvas.drawPath(hand, paint)
+        paint.color = palette.hand
         paint.style = Paint.Style.FILL
         canvas.drawPath(hand, paint)
         canvas.restoreToCount(checkpoint)
-        paint.color = DialStyle.GOLD
+        paint.color = palette.gold
         canvas.drawCircle(0f, 0f, HUB_RADIUS, paint)
-        paint.color = DialStyle.RIM
+        paint.color = palette.rim
         canvas.drawCircle(0f, 0f, HUB_INNER_RADIUS, paint)
     }
 
@@ -178,6 +197,10 @@ internal class DialRenderer {
         const val HAND_TIP_WIDTH = 0.034f
         const val HAND_SHAFT_WIDTH = 0.011f
         const val HAND_TAIL = 0.13f
+
+        // A stroke is centred on the path outline, so half of it widens the blade; 0.010 leaves a rim of
+        // about 1.7 px at the 1080 px wallpaper size on each side of the 7.5 px shaft.
+        const val HAND_CASING_WIDTH = 0.010f
         const val HUB_RADIUS = 0.039f
         const val HUB_INNER_RADIUS = 0.018f
         private val HOURS_TYPEFACE: Typeface = Typeface.create("serif", Typeface.NORMAL)

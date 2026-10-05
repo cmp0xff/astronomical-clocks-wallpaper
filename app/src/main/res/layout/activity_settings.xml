@@ -89,6 +89,36 @@
       android:layout_width="match_parent"
       android:layout_height="wrap_content"
       android:text="@string/dial_location_help" />
+    <TextView
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:layout_marginTop="16dp"
+      android:text="@string/appearance_title"
+      android:textAppearance="?android:attr/textAppearanceMedium" />
+    <RadioGroup
+      android:id="@+id/appearance_group"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:orientation="vertical">
+      <RadioButton
+        android:id="@+id/appearance_system"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:minHeight="48dp"
+        android:text="@string/appearance_system" />
+      <RadioButton
+        android:id="@+id/appearance_light"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:minHeight="48dp"
+        android:text="@string/appearance_light" />
+      <RadioButton
+        android:id="@+id/appearance_dark"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:minHeight="48dp"
+        android:text="@string/appearance_dark" />
+    </RadioGroup>
     <Button
       android:id="@+id/open_preview"
       android:layout_width="wrap_content"
