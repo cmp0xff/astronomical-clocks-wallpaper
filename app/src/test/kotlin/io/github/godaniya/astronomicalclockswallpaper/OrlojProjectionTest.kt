@@ -3,7 +3,10 @@ package io.github.godaniya.astronomicalclockswallpaper
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlin.math.atan2
+import kotlin.math.cos
 import kotlin.math.hypot
+import kotlin.math.sin
 import kotlin.math.sqrt
 
 /**
@@ -98,6 +101,33 @@ class OrlojProjectionTest {
         assertPoint(expected = DialPoint(x = 0.0, y = 1 / sqrt(3.0)), actual = southern.eclipticPoint(180.0))
     }
 
+    @Test
+    fun sunBearingEqualsHourAngle() {
+        // For any point on the ecliptic ring, its bearing clockwise from the top vertical (XII)
+        // equals its hour angle H = local apparent sidereal angle - right ascension.
+        for (latitude in listOf(50.0, -50.0)) {
+            val projection =
+                OrlojProjection(
+                    DialGeometry(
+                        localSiderealAngleDeg = 45.0,
+                        trueObliquityDeg = 23.44,
+                        latitudeDeg = latitude,
+                    ),
+                )
+            for (longitude in 0 until 360 step 15) {
+                val point = projection.eclipticPoint(longitude.toDouble())
+                val bearingDeg = Math.toDegrees(atan2(y = point.x, x = -point.y)).mod(360.0)
+                val lonRad = Math.toRadians(longitude.toDouble())
+                val oblRad = Math.toRadians(23.44)
+                val eqX = cos(lonRad)
+                val eqY = sin(lonRad) * cos(oblRad)
+                val raDeg = Math.toDegrees(atan2(y = eqY, x = eqX)).mod(360.0)
+                val expectedHourAngle = (45.0 - raDeg).mod(360.0)
+                assertEquals(expectedHourAngle, bearingDeg, TOLERANCE_BEARING)
+            }
+        }
+    }
+
     private fun projection(sidereal: Double, latitude: Double = 50.0): OrlojProjection {
         val geometry =
             DialGeometry(localSiderealAngleDeg = sidereal, trueObliquityDeg = 30.0, latitudeDeg = latitude)
@@ -111,5 +141,6 @@ class OrlojProjectionTest {
 
     private companion object {
         const val TOLERANCE = 1e-12
+        const val TOLERANCE_BEARING = 1e-10
     }
 }

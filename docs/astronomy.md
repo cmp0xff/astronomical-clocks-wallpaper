@@ -168,7 +168,8 @@ statement about the sky, not missing data; the dial must not substitute a guesse
 The window is UTC, not civil, because the calculator is timezone-agnostic. An event that falls in
 the next UTC day belongs to that day's window and appears in a call with an instant in it. The
 `eventWindowIsTheUtcDay` test pins the contract using Quito, whose nautical dusk lands just after
-midnight UTC.
+midnight UTC. Any consumer displaying solar events against local civil days must query across the
+relevant UTC days rather than assuming the search window coincides with the local midnight-to-midnight day.
 
 ## Failure behaviour
 
