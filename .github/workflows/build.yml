@@ -29,6 +29,19 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # uv runs the pinned Ruff and ty below. It installs nothing into the project, and the scripts
+      # import only the standard library, so there is no dependency set to resolve or lock.
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: 0.12.23
+      - name: Check host scripts
+        run: |
+          set -euo pipefail
+          uvx --from ruff==0.16.10 ruff check --output-format=github scripts
+          uvx --from ruff==0.16.10 ruff format --check --output-format=github scripts
+          uvx --from ty==0.0.84 ty check --output-format=github scripts
+      - name: Test host device harnesses
+        run: python3 -I -m unittest discover -s scripts -p 'test_*.py' -v
       # JDK 21 is the tested LTS pin. It only runs Gradle -- the APK targets Java 17 bytecode --
       # so newer releases buy nothing downstream: 25 is untested by detekt's documented toolchain,
       # 27 requires Gradle 9.8.0 (this pins 9.6.1), and 26 is a non-LTS feature release.

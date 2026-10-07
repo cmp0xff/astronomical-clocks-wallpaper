@@ -21,6 +21,9 @@ as recorded below.
 | Robolectric 4.17 | [Robolectric](https://github.com/robolectric/robolectric/tree/robolectric-4.17) | MIT; tests only |
 | Hamcrest (JUnit transitive dependency) | [Hamcrest](https://github.com/hamcrest/JavaHamcrest) | BSD-3-Clause; tests only |
 | Eclipse Temurin 21.0.12.1+1 | [Adoptium](https://github.com/adoptium/temurin21-binaries/releases/tag/jdk-21.0.12.1%2B1); macOS via the [`temurin@21` Homebrew cask](https://formulae.brew.sh/cask/temurin%4021) | GPL-2.0 with Classpath Exception; build/test JDK only |
+| uv 0.12.23 | [uv](https://github.com/astral-sh/uv/tree/0.12.23) | Apache-2.0; host tooling only, runs the two pinned tools below and is not bundled |
+| Ruff 0.16.10 | [Ruff](https://github.com/astral-sh/ruff/tree/0.16.10) | MIT; host Python linting and formatting only |
+| ty 0.0.84 | [ty](https://github.com/astral-sh/ty/tree/0.0.84) | MIT; host Python type checking only |
 
 The tzdb anchor data was diffed against the published releases rather than taken on trust. Every one
 of the 418 zones in release `2026e`'s `zone.tab` is transcribed into `TimeZoneLookup.kt` and no
@@ -35,6 +38,12 @@ Six of those identifiers post-date the tzdb an API 26 device can carry — `Amer
 absent from tzdata `2017a`'s zone definitions, while every identifier `TimeZoneLookup.ZONE_ALIASES`
 maps them to is present there. That map and the 2017a check are what keep a device with an old tzdb
 from failing to save; `TimeZoneLookupTest` exercises the lookup with that old tzdb simulated.
+
+The three host-tooling entries are the only non-Gradle inputs. They analyse `scripts/` on the CI
+runner and on a developer machine; none of them is imported by the scripts, packaged into the APK, or
+read by the Gradle build, and there is no lockfile because the scripts depend on nothing outside the
+standard library. [`pyproject.toml`](../pyproject.toml) carries their configuration and
+[development.md](development.md#checking-policy) the commands.
 
 Resolved dependency graphs can be inspected with `./gradlew :app:dependencies` and
 `./gradlew :app:dependencyInsight --configuration debugRuntimeClasspath --dependency kotlin-stdlib`.

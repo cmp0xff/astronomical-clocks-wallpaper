@@ -95,6 +95,74 @@ There are no baselines or blanket suppressions. Fix findings first; for a demons
 or incompatible rules, record the rule ID, concrete example, reason, and narrow scope below and in the
 PR. Removing a finding by lowering global severity or excluding production/test directories is not a fix.
 
+The host-only ADB harnesses in `scripts/` are standard-library Python. [`pyproject.toml`](../pyproject.toml)
+configures their checks, and CI runs all four commands before the Android build:
+
+```sh
+uvx --from ruff==0.16.10 ruff check --output-format=github scripts
+uvx --from ruff==0.16.10 ruff format --check --output-format=github scripts
+uvx --from ty==0.0.84 ty check --output-format=github scripts
+python3 -I -m unittest discover -s scripts -p 'test_*.py' -v
+```
+
+Ruff runs `select = ["ALL"]` on stable rules at a 120-column line length, and ty promotes every rule to
+an error and fails on a warning. Both are pinned to an exact version, and both target Python 3.12,
+which is what the runner's `python3` resolves to. The checks cover `scripts/` only: the unit tests
+exercise parsing and decision helpers, and neither they nor the static checks connect to a device or
+establish Android lifecycle, rendering, battery, or CPU behavior.
+
+These are analysis tools, not dependencies of the scripts: nothing is imported from them, there is
+nothing to resolve or lock, and the Gradle build does not read `pyproject.toml`. Every rule the
+configuration relaxes is recorded below.
+
+### Host-tooling decisions
+
+A few choices here are deliberate and have been questioned, so they are recorded rather than left to
+be re-derived.
+
+**The 120-column width.** `line-length` in [`pyproject.toml`](../pyproject.toml) is the only place
+Ruff's width is declared, and it agrees with `.editorconfig`, the detekt config, and the 120 columns
+stated above. Dropping it falls back to Ruff's default of 88 and reformats all maintained Python files away from
+the width the rest of the repository is written to.
+
+**No `__init__.py` in `scripts/`.** `scripts/` is a scripts directory, not a distribution package:
+it also holds `setup-android-sdk.sh` and `verify-apk.sh`, the harnesses are run as programs, and the
+test module imports them from the same directory that `unittest discover` puts on `sys.path`. A
+package would add no capability and would make one file importable as both `device_qualification`
+and `scripts.device_qualification` — two module objects with two sets of constants, so the suite's
+patch targets could silently address the wrong one. The `INP001` exception below records the
+mechanism.
+
+The smoke and qualification suites are separate; synthetic RGBA fixtures live in
+`scripts/device_test_fixtures.py`. The qualification suite checks the duplicated constants
+only once both harnesses are present. None of this adds production shared-device helpers.
+
+**Standard-library `unittest`, not pytest.** pytest runs this `unittest.TestCase` suite
+without changes, so a switch would cost no rewrite, and it could be pinned like Ruff and ty
+without a lockfile. What it would not buy is rule cleanup: `PT009`, `PT019`, and `PT027` fire on the
+`assertEqual`/`assertRaises` calls and the positionally-injected `unittest.mock.patch` parameters
+under any runner, so all three ignores would stay while their rationale above became false. It would
+also invert the standard-library-only decision recorded in [`pyproject.toml`](../pyproject.toml) and
+here, which the dependency rules in [AGENTS.md](../AGENTS.md) subject to owner approval and provenance
+recording, and it would need plugin autoload disabled to preserve CI's `python3 -I` hermeticity. That
+is a separate change with that cost list, not part of this tooling.
+
+**`main()` in what looks like a test file.** `scripts/device_smoke_test.py` is a harness, not a test
+module: `main()` plus `if __name__ == "__main__"` is its command-line entry point, and it defines no
+name pytest would collect. Its `*_test.py` suffix does match pytest's default collection pattern
+while CI collects only `test_*.py`, but collection over `scripts/` collects only the host suite,
+because the harness defines no `test_*` name and has no import-time side effects. The suffix is a
+latent smell, not a defect; the rename is a precondition of any pytest move and is folded into #107
+rather than repeated here after #103 renamed these files once already.
+
+**`serial` passed explicitly, not a class per harness.** `serial` threads through the two harnesses
+because it is the identity every ADB call needs; it is a symptom of the duplication *between* the two
+harnesses rather than of missing classes. A class per harness would fork the device abstraction twice
+and make the deferred merge harder, and the pure helpers take no `serial` at all. #107 records the
+planned shape: one shared device object that owns `serial` as constructor state, absorbs the helpers
+the two harnesses duplicate today, and keeps their deliberately different restore policies explicit.
+Nothing in this pull request changes as a result of that issue.
+
 ## Rule exceptions
 
 | Rule ID | Example and reason | Scope |
@@ -117,6 +185,14 @@ PR. Removing a finding by lowering global severity or excluding production/test 
 | detekt `TooGenericExceptionCaught` | `dialGeometryOrNull` catches `RuntimeException` around `dialGeometry` to fall back to the 24-hour civil dial rather than blanking the frame on geometry calculation failures. | Only `ClockEngine.dialGeometryOrNull`, annotated in source |
 | Lint `UnspecifiedRegisterReceiverFlag` | `registerDebugReceiver` calls the 2-argument `registerReceiver` on API < 33 when `RECEIVER_EXPORTED` is unavailable; lint requires annotating the API 33+ branch guard. | Only `AstronomicalClocksWallpaperService.registerDebugReceiver`, annotated in source |
 | detekt `TooManyFunctions` | `ClockEngine` is a `WallpaperService.Engine` that carries the four platform lifecycle overrides, whose surface is fixed by the platform, plus the tick-loop and drawing helpers, including #85's `stopTicking`; it already sat at the per-class function budget. The appearance feature adds one more callback, `onConfigurationChanged`, which the enclosing service invokes rather than the platform, and that addition is what takes the class past the budget. Splitting the engine to satisfy the count would separate drawing from the lifecycle that drives it. | Only `AstronomicalClocksWallpaperService.ClockEngine`, annotated in source |
+| Ruff formatter-conflict set (`W191`, `E111`, `E114`, `E117`, `D203`, `D206`, `D300`, `Q000`–`Q004`, `COM812`, `COM819`) | Ruff documents these as conflicting with its formatter wherever the formatter is the authority on layout; the formatter owns indentation, quote style, docstring indentation, and trailing commas, so the lint rule and the format step cannot both hold. | Ruff config, `scripts/` |
+| Ruff `D212` | Multi-line docstring summary on the first line. Conflicts with `D213`, which requires the second line; the docstrings in `scripts/` use the `D213` layout, so exactly one of the pair can be enabled. | Ruff config, `scripts/` |
+| Ruff `T201` | Both harnesses print their report to stdout, and that output *is* the deliverable — the device report is assembled from it. A standard-library logger would add machinery without improving the tabular report. | `scripts/device_qualification.py`, `scripts/device_smoke_test.py` |
+| Ruff `INP001` | `scripts/` deliberately has no `__init__.py`: the harnesses are run as scripts, and the test modules import them from the same directory, which `unittest discover` puts on `sys.path`. | Every file in `scripts/` |
+| Ruff `D102`, `D103` | Test methods and helpers in the suite are described by their names and their docstrings, not by a summary line restating the name. | `scripts/test_device_smoke.py`, `scripts/test_device_qualification.py` |
+| Ruff `PT009`, `PT019`, `PT027` | These are flake8-pytest-style rules, and the suite is standard-library `unittest` because host tooling may not add a dependency. `PT009` and `PT027` want `assertEqual`/`assertRaises` replaced with bare `assert` and `pytest.raises`, which would cost the assertion diffs; `PT019` reads the `unittest.mock.patch` parameters, which are injected positionally, as pytest fixtures. | `scripts/test_device_smoke.py`, `scripts/test_device_qualification.py` |
+| Ruff `S603` | `run_adb` is the one `subprocess.run` call. It executes the developer's own `adb` from `PATH` with an argv built from literals and parsed device output, `check=True`, and no shell, so there is no untrusted input to validate. `S607` is not raised because the executable is not written at the call site. | `run_adb` in both harnesses, annotated in source |
+| Ruff `CPY001` (via `notice-rgx`) | The rule looks for a copyright line; this repository marks licensing with an SPDX identifier instead, and the Kotlin sources, the shell scripts, and the maintained Python files all use that form. | Ruff config, `scripts/` |
 
 Upstream defaults remain the starting point, including per-rule defaults for test documentation and
 magic numbers. Tests are still compiled with the same strict compiler and analyzed with type resolution;

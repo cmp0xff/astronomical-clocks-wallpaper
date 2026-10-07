@@ -23,6 +23,9 @@ Thumbs.db
 *.swp
 *.swo
 *~
+__pycache__/
+*.pyc
+.ruff_cache/
 
 # APK signing keys, passwords, and local credentials
 *.jks
