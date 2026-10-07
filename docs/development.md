@@ -123,7 +123,7 @@ magic numbers. Tests are still compiled with the same strict compiler and analyz
 no entire test or production source directory is excluded. Dependency and artwork provenance is in
 [dependencies.md](dependencies.md).
 
-See [bootstrap-verification.md](bootstrap-verification.md) for the local positive and negative checks.
+See [2026-09-07-bootstrap.md](testing/reports/2026-09-07-bootstrap.md) for the local positive and negative checks.
 
 ## Tests and artifacts
 
@@ -195,4 +195,4 @@ the APK uploads only after a successful gate and APK verification. No release cr
 
 Install a downloaded debug APK with `adb install -r app-debug.apk`, open **Astro Clocks**, and
 tap **Open wallpaper preview**. See [device-testing.md](device-testing.md) for the physical-device
-procedure and the #2 acceptance results.
+procedure and [2026-09-28-feat-2-device-feasibility.md](testing/reports/2026-09-28-feat-2-device-feasibility.md) for the #2 acceptance results.

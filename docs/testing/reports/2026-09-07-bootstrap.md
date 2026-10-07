@@ -2,7 +2,7 @@
 
 Local verification on 2026-09-07 used Apple Silicon macOS, Temurin 21.0.12.1+1,
 Gradle 9.6.1, AGP 9.3.2, Kotlin 2.4.10, Android API 37.0 (SDK revision 2), and
-Build Tools 36.0.0. See [development.md](development.md) for setup and commands.
+Build Tools 36.0.0. See [development.md](../../development.md) for setup and commands.
 
 The full `qualityGate` and debug APK build pass. Four behavioral tests run at both
 Robolectric API 26 and API 36 for both debug and release: 16 test executions, zero

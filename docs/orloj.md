@@ -250,7 +250,7 @@ The fill itself is not required to contrast with the band when its contrasting r
 
 These host checks do not establish physical-device visibility for the new ring-disabled outlines;
 the physical-device pass records that visibility (see
-[device-testing.md](device-testing.md#appearance-review-fixes-device-pass)).
+[2026-10-04-feat-31-appearance.md](testing/reports/2026-10-04-feat-31-appearance.md#appearance-review-fixes-device-pass)).
 
 Two accepted exceptions, both recorded here rather than worked around:
 
@@ -324,5 +324,5 @@ Representative PNGs for visual inspection are explicitly exported under `app/bui
 `./gradlew exportRepresentativeImages`.
 
 Run `./gradlew qualityGate :app:assembleDebug` and `scripts/verify-apk.sh`. Physical-device home and
-lit-lock-screen correctness for the Sun marker (#27) are documented in [device-testing.md](device-testing.md);
+lit-lock-screen correctness for the Sun marker (#27) are documented in [2026-10-04-feat-27-sun-marker.md](testing/reports/2026-10-04-feat-27-sun-marker.md);
 frame cost and battery behavior remain unrun and are tracked in #6.

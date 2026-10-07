@@ -4,9 +4,10 @@ This document defines operational protocols, quality guardrails, and metadata
 standards for AI coding assistants and autonomous agents operating in this
 repository.
 
-Read [README.md](README.md) for public project context, [CONTRIBUTING.md](CONTRIBUTING.md)
-for shared engineering and testing standards, [docs/design.md](docs/design.md) for the product
-contract, and [docs/orloj.md](docs/orloj.md) for detailed astronomical geometry. [docs/development.md](docs/development.md)
+Read [README.md](README.md) for public project context, [docs/README.md](docs/README.md)
+for documentation architecture, [CONTRIBUTING.md](CONTRIBUTING.md) for shared engineering
+and testing standards, [docs/design.md](docs/design.md) for the product contract, and
+[docs/orloj.md](docs/orloj.md) for detailed astronomical geometry. [docs/development.md](docs/development.md)
 defines the pinned toolchain, strict checking policy, and justified exceptions.
 
 ## Machine operational guardrails
@@ -213,6 +214,16 @@ tolerances, including hemisphere and polar cases. Device reports must distinguis
 physical-device results from emulator checks and state the Android version, source
 revision, and SHA-256 of the tested APK. Keep device identifiers and precise private
 locations out of public reports (see [CONTRIBUTING.md](CONTRIBUTING.md#physical-device-testing-and-privacy)).
+Physical-device procedures and standard acceptance criteria are maintained in
+[docs/device-testing.md](docs/device-testing.md). When a pull request requires physical-device
+evidence, do not append to `docs/device-testing.md`; add a standalone historical report in
+`docs/testing/reports/YYYY-MM-DD-<kind>-<issue-number>-<short-description>.md` and link it from the pull
+request. The filename date is the first recorded verification date in the report, not the
+feature's implementation or extraction date. Preserve original run dates, measurements, and
+APK/source attribution. Historical reports may receive documented editorial or privacy
+corrections; new measurements belong in new reports. Discover reports through the directory listing;
+future reports do not need a new entry in this guide or the documentation hub. This decouples historical audit trails from living
+operating procedures and prevents merge conflicts across concurrent worktrees.
 Record limitations and unresolved failures in the issue and PR; do not silently
 weaken acceptance criteria.
 

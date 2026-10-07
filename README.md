@@ -50,13 +50,14 @@ The project is built on strict offline autonomy and respect for device resources
 
 ## Documentation
 
+- [Documentation overview and architecture hub](docs/README.md)
 - [Product design and observing-site contract](docs/design.md)
 - [Development setup, checking policy, and build artifacts](docs/development.md)
 - [Astronomy documentation and calculations](docs/astronomy/README.md)
 - [Orloj dial geometry and projection mathematics](docs/orloj.md)
 - [Dependency and artwork provenance](docs/dependencies.md)
-- [Physical-device procedures and evidence](docs/device-testing.md)
-- [Bootstrap verification](docs/bootstrap-verification.md)
+- [Physical-device procedures and acceptance matrix](docs/device-testing.md)
+- [Historical verification reports](docs/testing/reports/)
 
 Current implementation progress and milestones are tracked in the
 [GitHub issues](https://github.com/godaniya/astronomical-clocks-wallpaper/issues) and

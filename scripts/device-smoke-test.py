@@ -402,7 +402,7 @@ def main():
     if not restored:
         failures.append("device state was not fully restored; see the restore warnings above")
 
-    print("\n--- Measured results (paste into docs/device-testing.md only if all pass) ---")
+    print("\n--- Measured results (paste into a verification report in docs/testing/reports/ only if all pass) ---")
     today = time.strftime("%Y-%m-%d")
     print("| Date | Check | Observed |")
     print("| --- | --- | --- |")
