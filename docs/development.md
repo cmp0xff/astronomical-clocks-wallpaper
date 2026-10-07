@@ -177,7 +177,7 @@ site nor its civil clock.
 
 The astronomy tests need no Robolectric environment: `AstronomyCalculator` and everything under it
 are free of Android types, so they run as plain JUnit against published USNO, JPL Horizons, and
-Hipparcos reference data. They need no network and no device. See [astronomy.md](astronomy.md) for
+Hipparcos reference data. They need no network and no device. See [astronomy/calculations.md](astronomy/calculations.md) for
 the frames, tolerances, and what remains unverified.
 
 The debug APK is `app/build/outputs/apk/debug/app-debug.apk`, with application ID

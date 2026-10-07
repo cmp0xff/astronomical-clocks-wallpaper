@@ -52,7 +52,7 @@ The project is built on strict offline autonomy and respect for device resources
 
 - [Product design and observing-site contract](docs/design.md)
 - [Development setup, checking policy, and build artifacts](docs/development.md)
-- [Astronomy calculations and implementation limits](docs/astronomy.md)
+- [Astronomy documentation and calculations](docs/astronomy/README.md)
 - [Orloj dial geometry and projection mathematics](docs/orloj.md)
 - [Dependency and artwork provenance](docs/dependencies.md)
 - [Physical-device procedures and evidence](docs/device-testing.md)

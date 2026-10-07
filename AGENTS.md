@@ -61,7 +61,7 @@ Agents must observe the project's quality, stability, and release boundaries:
 
 The product contract is defined authoritatively in [docs/design.md](docs/design.md),
 detailed projection geometry in [docs/orloj.md](docs/orloj.md), and astronomy
-implementation limits in [docs/astronomy.md](docs/astronomy.md). Key machine
+implementation limits in [docs/astronomy/README.md](docs/astronomy/README.md). Key machine
 constraints include:
 
 - Use Kotlin, Canvas, and `WallpaperService` with a small settings app. Keep

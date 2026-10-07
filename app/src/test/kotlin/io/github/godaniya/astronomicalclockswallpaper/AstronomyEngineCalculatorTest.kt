@@ -20,7 +20,7 @@ import kotlin.math.abs
  *
  * The tolerances are set below what the acceptance criteria allow and well above what the two
  * implementations actually disagree by, so a real regression fails while a rounding difference
- * does not. `docs/astronomy.md` records the measured spreads.
+ * does not. `docs/astronomy/calculations.md` records the measured spreads.
  */
 class AstronomyEngineCalculatorTest {
     private val calculator = AstronomyEngineCalculator()
@@ -350,7 +350,7 @@ class AstronomyEngineCalculatorTest {
         const val MOON = "Moon"
 
         // Bounds retain the measured-spread checks formerly run in separate comparison passes.
-        // docs/astronomy.md distinguishes these regression bounds from acceptance tolerances.
+        // docs/astronomy/calculations.md distinguishes these regression bounds from acceptance tolerances.
         const val SUN_TOLERANCE_DEG = 0.002
         const val MOON_TOLERANCE_DEG = 0.003
         const val PLANET_TOLERANCE_DEG = 0.008

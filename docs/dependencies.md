@@ -112,7 +112,7 @@ curl -s -G "https://vizier.cds.unistra.fr/viz-bin/asu-tsv" \
   `rightAscensionDeg` and `declinationDeg`.
 - `RAICRS` and `DEICRS` are the same stars at the catalogue's own epoch, J1991.25. They are not
   bundled — they are the test fixture that pins the proper-motion arithmetic; see
-  [astronomy.md](astronomy.md).
+  [astronomy/calculations.md](astronomy/calculations.md).
 - `pmRA` is `mu_alpha * cos(delta)` and `pmDE` is `mu_delta`, in milliarcseconds per year.
 - Proper names are the IAU-approved names, cross-checked against
   [SIMBAD](https://simbad.cds.unistra.fr) identifiers.

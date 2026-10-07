@@ -35,7 +35,7 @@ import kotlin.math.sin
  * and the altitude is adjusted for the standard atmosphere with [Refraction.Normal]. Fixed stars
  * cannot go through [equator], because they are not Solar System bodies, so [StarCatalog] supplies
  * their J2000 place and proper motion and [rotationEqjHor] carries it to the horizon. See
- * `docs/astronomy.md` for frames, units, and tolerances.
+ * `docs/astronomy/calculations.md` for frames, units, and tolerances.
  *
  * [dialGeometry] is the exception. It asks the engine for a geometric, geocentric ecliptic
  * longitude of date instead — no aberration, no refraction, and for the Moon no light-time
