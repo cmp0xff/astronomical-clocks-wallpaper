@@ -52,6 +52,6 @@ returned to the physical 1080x2408 with no override, the `…AstronomicalClocksW
 binding survived, and the debug clock was reset. Reboot, lock screen, and marker-position checks were
 not run.
 
-The harness is now `scripts/device_smoke_test.py`. The historical warning count above is withdrawn
+The harness is now `scripts/device_smoke.py`. The historical warning count above is withdrawn
 as clean-log evidence: a completed empty scan is inconclusive, and these runs were not repeated
 with the hardened collection and restoration checks. Original APK/source attribution is retained.

@@ -131,6 +131,6 @@ Branch/revision references describe the original feature work. This cleanup corr
 cross-report navigation, and evidence scope where applicable; all historical observation rows,
 run dates, measured values, and APK/source attribution are retained. No new measurements were made.
 
-The harness is now `scripts/device_smoke_test.py`. The historical warning count above is withdrawn
+The harness is now `scripts/device_smoke.py`. The historical warning count above is withdrawn
 as clean-log evidence: a completed empty scan is inconclusive, and these runs were not repeated
 with the hardened collection and restoration checks. Original APK/source attribution is retained.

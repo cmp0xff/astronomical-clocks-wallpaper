@@ -21,9 +21,13 @@ as recorded below.
 | Robolectric 4.17 | [Robolectric](https://github.com/robolectric/robolectric/tree/robolectric-4.17) | MIT; tests only |
 | Hamcrest (JUnit transitive dependency) | [Hamcrest](https://github.com/hamcrest/JavaHamcrest) | BSD-3-Clause; tests only |
 | Eclipse Temurin 21.0.12.1+1 | [Adoptium](https://github.com/adoptium/temurin21-binaries/releases/tag/jdk-21.0.12.1%2B1); macOS via the [`temurin@21` Homebrew cask](https://formulae.brew.sh/cask/temurin%4021) | GPL-2.0 with Classpath Exception; build/test JDK only |
-| uv 0.12.23 | [uv](https://github.com/astral-sh/uv/tree/0.12.23) | Apache-2.0; host tooling only, runs the two pinned tools below and is not bundled |
-| Ruff 0.16.10 | [Ruff](https://github.com/astral-sh/ruff/tree/0.16.10) | MIT; host Python linting and formatting only |
+| uv 0.12.23 | [uv](https://github.com/astral-sh/uv/tree/0.12.23) | Apache-2.0; host tooling only, runs the pinned ty check in CI and the documented local commands; not bundled |
+| Ruff 0.16.10 | [Ruff](https://github.com/astral-sh/ruff/tree/0.16.10) | MIT; host Python linting and formatting only, through its official GitHub action in CI |
 | ty 0.0.84 | [ty](https://github.com/astral-sh/ty/tree/0.0.84) | MIT; host Python type checking only |
+| pre-commit 4.6.2 | [pre-commit](https://github.com/pre-commit/pre-commit/tree/v4.6.2) | MIT; local hook runner only, tested with 4.6.2 and not pinned by the repository (CI does not run it) |
+| ruff-pre-commit v0.16.10 | [ruff-pre-commit](https://github.com/astral-sh/ruff-pre-commit/tree/v0.16.10) | MIT; local pre-commit hooks pinning the same Ruff version as CI |
+| ty-pre-commit v0.0.84 | [ty-pre-commit](https://github.com/astral-sh/ty-pre-commit/tree/v0.0.84) | MIT; local pre-commit hook pinning the same ty version as CI |
+| codespell 2.4.3 | [codespell](https://github.com/codespell-project/codespell/tree/v2.4.3) | GPL-2.0; development-time spell checking of repository text files only, in CI through the pinned `uv` runner and locally through its pre-commit hook; not bundled, linked, or distributed |
 
 The tzdb anchor data was diffed against the published releases rather than taken on trust. Every one
 of the 418 zones in release `2026e`'s `zone.tab` is transcribed into `TimeZoneLookup.kt` and no
@@ -39,10 +43,14 @@ absent from tzdata `2017a`'s zone definitions, while every identifier `TimeZoneL
 maps them to is present there. That map and the 2017a check are what keep a device with an old tzdb
 from failing to save; `TimeZoneLookupTest` exercises the lookup with that old tzdb simulated.
 
-The three host-tooling entries are the only non-Gradle inputs. They analyse `scripts/` on the CI
-runner and on a developer machine; none of them is imported by the scripts, packaged into the APK, or
-read by the Gradle build, and there is no lockfile because the scripts depend on nothing outside the
-standard library. [`pyproject.toml`](../pyproject.toml) carries their configuration and
+The host-tooling entries are the only non-Gradle inputs. They analyse or scan the repository on a
+developer machine, and Ruff, ty, and codespell also run on the CI runner; none of them is imported by
+the scripts, packaged into the APK, or read by the Gradle build, and there is no lockfile because the
+scripts depend on nothing outside the standard library. codespell is GPL-2.0 and used as a
+development-time tool only: it is invoked in CI and through the local hook, but never bundled,
+linked, or distributed, so its license does not reach any artifact.
+[`pyproject.toml`](../pyproject.toml) carries their configuration,
+[`.pre-commit-config.yaml`](../.pre-commit-config.yaml) the local hooks, and
 [development.md](development.md#checking-policy) the commands.
 
 Resolved dependency graphs can be inspected with `./gradlew :app:dependencies` and

@@ -67,7 +67,7 @@ Environment configuration, pinned toolchain versions, and dependency governance:
 Reusable procedures, diagnostic commands, acceptance test matrices, and historical verification evidence:
 
 - [**Physical-Device Testing Guide**](device-testing.md) (`device-testing.md`):
-  Living canonical guide covering device privacy policies, ADB wireless and USB connections, install and launch procedures, state diagnostic commands, lifecycle state transitions, virtual time manipulation (`DEBUG_SET_TIME`), automated smoke testing (`scripts/device_smoke_test.py`), and the categorized Standard Acceptance Test Matrix.
+  Living canonical guide covering device privacy policies, ADB wireless and USB connections, install and launch procedures, state diagnostic commands, lifecycle state transitions, virtual time manipulation (`DEBUG_SET_TIME`), automated smoke testing (`scripts/device_smoke.py`), and the categorized Standard Acceptance Test Matrix.
 - [**Verification Reports Directory**](testing/reports/) (`testing/reports/`):
   Dated historical verification reports, discoverable through the directory listing. New reports
   belong in their own PR and do not require an entry in this hub or the living device guide.

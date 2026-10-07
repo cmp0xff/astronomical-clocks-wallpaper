@@ -152,7 +152,7 @@ was found in.
 
 ### Smoke-test harness run
 
-`scripts/device_smoke_test.py` was run on the same device, in the same session, after the changes that
+`scripts/device_smoke.py` was run on the same device, in the same session, after the changes that
 tightened it:
 
 | Date | Check | Observed |
@@ -194,13 +194,13 @@ the existing device-pass rows above.
    reports the restore as unverified if the device is not confirmed unlocked afterwards, alongside the
    existing display-size, night-mode, and screen-state checks.
 - **Prerequisite gating.** `device_qualification.py`'s `phase_environment_setup` and
-   `device_smoke_test.py`'s `step_reset_clock_and_show_home` now return whether the service log
+   `device_smoke.py`'s `step_reset_clock_and_show_home` now return whether the service log
    confirmed the initial debug-clock reset. `main()` in both scripts skips every phase/step that
    depends on a known clock state (qualification Phases 1–6; the smoke test's time-travel and
    surface-recreation steps) when that reset was not confirmed, instead of measuring against an
    unknown clock and reporting a misleading pass. The `finally` restore and the renderer log scan still
    run unconditionally.
-- **+30m offset confirmation.** `device_smoke_test.py`'s time-travel step now confirms the +30 minute
+- **+30m offset confirmation.** `device_smoke.py`'s time-travel step now confirms the +30 minute
    broadcast against the service log before measuring the hand advance, mirroring the confirmation the
    qualification harness already applied to its own offset broadcasts; an unconfirmed offset is
    reported as unmeasurable rather than as a zero-delta advance.

@@ -1,0 +1,20 @@
+# Local convenience hooks; CI stays authoritative and runs the same pinned tools directly.
+# The Ruff hooks mirror CI's `scripts/` scope; ty's `--isolated` keeps uv from creating a
+# `uv.lock`/`.venv` here (the scripts have no dependencies to lock).
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.10
+    hooks:
+      - id: ruff-check
+        files: ^scripts/
+      - id: ruff-format
+        files: ^scripts/
+  - repo: https://github.com/astral-sh/ty-pre-commit
+    rev: v0.0.84
+    hooks:
+      - id: ty
+        args: [--isolated]
+  - repo: https://github.com/codespell-project/codespell
+    rev: v2.4.3
+    hooks:
+      - id: codespell

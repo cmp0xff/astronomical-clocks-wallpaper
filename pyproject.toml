@@ -1,8 +1,8 @@
-# Host tooling for scripts/*.py only. The Gradle build does not read this file, nothing here reaches
-# the APK, and the Android quality gate stays hermetic and independent of it.
+# Host tooling. The Gradle build does not read this file, nothing here reaches the APK, and the
+# Android quality gate stays hermetic and independent of it.
 #
 # The scripts import nothing outside the standard library, so there is no dependency set to resolve
-# or lock and no lockfile here. CI runs Ruff and ty from the exact versions pinned in
+# or lock and no lockfile here. CI runs Ruff, ty, and codespell from the exact versions pinned in
 # .github/workflows/build.yml, which are recorded in docs/dependencies.md.
 
 [tool.ruff]
@@ -17,25 +17,15 @@ preview = false
 
 [tool.ruff.lint]
 select = ["ALL"]
-# Only the rules Ruff's formatter conflicts with, plus D212, which conflicts with the D213 layout
-# already in use. Recorded with reasons in docs/development.md#rule-exceptions. No rule has its
-# severity lowered and no directory is excluded.
+# Only four rules are relaxed after the 2026-10-07 audit against the pinned toolchain: every other
+# rule on Ruff's documented formatter-conflict list
+# (https://docs.astral.sh/ruff/formatter/#conflicting-lint-rules) runs clean on formatter-stable
+# output. Reasons, examples, and the audit method: docs/development.md#rule-exceptions.
 ignore = [
-  "W191", # tab indentation would be reformatted
-  "E111", # indentation is not a multiple of four
-  "E114", # indentation is not a multiple of four (comment)
-  "E117", # over-indented
-  "D203", # one blank line before class docstring; conflicts with D211
-  "D206", # docstring indentation; the formatter owns it
-  "D300", # triple double quotes; the formatter owns it
-  "Q000", # bad quotes for inline strings
-  "Q001", # bad quotes for multiline strings
-  "Q002", # bad quotes for docstrings
-  "Q003", # avoidable escaped quote
-  "Q004", # unnecessary escaped quote
-  "COM812", # missing trailing comma
-  "COM819", # prohibited trailing comma
-  "D212", # multi-line summary first line; conflicts with the D213 layout in use
+  "D203",   # one blank line before a class docstring; conflicts with enabled D211
+  "D212",   # multi-line summary on the first line; conflicts with the D213 layout in use
+  "D300",   # formatter preserves triple-single-quoted docstrings to avoid escapes
+  "COM812", # formatter omits trailing commas in compact multi-line constructs; Ruff warns
 ]
 
 [tool.ruff.lint.flake8-copyright]
@@ -47,8 +37,9 @@ notice-rgx = "# SPDX-License-Identifier: Apache-2\\.0"
 # Both harnesses print their report to stdout; T201 has no third-party logger to convert to, and the
 # report is the deliverable. scripts/ is deliberately not an importable package, which is what
 # INP001 asks for.
+"scripts/device_layer.py" = ["T201", "INP001"]
 "scripts/device_qualification.py" = ["T201", "INP001"]
-"scripts/device_smoke_test.py" = ["T201", "INP001"]
+"scripts/device_smoke.py" = ["T201", "INP001"]
 # The split test modules are not packages either; their methods are described by their docstrings
 # and names rather than a per-method summary line. The PT rules are flake8-pytest-style, and this
 # suite is stdlib `unittest` by design, because host tooling may not add a dependency and pytest is
@@ -59,6 +50,12 @@ notice-rgx = "# SPDX-License-Identifier: Apache-2\\.0"
 
 # The shared test-only RGBA fixture helper is also a standalone scripts/ module.
 "scripts/device_test_fixtures.py" = ["INP001"]
+
+[tool.codespell]
+# Domain vocabulary and local identifiers that codespell's dictionary flags; see the 2026-10-07
+# scan in docs/development.md. `skip` keeps direct local runs off generated output.
+ignore-words-list = "precesses,Nome,positionOf,IST"
+skip = "build,app/build,.gradle,.kotlin,.ruff_cache"
 
 [tool.ty.rules]
 # ty has no `strict` preset or `--strict` flag, so promoting every rule to an error is how strictness

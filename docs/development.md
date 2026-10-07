@@ -96,12 +96,15 @@ or incompatible rules, record the rule ID, concrete example, reason, and narrow 
 PR. Removing a finding by lowering global severity or excluding production/test directories is not a fix.
 
 The host-only ADB harnesses in `scripts/` are standard-library Python. [`pyproject.toml`](../pyproject.toml)
-configures their checks, and CI runs all four commands before the Android build:
+configures their checks. CI runs the host checks in a dedicated job (Ruff through its official
+[`astral-sh/ruff-action`](https://github.com/astral-sh/ruff-action); ty and codespell through the
+pinned `uv` runner) alongside the Android build; the same checks run locally as:
 
 ```sh
 uvx --from ruff==0.16.10 ruff check --output-format=github scripts
 uvx --from ruff==0.16.10 ruff format --check --output-format=github scripts
 uvx --from ty==0.0.84 ty check --output-format=github scripts
+uvx --from codespell==2.4.3 codespell
 python3 -I -m unittest discover -s scripts -p 'test_*.py' -v
 ```
 
@@ -147,21 +150,44 @@ here, which the dependency rules in [AGENTS.md](../AGENTS.md) subject to owner a
 recording, and it would need plugin autoload disabled to preserve CI's `python3 -I` hermeticity. That
 is a separate change with that cost list, not part of this tooling.
 
-**`main()` in what looks like a test file.** `scripts/device_smoke_test.py` is a harness, not a test
-module: `main()` plus `if __name__ == "__main__"` is its command-line entry point, and it defines no
-name pytest would collect. Its `*_test.py` suffix does match pytest's default collection pattern
-while CI collects only `test_*.py`, but collection over `scripts/` collects only the host suite,
-because the harness defines no `test_*` name and has no import-time side effects. The suffix is a
-latent smell, not a defect; the rename is a precondition of any pytest move and is folded into #107
-rather than repeated here after #103 renamed these files once already.
+**Ruff through `astral-sh/ruff-action`, ty through `uvx`.** Ruff's official
+[GitHub Actions integration](https://docs.astral.sh/ruff/integrations/#github-actions) documents both
+a plain install-and-run step and the `ruff-action` wrapper; CI uses the wrapper, pinned by commit
+SHA (278981a2, `v4.1.0`) and the exact `0.16.10` version input. `ty` has no official action, so it
+keeps the pinned `uvx --from ty==0.0.84` runner under the existing `setup-uv` step. The owner's
+review asked for the official action, and nothing about `ty` prevents it.
 
-**`serial` passed explicitly, not a class per harness.** `serial` threads through the two harnesses
-because it is the identity every ADB call needs; it is a symptom of the duplication *between* the two
-harnesses rather than of missing classes. A class per harness would fork the device abstraction twice
-and make the deferred merge harder, and the pure helpers take no `serial` at all. #107 records the
-planned shape: one shared device object that owns `serial` as constructor state, absorbs the helpers
-the two harnesses duplicate today, and keeps their deliberately different restore policies explicit.
-Nothing in this pull request changes as a result of that issue.
+**Adopted `.pre-commit-config.yaml`.** Ruff documents an official
+[pre-commit integration](https://docs.astral.sh/ruff/integrations/#pre-commit), the matching
+[`ty-pre-commit`](https://github.com/astral-sh/ty-pre-commit) hook exists, and the
+[codespell](https://github.com/codespell-project/codespell) hook was adopted in the 2026-10-07
+review round, so the repository carries all three, pinned to the same versions CI runs. Install and
+run locally with `pre-commit install` and `pre-commit run --all-files`, or with no local install via
+`uvx --from pre-commit==4.6.2 pre-commit run --all-files`. The Ruff hooks are scoped to `scripts/` to
+mirror the CI invocation exactly; the ty hook checks the project (its upstream design), needs `uv` on
+PATH, and runs in uv's isolated mode so it cannot create or update a `uv.lock` or `.venv` in a
+repository that has no dependency set to lock. codespell reads its four-word allowlist and skip list
+from `[tool.codespell]` in [`pyproject.toml`](../pyproject.toml); it is a GPL-2.0 development-time
+tool (not bundled, linked, or distributed), recorded in [dependencies.md](dependencies.md). CI stays
+authoritative and does not run pre-commit: it runs the same pinned tools directly.
+
+**codespell's 2026-10-07 scan.** The scan of all 156 tracked files against codespell 2.4.3 reported
+nine findings, and all nine were false positives on correct domain vocabulary and local identifiers:
+`precesses` (the astronomy term; the dictionary suggests "processes"), `America/Nome` (the Alaska
+zone; it suggests "Gnome"), `positionOf` (a test helper name), and `IST` (India Standard Time).
+With the four-word allowlist and the generated-directory skips configured in
+[`pyproject.toml`](../pyproject.toml), the repository runs clean, so the tool catches nothing today;
+its value is preventing future typos in this documentation-heavy repository at the cost of that
+allowlist and one development-time tool.
+
+**`main()` in what looks like a test file.** Previously named `scripts/device_smoke_test.py`, the smoke
+harness is renamed to `scripts/device_smoke.py` under #107 to avoid misleading pytest's default
+`*_test.py` collection pattern while preserving its standalone command-line entry point.
+
+**Consolidated ADB device layer.** #107 extracts `scripts/device_layer.py` with an object-oriented
+`AdbDevice` abstraction owning `serial` as constructor state, unifying the shared screencap decoders,
+dial geometry, and command primitives while keeping the distinct restore semantics between smoke and
+qualification harnesses explicit.
 
 ## Rule exceptions
 
@@ -185,13 +211,15 @@ Nothing in this pull request changes as a result of that issue.
 | detekt `TooGenericExceptionCaught` | `dialGeometryOrNull` catches `RuntimeException` around `dialGeometry` to fall back to the 24-hour civil dial rather than blanking the frame on geometry calculation failures. | Only `ClockEngine.dialGeometryOrNull`, annotated in source |
 | Lint `UnspecifiedRegisterReceiverFlag` | `registerDebugReceiver` calls the 2-argument `registerReceiver` on API < 33 when `RECEIVER_EXPORTED` is unavailable; lint requires annotating the API 33+ branch guard. | Only `AstronomicalClocksWallpaperService.registerDebugReceiver`, annotated in source |
 | detekt `TooManyFunctions` | `ClockEngine` is a `WallpaperService.Engine` that carries the four platform lifecycle overrides, whose surface is fixed by the platform, plus the tick-loop and drawing helpers, including #85's `stopTicking`; it already sat at the per-class function budget. The appearance feature adds one more callback, `onConfigurationChanged`, which the enclosing service invokes rather than the platform, and that addition is what takes the class past the budget. Splitting the engine to satisfy the count would separate drawing from the lifecycle that drives it. | Only `AstronomicalClocksWallpaperService.ClockEngine`, annotated in source |
-| Ruff formatter-conflict set (`W191`, `E111`, `E114`, `E117`, `D203`, `D206`, `D300`, `Q000`–`Q004`, `COM812`, `COM819`) | Ruff documents these as conflicting with its formatter wherever the formatter is the authority on layout; the formatter owns indentation, quote style, docstring indentation, and trailing commas, so the lint rule and the format step cannot both hold. | Ruff config, `scripts/` |
-| Ruff `D212` | Multi-line docstring summary on the first line. Conflicts with `D213`, which requires the second line; the docstrings in `scripts/` use the `D213` layout, so exactly one of the pair can be enabled. | Ruff config, `scripts/` |
-| Ruff `T201` | Both harnesses print their report to stdout, and that output *is* the deliverable — the device report is assembled from it. A standard-library logger would add machinery without improving the tabular report. | `scripts/device_qualification.py`, `scripts/device_smoke_test.py` |
+| Ruff `D203`, `D212` | Mutually exclusive pairs with the enabled rules: `D203` (one blank line before a class docstring) contradicts enabled `D211`, and `D212` (multi-line summary on the first line) conflicts with the `D213` layout used throughout `scripts/`. Exactly one rule of each pair can be enabled. | Ruff config, `scripts/` |
+| Ruff `D300` | Triple double quotes. The formatter preserves the one triple-single-quoted docstring (`scripts/test_device_qualification.py:576`) because converting it would introduce escapes, so enabling `D300` would flag formatter-stable output. | Ruff config, `scripts/` |
+| Ruff `COM812` | Trailing-comma missing. The formatter omits trailing commas in compact multi-line calls (`scripts/device_layer.py:101`), so enabling `COM812` makes Ruff emit its own formatter-conflict warning and 71 findings on formatter-stable code. | Ruff config, `scripts/` |
+| Ruff formatter-conflict audit (2026-10-07) | The pinned toolchain was audited against Ruff's documented [formatter-conflict list](https://docs.astral.sh/ruff/formatter/#conflicting-lint-rules): every other listed rule (`W191`, `E111`, `E114`, `E117`, `D206`, `Q000`–`Q004`, `COM819`) was enabled in a temporary config and cleared both `ruff format --check` (no conflict warnings) and `ruff check` (0 findings), on the formatter-stable tree and on a formatting torture fixture (tabs, 2-space indentation, over-indentation, comment indentation, tab-indented docstring paragraph, trailing commas, mixed quotes, escaped quotes). ISC002 is not relaxed: its documented condition (`ISC001` disabled and `allow-multiline = false`) does not apply because `ISC001` stays enabled. The four rules above are the only Ruff ignores left; re-run the audit whenever the Ruff pin changes. | Ruff config, `scripts/` |
+| Ruff `T201` | Both harnesses and the device layer print output or diagnostic errors to stdout/stderr; there is no logger to convert to, and adding one would be a dependency. | `scripts/device_layer.py`, `scripts/device_qualification.py`, `scripts/device_smoke.py` |
 | Ruff `INP001` | `scripts/` deliberately has no `__init__.py`: the harnesses are run as scripts, and the test modules import them from the same directory, which `unittest discover` puts on `sys.path`. | Every file in `scripts/` |
 | Ruff `D102`, `D103` | Test methods and helpers in the suite are described by their names and their docstrings, not by a summary line restating the name. | `scripts/test_device_smoke.py`, `scripts/test_device_qualification.py` |
 | Ruff `PT009`, `PT019`, `PT027` | These are flake8-pytest-style rules, and the suite is standard-library `unittest` because host tooling may not add a dependency. `PT009` and `PT027` want `assertEqual`/`assertRaises` replaced with bare `assert` and `pytest.raises`, which would cost the assertion diffs; `PT019` reads the `unittest.mock.patch` parameters, which are injected positionally, as pytest fixtures. | `scripts/test_device_smoke.py`, `scripts/test_device_qualification.py` |
-| Ruff `S603` | `run_adb` is the one `subprocess.run` call. It executes the developer's own `adb` from `PATH` with an argv built from literals and parsed device output, `check=True`, and no shell, so there is no untrusted input to validate. `S607` is not raised because the executable is not written at the call site. | `run_adb` in both harnesses, annotated in source |
+| Ruff `S603` | `run_adb` is the one `subprocess.run` call in `device_layer.py`. It executes the developer's own `adb` from `PATH` with an argv built from literals and parsed device output, `check=True`, and no shell, so there is no untrusted input to validate. `S607` is not raised because the executable is not written at the call site. | `run_adb` in `scripts/device_layer.py`, annotated in source |
 | Ruff `CPY001` (via `notice-rgx`) | The rule looks for a copyright line; this repository marks licensing with an SPDX identifier instead, and the Kotlin sources, the shell scripts, and the maintained Python files all use that form. | Ruff config, `scripts/` |
 
 Upstream defaults remain the starting point, including per-rule defaults for test documentation and
@@ -264,10 +292,12 @@ The stable release ID is `io.github.godaniya.astronomicalclockswallpaper`; relea
 Debug signing keys are disposable and local/CI APKs may require uninstalling the previous debug app.
 
 GitHub Actions runs on pull requests and pushes to `main`. Actions use immutable commit references,
-and the job has only `contents: read`. Open the **Android quality gate** run and download
-`debug-apk-<source revision>` or `check-reports-<source revision>`. The PR run checks GitHub's merge
-revision, recorded in the artifact name and `toolchain.txt`. Check reports upload even on failure;
-the APK uploads only after a successful gate and APK verification. No release credentials are used.
+and the jobs have only `contents: read`. The host checks and the Android build run as separate
+parallel jobs, so a failure in one does not withhold the other's artifacts and diagnostics. Open the
+**Android quality gate** run and download `debug-apk-<source revision>` or
+`check-reports-<source revision>`. The PR run checks GitHub's merge revision, recorded in the
+artifact name and `toolchain.txt`. Check reports upload even on failure; the APK uploads only after a
+successful gate and APK verification. No release credentials are used.
 
 Install a downloaded debug APK with `adb install -r app-debug.apk`, open **Astro Clocks**, and
 tap **Open wallpaper preview**. See [device-testing.md](device-testing.md) for the physical-device

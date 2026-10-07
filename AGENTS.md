@@ -235,7 +235,7 @@ The physical device is a single shared resource; do not hold it for real-time wa
   documentation, pure logic covered by host tests). State "device checks not run" and why.
 - **Time-dependent visuals** (anything that moves with the clock): use the debug-only virtual clock
   from [docs/device-testing.md](docs/device-testing.md#virtual-time) instead of waiting. A 30-minute
-  advance takes one broadcast, not 30 minutes. `scripts/device_smoke_test.py` runs this check.
+  advance takes one broadcast, not 30 minutes. `scripts/device_smoke.py` runs this check.
 - **Lifecycle, reboot, lock screen, and release sign-off** need the full manual pass.
 
 Ask before installing over, resizing, or otherwise changing a device another session is using, and
