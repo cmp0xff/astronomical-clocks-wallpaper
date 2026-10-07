@@ -76,14 +76,39 @@ adb shell am broadcast -a $ACTION --ez reset true               # back to system
 ```
 
 Offsets are added to the real clock, so they keep running; an `instant` freezes it. Always reset
-afterwards. `scripts/device-smoke-test.py` reads the screen's power state, wakes the screen, advances
-30 minutes, measures the civil hand's advance (7.5° expected on the 24-hour dial), recreates the
-surface, checks logcat, resets the clock, sleeps the screen again when it did not start awake, and
-exits non-zero on failure. It needs the wallpaper applied and visible on the home screen.
+afterwards. Run `python3 scripts/device_smoke_test.py [--serial <device>]` with the wallpaper
+applied and unobstructed on home. Before mutation it requires readable display and screen state
+and a confirmed unlocked keyguard. It confirms debug-clock resets and the +30m broadcast, checks
+the expected 7.5° civil-hand advance, and verifies a temporary size override and its phase restore.
+The `finally` cleanup restores the original override and screen state and rechecks the keyguard.
+A failed restore remains a failure. A pre-existing virtual-clock offset cannot be read or restored;
+the harness returns it to system time.
+
+Renderer warnings fail the run. A logcat/ADB collection error is a failed check with a nonzero exit
+and a failed report row; a successfully collected empty scan is inconclusive. Both outcomes retain
+the other measured rows and cleanup result. An empty scan establishes no successful rendering.
+Record device runs as standalone reports in `docs/testing/reports/` with source and APK attribution.
+Run host checks with `python3 -I -m unittest discover -s scripts -p 'test_*.py'`.
 
 This clock moves the civil hand and the astronomy together from one instant, so it shows that the
 marker follows the ephemeris but does not replace the independent ERFA comparison in the Sun and Moon
 passes. A smoke run only measures the hand; it does not exercise lifecycle, reboot, or the lock screen.
+
+## Qualification harness
+
+Run `python3 scripts/device_qualification.py --max-pss-growth-kb <agreed-limit> [--serial <device>]`
+with the wallpaper applied and the keyguard already unlocked. Agree the PSS limit before the run.
+The harness requires readable display, screen, keyguard, and night-mode state before mutation.
+It checks the baseline hand, screen-off/wake navigation, preview navigation, a temporary surface
+resize, non-stopping SIGKILL/rebind, +30m/+12h hand advances, and a short total-PSS sample.
+Each dependent phase requires its own confirmed clock prerequisite. Final cleanup restores and
+verifies the original override, screen state, night mode, and unlocked keyguard; the virtual clock
+is reset to system time. An unreadable renderer log fails; an empty successful scan is inconclusive.
+
+SIGKILL does not exercise `lmkd` or prove low-memory recovery. These ADB checks do not establish
+zero hidden frames, preview-engine cleanup, persisted preferences, midnight rollover, or battery/CPU
+qualification. Host unit tests establish no device behavior. Historical observations retain their
+original APK/source attribution in the reports directory; future runs require new dated reports.
 
 ## Standard acceptance test matrix
 
@@ -97,7 +122,7 @@ must also re-check the applicable expectations against its own identified build.
 | :--- | :--- | :--- | :--- | :--- |
 | **Lifecycle & Surfaces** | Draw while visible; cancel ticks while hidden or without a surface; resume after surface recreation. Persist settings across process recreation. Force-stop requires manual re-application. | `dumpsys wallpaper`, `pidof`, visibility/surface callbacks, producer trace while hidden | [Feasibility](testing/reports/2026-09-28-feat-2-device-feasibility.md) records initial transitions; [dial caching](testing/reports/2026-10-03-perf-39-dial-caching.md) records 0 producer frames while another app was focused, surface recreation, and reboot; [force-stop investigation](testing/reports/2026-10-06-docs-36-force-stop-lifecycle.md) records rebind after non-stopping `SIGKILL` and manual recovery after force-stop. | Actual low-memory recovery under memory pressure is unrun; `SIGKILL` does not establish it. Full lifecycle, home/lock-screen, hidden-frame, reboot, battery, and CPU qualification remains under #6. |
 | **Cadence & Ticking** | Schedule visible ticks at second boundaries. Assess presentation timing, thread activity, and allocation behavior separately. | Producer buffer trace; presentation/frame timing trace; thread-lifetime trace; allocation profiler. Renderer logs diagnose reported failures only. | [Orloj foundation](testing/reports/2026-10-03-feat-4-orloj-foundation.md) and [dial caching](testing/reports/2026-10-03-perf-39-dial-caching.md) record short producer windows near 1 Hz and log observations. Producer cadence and empty logs establish neither dropped-frame behavior nor thread churn. | Dropped-frame checks, thread-churn checks, and allocation profiling are unrun. Frame-cost, battery, and CPU qualification remains under #6. |
-| **Virtual Time Travel** | Debug offsets and fixed instants drive the civil hand and astronomy from one instant; a +30-minute virtual offset advances the hand 7.5° when the site UTC offset is unchanged, without changing the device clock or timezone. | `scripts/device-smoke-test.py`, `DEBUG_SET_TIME`, measured hand angle | [Virtual-time smoke](testing/reports/2026-10-04-feat-6-virtual-time-smoke.md) records +7.526° against +7.500°, surface recreation, and 0 renderer warnings for its APK; the hand probe has jitter and does not measure marker positions. | Current-build smoke, fixed-instant marker checks, civil rollover and timezone-transition checks remain unrun in this update. Smoke alone does not qualify lifecycle, reboot, or lock screen. |
+| **Virtual Time Travel** | Debug offsets and fixed instants drive the civil hand and astronomy from one instant; a +30-minute virtual offset advances the hand 7.5° when the site UTC offset is unchanged, without changing the device clock or timezone. | `scripts/device_smoke_test.py`, `DEBUG_SET_TIME`, measured hand angle | [Virtual-time smoke](testing/reports/2026-10-04-feat-6-virtual-time-smoke.md) records +7.526° against +7.500°, surface recreation, and an inconclusive empty renderer log scan for its APK; the hand probe has jitter and does not measure marker positions. | Current-build smoke, fixed-instant marker checks, civil rollover and timezone-transition checks remain unrun in this update. Smoke alone does not qualify lifecycle, reboot, or lock screen. |
 | **Location & Permissions** | Explicit location actions request coarse fixes; denial leaves manual entry usable. Non-promptable denial offers recovery. Persist sites; `load()` is a pure read with maintenance at startup. | Permission flags, acquisition logs, `observing_location.xml`, file mtime, restart/recreation | [Location slice](testing/reports/2026-09-28-feat-3-location-slice.md) records manual/acquired paths with revision-specific limits; [permission recovery](testing/reports/2026-10-05-fix-3-permission-recovery.md) records denial/retry/recreation; [pure-read storage](testing/reports/2026-10-05-refactor-35-pure-location-store.md) records four seeded startup states and unchanged valid records. | Interrupted and unrelated permission callbacks remain host-tested only. Storage pass used process killing rather than reboot; broader startup states and current-build device re-checks are unrun. |
 | **Site Timezone & Selection** | The selected site's geographic timezone drives civil time independently of the phone timezone. Unchanged Save preserves source/zone; picker selects and filters zones. | Phone timezone changes, preference snapshots, civil-hand probe, picker UI | [Site timezone](testing/reports/2026-09-30-feat-24-site-timezone.md) records distinct historical stages; [unchanged Save](testing/reports/2026-10-03-fix-42-unchanged-save.md) records retained `CURRENT_COARSE`/`Europe/Prague`; [geographic timezone/picker](testing/reports/2026-10-04-feat-21-geographic-timezone.md) records dial-hour and picker checks on its builds. | Unchanged-Save device pass did not establish retention of a site zone different from the phone zone; that distinction has host coverage. Current-build rollover, DST, picker, and persistence qualification is unrun. |
 | **Dial Astronomy & Geometry** | The 24-hour civil hand follows the observing site's civil timezone (phone zone if no site). The Sun marker approximates local apparent solar time; Sun/Moon positions use the same instant and hemisphere projection. Moon limb/terminator reflect phase and hemisphere. | Screencap rim fit and marker/hand probes against independent ERFA expectations; projection/phase fixtures | [Sun marker](testing/reports/2026-10-04-feat-27-sun-marker.md) bounds its recorded captures to about 1 px; [Moon marker](testing/reports/2026-10-04-feat-28-moon-marker.md) bounds its captures to about half a pixel, with terminator residuals +0.25 px and −0.02 px. [Southern plate](testing/reports/2026-10-03-feat-4-southern-plate.md), [dial caching](testing/reports/2026-10-03-perf-39-dial-caching.md), and [zodiac compartments](testing/reports/2026-10-03-feat-43-zodiac-compartments.md) record specific site/projection checks. These are measurement limits, not general accuracy guarantees. | Current-build geometry and phase qualification is unrun. Southern plate's historical `(0, -90)` “south pole” row is inconsistent with latitude/longitude order and remains unverified; the separate caching report records explicit `(90, 0)` and `(-90, 0)` checks. |

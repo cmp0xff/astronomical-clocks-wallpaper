@@ -51,3 +51,7 @@ afterwards, and `stay_on_while_plugged_in` was left at 0. Everything else was re
 returned to the physical 1080x2408 with no override, the `…AstronomicalClocksWallpaperService`
 binding survived, and the debug clock was reset. Reboot, lock screen, and marker-position checks were
 not run.
+
+The harness is now `scripts/device_smoke_test.py`. The historical warning count above is withdrawn
+as clean-log evidence: a completed empty scan is inconclusive, and these runs were not repeated
+with the hardened collection and restoration checks. Original APK/source attribution is retained.

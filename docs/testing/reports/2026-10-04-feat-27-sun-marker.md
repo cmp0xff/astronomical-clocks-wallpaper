@@ -85,3 +85,7 @@ each pixel before matching, so its result does not depend on which of the two ap
 Branch/revision references describe the original feature work. This cleanup corrects report dating,
 cross-report navigation, and evidence scope where applicable; all historical observation rows,
 run dates, measured values, and APK/source attribution are retained. No new measurements were made.
+
+The renderer-log observation above is withdrawn as clean-log evidence: a completed empty scan is
+inconclusive, and that run was not repeated with the hardened collection checks. Original
+APK/source attribution is retained.

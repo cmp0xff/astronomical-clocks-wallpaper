@@ -33,6 +33,10 @@ and overwriting the saved one; that is the defect fixed by the build in **Refres
 A current-location acquisition with no site saved yet still captures the phone zone; establishing
 each site's geographic timezone remains #24, with the offline city chooser in #21.
 
+The `no skipped or lost frames` clause above is withdrawn as clean-log evidence: a completed empty
+scan is inconclusive, and that run was not repeated with the hardened collection checks. Original
+APK/source attribution is retained.
+
 ## Refresh zone retention (2026-09-30)
 
 Test build: local debug `app-debug.apk` from `fix/24-refresh-zone-retention` at 12e4184, the fix

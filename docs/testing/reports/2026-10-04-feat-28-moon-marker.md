@@ -102,3 +102,7 @@ Moon tones exactly.
 Branch/revision references describe the original feature work. This cleanup corrects report dating,
 cross-report navigation, and evidence scope where applicable; all historical observation rows,
 run dates, measured values, and APK/source attribution are retained. No new measurements were made.
+
+The renderer-log observations above are withdrawn as clean-log evidence: a completed empty scan is
+inconclusive, and these runs were not repeated with the hardened collection checks. Original
+APK/source attribution is retained.

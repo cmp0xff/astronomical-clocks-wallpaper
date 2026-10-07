@@ -78,3 +78,7 @@ extraction.
 Unresolved limitations: neither device-tested build had an observed failure. Reboot and
 surface-recreation behavior is documented above but was not re-run for `feat/19-rendered-clock`; only
 the `2026-09-28` rows cover those transitions. Always On Display is out of scope per #2.
+
+The renderer-log sentence above is withdrawn as clean-log evidence: a completed empty scan is
+inconclusive, and that run was not repeated with the hardened collection checks. Original
+APK/source attribution is retained.
