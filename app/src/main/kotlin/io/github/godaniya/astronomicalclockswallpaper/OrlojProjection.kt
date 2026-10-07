@@ -40,7 +40,7 @@ internal data class PlateKey(val latitudeDeg: Double, val trueObliquityDeg: Doub
  *
  * See https://astro.cas.cz/bh2010/files/praha.pdf, printed pages 4–5, for the north-pole plate.
  */
-internal class OrlojProjection(private val geometry: DialGeometry) {
+internal open class OrlojProjection(private val geometry: DialGeometry) {
     /** Identifies the static plate geometry this projection would produce. */
     val plateKey: PlateKey =
         PlateKey(
@@ -58,7 +58,7 @@ internal class OrlojProjection(private val geometry: DialGeometry) {
 
     val equatorRadius: Double = 1 / cancerRadius
     val capricornRadius: Double = tan(QUARTER_TURN_RAD / 2 - obliquityRad / 2) / cancerRadius
-    val zodiacCircle: DialCircle =
+    open val zodiacCircle: DialCircle =
         DialCircle(
             center =
                 DialPoint(
@@ -82,7 +82,7 @@ internal class OrlojProjection(private val geometry: DialGeometry) {
      * ring, so the ring — not the body's true place — is what the dial shows. A body's angle around
      * the ring is therefore exact, and its displacement off the ring is a convention.
      */
-    fun eclipticPoint(longitudeDeg: Double): DialPoint {
+    open fun eclipticPoint(longitudeDeg: Double): DialPoint {
         val longitude = Math.toRadians(longitudeDeg)
         val equatorialX = cos(longitude)
         val equatorialY = sin(longitude) * cos(obliquityRad)
