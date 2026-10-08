@@ -5,6 +5,7 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.Typeface
 import android.util.Log
+import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.sin
@@ -143,9 +144,12 @@ internal class ZodiacRenderer {
 
     private fun drawEquinoxStar(canvas: Canvas, projection: OrlojProjection, palette: DialPalette) {
         val point = projection.eclipticPoint(0.0)
+        val radiusX = point.x - projection.zodiacCircle.center.x
+        val radiusY = point.y - projection.zodiacCircle.center.y
         val checkpoint = canvas.save()
         try {
             canvas.translate(point.x.toFloat(), point.y.toFloat())
+            canvas.rotate(Math.toDegrees(atan2(y = radiusY, x = radiusX)).toFloat())
             paint.style = Paint.Style.FILL
             paint.color = palette.gold
             canvas.drawPath(equinoxStarPath, paint)

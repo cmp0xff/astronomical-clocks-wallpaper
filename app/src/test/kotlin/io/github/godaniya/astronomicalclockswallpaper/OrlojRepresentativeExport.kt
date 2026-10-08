@@ -49,6 +49,8 @@ class OrlojRepresentativeExport {
             exportNoLocation(appearanceName, palette)
         }
         exportPraguePlus30m(calculator)
+        val sitesByName = sites.toMap()
+        exportEquinoxOrientations(calculator, EQUINOX_SITE_NAMES.map { name -> name to sitesByName.getValue(name) })
     }
 
     private fun exportSite(
@@ -102,6 +104,29 @@ class OrlojRepresentativeExport {
         savePng(bitmap, "prague-plus-30m-api${Build.VERSION.SDK_INT}.png")
     }
 
+    private fun exportEquinoxOrientations(
+        calculator: AstronomyEngineCalculator,
+        sites: List<Pair<String, ObservingLocation>>,
+    ) {
+        for ((name, site) in sites) {
+            for (angle in listOf(0, 90, 180, 270)) {
+                val geometry =
+                    calculator
+                        .dialGeometry(EXPORT_INSTANT, site)
+                        .copy(localSiderealAngleDeg = angle.toDouble())
+                val bitmap = Bitmap.createBitmap(IMAGE_WIDTH, IMAGE_HEIGHT, Bitmap.Config.ARGB_8888)
+                DialRenderer().renderDial(
+                    canvas = Canvas(bitmap),
+                    state = clockState(EXPORT_INSTANT.atZone(site.zoneId).toLocalTime()),
+                    geometry = geometry,
+                )
+                val stem = "$name-equinox-$angle-api${Build.VERSION.SDK_INT}"
+                savePng(bitmap, "$stem.png")
+                savePng(EquinoxStarDetail.render(geometry, STAR_DETAIL_SIZE), "$stem-detail.png")
+            }
+        }
+    }
+
     private fun savePng(bitmap: Bitmap, fileName: String) {
         File(REPORT_DIRECTORY, fileName).outputStream().use { output ->
             bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)
@@ -114,9 +139,14 @@ class OrlojRepresentativeExport {
     private companion object {
         const val IMAGE_WIDTH = 1080
         const val IMAGE_HEIGHT = 1600
+        const val STAR_DETAIL_SIZE = 320
         const val THIRTY_MINUTES = 30L
         val REPORT_DIRECTORY = File("build/reports/orloj")
         val EXPORT_INSTANT: Instant = Instant.parse("2026-10-04T15:15:36Z")
+
+        // Named rather than positional: the exported file stems assert which sites these are, so a
+        // renamed entry fails here, and a reordered one can no longer silently export another site.
+        val EQUINOX_SITE_NAMES = listOf("prague", "sydney")
 
         val APPEARANCES =
             listOf(

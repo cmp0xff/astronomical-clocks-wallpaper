@@ -63,6 +63,13 @@ true obliquity into equatorial coordinates before projection; equal longitude in
 equal intervals around the offset circle. The twelve labels denote tropical zodiac signs, rather
 than the unequal IAU constellations.
 
+The gold star at 0° Aries rotates rigidly with the zodiac ring. Its leading point — the vertex that
+points up the dial before rotation — follows the increasing-ecliptic-longitude tangent in both
+hemispheres, so the tip points toward the succeeding signs (ARI and after) rather than back toward
+PIS. For the radius vector `(rx, ry)` from the ring centre to the equinox, that tangent is
+`(ry, −rx)` in screen coordinates; rotating the star clockwise by `atan2(ry, rx)` in degrees aligns
+its leading point with that direction.
+
 Each of the twelve sign boundaries carries a gold divider that runs from the dial centre outward
 through its boundary point and is clipped to the ring's night band. Because the ring centre is
 offset from the dial centre, the divider crosses the ring obliquely: it departs from the ring's own

@@ -178,68 +178,79 @@ class DialRendererTest {
     }
 
     @Test
-    fun vernalEquinoxStarRotates() {
-        val projection = OrlojProjection(prague)
-        val expectedEquinox = DialPoint(x = 0.0, y = -projection.equatorRadius)
-        assertEquals(expectedEquinox.x, projection.eclipticPoint(0.0).x, 1e-9)
-        assertEquals(expectedEquinox.y, projection.eclipticPoint(0.0).y, 1e-9)
-        // The probe stays inside the night band, clear of the gold rim, which starts at
-        // RING_INNER_WIDTH / 2 = 0.0375 sky radii from the ring centreline, about 9.4 px here.
-        // Only the star and the divider sharing the equinox can put gold in a 4 px box, and the
-        // divider alone adds 9 px against the star's further 17.
-        assertTrue(
-            "The 0° Aries star must add GOLD area at the projected vernal equinox",
-            zodiacGoldAdded(prague, expectedEquinox) > STAR_GOLD_PIXELS,
-        )
-        val bitmap = render(time = LocalTime.MIDNIGHT, geometry = prague)
-        val rotatedPrague = prague.copy(localSiderealAngleDeg = 90.0)
-        val rotatedProjection = OrlojProjection(rotatedPrague)
-        val expectedRotatedEquinox = DialPoint(x = rotatedProjection.equatorRadius, y = 0.0)
-        assertEquals(expectedRotatedEquinox.x, rotatedProjection.eclipticPoint(0.0).x, 1e-9)
-        assertEquals(expectedRotatedEquinox.y, rotatedProjection.eclipticPoint(0.0).y, 1e-9)
-        val rotated = render(time = LocalTime.MIDNIGHT, geometry = rotatedPrague)
-        assertTrue(
-            "The vernal-equinox star must leave the unrotated equinox as sidereal time advances",
-            goldAreaNear(bitmap, expectedEquinox, radius = STAR_PROBE_RADIUS) -
-                goldAreaNear(rotated, expectedEquinox, radius = STAR_PROBE_RADIUS) > STAR_GOLD_PIXELS,
-        )
-        assertTrue(
-            "The vernal-equinox star must arrive at the rotated equinox as sidereal time advances",
-            zodiacGoldAdded(rotatedPrague, expectedRotatedEquinox) > STAR_GOLD_PIXELS,
-        )
+    fun equinoxStarPositionRotates() {
+        for (site in listOf(prague, prague.copy(latitudeDeg = -33.87))) {
+            val projection = OrlojProjection(site)
+            // Both plates put the equinox on the equator, on the meridian at sidereal 0 and
+            // the east-west axis at 90. Derive positions from the equator, not eclipticPoint.
+            val expectedEquinox = DialPoint(x = 0.0, y = -projection.equatorRadius)
+            assertEquals(expectedEquinox.x, projection.eclipticPoint(0.0).x, 1e-9)
+            assertEquals(expectedEquinox.y, projection.eclipticPoint(0.0).y, 1e-9)
+            // A 4 px box stays within the band, clear of the rim. The divider alone adds
+            // 9 gold pixels; the star must add further area beyond the 13-pixel threshold.
+            assertTrue(
+                "latitude=${site.latitudeDeg}: star must add GOLD area at the sidereal-0 equinox",
+                zodiacGoldAdded(site, expectedEquinox) > STAR_GOLD_PIXELS,
+            )
+            val bitmap = render(time = LocalTime.MIDNIGHT, geometry = site)
+            val rotatedSite = site.copy(localSiderealAngleDeg = 90.0)
+            val rotatedProjection = OrlojProjection(rotatedSite)
+            val expectedRotatedEquinox = DialPoint(x = rotatedProjection.equatorRadius, y = 0.0)
+            assertEquals(expectedRotatedEquinox.x, rotatedProjection.eclipticPoint(0.0).x, 1e-9)
+            assertEquals(expectedRotatedEquinox.y, rotatedProjection.eclipticPoint(0.0).y, 1e-9)
+            val rotated = render(time = LocalTime.MIDNIGHT, geometry = rotatedSite)
+            assertTrue(
+                "The star must leave the unrotated equinox for latitude=${site.latitudeDeg}",
+                goldAreaNear(bitmap, expectedEquinox, radius = STAR_PROBE_RADIUS) -
+                    goldAreaNear(rotated, expectedEquinox, radius = STAR_PROBE_RADIUS) > STAR_GOLD_PIXELS,
+            )
+            assertTrue(
+                "latitude=${site.latitudeDeg}: star must arrive at the sidereal-90 equinox",
+                zodiacGoldAdded(rotatedSite, expectedRotatedEquinox) > STAR_GOLD_PIXELS,
+            )
+        }
     }
 
     @Test
-    fun southernEquinoxStarRotates() {
-        val sydney = DialGeometry(localSiderealAngleDeg = 0.0, trueObliquityDeg = 23.44, latitudeDeg = -33.87)
-        val sydneyProjection = OrlojProjection(sydney)
-        // The equinox is the ecliptic point that meets the celestial equator, so it projects onto
-        // the equator circle: on the meridian at local sidereal 0 and on the east-west axis at 90.
-        // A southern site must not mirror either position, because the equator circle is not
-        // mirrored. Both positions below are derived from the circle radius, not from the actual.
-        val expectedEquinox = DialPoint(x = 0.0, y = -sydneyProjection.equatorRadius)
-        assertEquals(expectedEquinox.x, sydneyProjection.eclipticPoint(0.0).x, 1e-9)
-        assertEquals(expectedEquinox.y, sydneyProjection.eclipticPoint(0.0).y, 1e-9)
-        assertTrue(
-            "The star must add GOLD area at the independently expected southern projection",
-            zodiacGoldAdded(sydney, expectedEquinox) > STAR_GOLD_PIXELS,
-        )
-        val sydneyBitmap = render(time = LocalTime.MIDNIGHT, geometry = sydney)
-        val rotatedSydney = sydney.copy(localSiderealAngleDeg = 90.0)
-        val rotatedProjection = OrlojProjection(rotatedSydney)
-        val expectedRotatedEquinox = DialPoint(x = rotatedProjection.equatorRadius, y = 0.0)
-        assertEquals(expectedRotatedEquinox.x, rotatedProjection.eclipticPoint(0.0).x, 1e-9)
-        assertEquals(expectedRotatedEquinox.y, rotatedProjection.eclipticPoint(0.0).y, 1e-9)
-        val rotated = render(time = LocalTime.MIDNIGHT, geometry = rotatedSydney)
-        assertTrue(
-            "The southern star must leave the unrotated equinox as sidereal time advances",
-            goldAreaNear(sydneyBitmap, expectedEquinox, radius = STAR_PROBE_RADIUS) -
-                goldAreaNear(rotated, expectedEquinox, radius = STAR_PROBE_RADIUS) > STAR_GOLD_PIXELS,
-        )
-        assertTrue(
-            "The southern star must arrive at the rotated equinox as sidereal time advances",
-            zodiacGoldAdded(rotatedSydney, expectedRotatedEquinox) > STAR_GOLD_PIXELS,
-        )
+    fun equinoxStarFollowsTangent() {
+        for (latitude in listOf(50.08, -33.87)) {
+            for (siderealAngle in listOf(0.0, 90.0, 180.0, 270.0)) {
+                val geometry = prague.copy(latitudeDeg = latitude, localSiderealAngleDeg = siderealAngle)
+                val bitmap = EquinoxStarDetail.render(geometry, STAR_DETAIL_SIZE)
+
+                // Differentiate the documented stereographic equations at longitude 0, where
+                // (X, Y, Z) = (1, 0, 0) and d(X, Y, Z)/dλ = (0, cos ε, sin ε).
+                // The normalized increasing-longitude tangent is independent of the circle centre.
+                val obliquity = Math.toRadians(geometry.trueObliquityDeg)
+                val sidereal = Math.toRadians(siderealAngle)
+                val poleSign = if (latitude < 0) 1.0 else -1.0
+                val tangent =
+                    DialPoint(
+                        x = -cos(obliquity) * cos(sidereal) - poleSign * sin(obliquity) * sin(sidereal),
+                        y = -cos(obliquity) * sin(sidereal) + poleSign * sin(obliquity) * cos(sidereal),
+                    )
+                val context = "latitude=$latitude, sidereal=$siderealAngle"
+                // 0.014 sky radii lies inside the leading tip but beyond the opposite 0.008
+                // valley. Both 3x3 probes stay clear of the divider and the band rims.
+                assertStarTip(bitmap, tangent, context)
+            }
+        }
+    }
+
+    private fun assertStarTip(bitmap: Bitmap, tangent: DialPoint, context: String) {
+        // The probe offsets are sky-radius fractions, so they scale by the detail render's own
+        // pixels per sky radius rather than by a figure repeated here.
+        val scale = EquinoxStarDetail.scaleFor(STAR_DETAIL_SIZE)
+        for (direction in listOf(1, -1)) {
+            val x = (STAR_DETAIL_SIZE / 2 + direction * tangent.x * STAR_TIP_OFFSET * scale).roundToInt()
+            val y = (STAR_DETAIL_SIZE / 2 + direction * tangent.y * STAR_TIP_OFFSET * scale).roundToInt()
+            for (dx in -1..1) {
+                for (dy in -1..1) {
+                    val isGold = bitmap.getPixel(x + dx, y + dy) == DialStyle.GOLD
+                    assertEquals("leading tip/opposite valley: $context, direction=$direction", direction == 1, isGold)
+                }
+            }
+        }
     }
 
     @Test
@@ -725,6 +736,8 @@ class DialRendererTest {
         val DIVIDER_SAMPLE_OFFSETS = listOf(-7.0, -4.0, 0.0, 4.0, 7.0)
         const val DIVIDER_SAMPLE_RADIUS = 1
         const val DIVIDER_GOLD_SAMPLES = 4
+        const val STAR_DETAIL_SIZE = 160
+        const val STAR_TIP_OFFSET = 0.014
         const val STAR_PROBE_RADIUS = 4
         const val STAR_GOLD_PIXELS = 13
     }
