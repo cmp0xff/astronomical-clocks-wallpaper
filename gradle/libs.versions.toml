@@ -1,0 +1,20 @@
+[versions]
+agp = "9.3.2"
+kotlin = "2.4.10"
+detekt = "2.0.0-alpha.6"
+astronomyEngine = "61dc07020aaa6885d2c7f688a4d82beaf6edb9ef"
+junit = "4.13.2"
+robolectric = "4.17"
+
+[libraries]
+kotlinGradlePlugin = { module = "org.jetbrains.kotlin:kotlin-gradle-plugin", version.ref = "kotlin" }
+kotlinStdlib = { module = "org.jetbrains.kotlin:kotlin-stdlib", version.ref = "kotlin" }
+kotlinCompilerEmbeddable = { module = "org.jetbrains.kotlin:kotlin-compiler-embeddable", version.ref = "kotlin" }
+detektKtlintWrapper = { module = "dev.detekt:detekt-rules-ktlint-wrapper", version.ref = "detekt" }
+astronomyEngine = { module = "com.github.cosinekitty:astronomy", version.ref = "astronomyEngine" }
+junit = { module = "junit:junit", version.ref = "junit" }
+robolectric = { module = "org.robolectric:robolectric", version.ref = "robolectric" }
+
+[plugins]
+androidApplication = { id = "com.android.application", version.ref = "agp" }
+detekt = { id = "dev.detekt", version.ref = "detekt" }

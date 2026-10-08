@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <lint>
-  <!-- Keep the explicit, compatibility-tested Gradle pin; review upgrades separately. -->
+  <!-- Keep the explicit Gradle and AGP pins; review toolchain upgrades separately. -->
   <issue id="AndroidGradlePluginVersion">
     <ignore path="../gradle/wrapper/gradle-wrapper.properties" />
+    <ignore path="../gradle/libs.versions.toml" />
   </issue>
 
   <!-- Keep dependency upgrades deliberate, not on CI's clock. These two checks live-query

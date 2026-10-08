@@ -3,22 +3,22 @@ import dev.detekt.gradle.extensions.FailOnSeverity
 
 buildscript {
     dependencies {
-        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:2.4.10")
+        classpath(libs.kotlinGradlePlugin)
     }
 }
 
 plugins {
     base
-    id("com.android.application") version "9.3.2" apply false
-    id("dev.detekt") version "2.0.0-alpha.6"
+    alias(libs.plugins.androidApplication) apply false
+    alias(libs.plugins.detekt)
 }
 
 dependencies {
-    detektPlugins("dev.detekt:detekt-rules-ktlint-wrapper:2.0.0-alpha.6")
+    detektPlugins(libs.detektKtlintWrapper)
 }
 
 detekt {
-    toolVersion = "2.0.0-alpha.6"
+    toolVersion = libs.versions.detekt.get()
     buildUponDefaultConfig = true
     allRules = true
     config.setFrom(files("config/detekt/detekt.yml"))

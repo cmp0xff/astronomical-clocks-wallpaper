@@ -5,6 +5,11 @@ All application source and the placeholder Canvas/vector dial are original proje
 astronomy engine and the star catalogue arrived with #4, and the IANA tzdb anchor coordinates arrived with #21,
 as recorded below.
 
+Declared Gradle dependency and plugin pins are maintained in
+[`gradle/libs.versions.toml`](../gradle/libs.versions.toml), the authoritative catalog.
+The records below document their provenance and licenses, including transitive dependencies
+and non-Gradle inputs; the catalog does not override Gradle's normal conflict resolution.
+
 | Input | Source | License / use |
 | --- | --- | --- |
 | Astronomy Engine (Kotlin/JVM) commit `61dc070` | [cosinekitty/astronomy](https://github.com/cosinekitty/astronomy/tree/61dc07020aaa6885d2c7f688a4d82beaf6edb9ef), tag `v2.1.19`, built on demand by [JitPack](https://jitpack.io/#cosinekitty/astronomy) | MIT; runtime, pinned to a full commit SHA |

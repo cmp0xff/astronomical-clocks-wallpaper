@@ -2,6 +2,12 @@
 
 ## Pinned toolchain
 
+[`gradle/libs.versions.toml`](../gradle/libs.versions.toml) is authoritative for declared
+Gradle dependency and plugin pins. The versions below summarize the current toolchain;
+update the catalog when changing AGP, Kotlin, detekt, JUnit, Robolectric, or Astronomy Engine.
+The wrapper version and checksum remain in the wrapper configuration and root build script;
+JDK, Android SDK, application-version, and host-tool pins remain in their established locations.
+
 | Component | Version |
 | --- | --- |
 | Eclipse Temurin JDK | 21.0.12.1+1 (HotSpot); installed via the `temurin@21` Homebrew cask on macOS and the checksum-verified archive on Linux/CI |
@@ -204,7 +210,7 @@ qualification harnesses explicit.
 | Lint `Range` | The malformed-fix test intentionally injects a `NaN` latitude into a platform `Location` to verify rejection and request cleanup. | Only `LocationProviderLifecycleTest.malformedFixFailsOnce`, annotated in source |
 | Lint `QueryPermissionsNeeded` | `queryIntentServices` in the manifest test restricts the query to its own package, which is always visible. Adding external package queries would misstate app needs. | Only `wallpaperDeclaration` test method |
 | Lint `UnsupportedChromeOsHardware` | `android.software.live_wallpaper` is required because wallpaper rendering is the app's core feature; devices lacking it cannot provide that feature. | Only that manifest `uses-feature` element |
-| Lint `AndroidGradlePluginVersion` | Lint suggests Gradle 9.7.1 over 9.6.1. The explicit 9.6.1 pin follows the selected detekt compatibility family; network-discovered upgrade suggestions must not change this bootstrap's agreed toolchain. | Only `gradle/wrapper/gradle-wrapper.properties`, via `app/lint.xml` |
+| Lint `AndroidGradlePluginVersion` | Lint suggests Gradle 9.7.1 over 9.6.1 and, after catalog migration, AGP 9.4.1/9.3.3 over 9.3.2. Keep the selected detekt toolchain family and existing AGP pin; network-discovered upgrade suggestions must not change the agreed toolchain during maintenance. Review upgrades separately. | Only `gradle/wrapper/gradle-wrapper.properties` and the AGP pin in `gradle/libs.versions.toml`, via `app/lint.xml` |
 | Lint `NewerVersionAvailable` | The check live-queries Maven Central on every run, so it errors the hermetic gate the moment a dependency ships a newer release (Robolectric 4.16.1 → 4.17 did exactly this). Upgrades are reviewed deliberately instead of on CI's clock. | All modules, via `app/lint.xml` |
 | Lint `GradleDependency` | Same network-discovered-upgrade category as `NewerVersionAvailable`; keeping it active would reintroduce the same non-hermetic failure. | All modules, via `app/lint.xml` |
 | detekt `TooGenericExceptionCaught` | `runTick` catches `Exception` to keep the wallpaper tick loop alive across unexpected drawing exceptions while letting VM `Error` propagate. | Only `ClockEngine.runTick`, annotated in source |
