@@ -26,6 +26,15 @@ Read [README.md](README.md) for public project context and
   [verification guidance](CONTRIBUTING.md#verification). Record actual results
   and limitations according to those shared policies.
 
+## Issue metadata and attribution
+
+Follow the shared [issue attribution policy](CONTRIBUTING.md#issue-attribution).
+Conclude AI-authored or AI-assisted issue descriptions with `Co-Authored-By`
+trailers naming the actual disclosed models and provider no-reply addresses.
+For material revisions, preserve existing trailers in chronological order and
+append each newly contributing model once. Never invent model identities or
+edit existing issues solely to apply this policy. Human-only issues omit attribution.
+
 ## Product feature gate
 
 Agents must perform the [contributor product feature gate](CONTRIBUTING.md#product-feature-gate)

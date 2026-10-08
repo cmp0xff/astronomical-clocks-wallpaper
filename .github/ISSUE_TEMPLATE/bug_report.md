@@ -35,3 +35,11 @@ personal locations removed. Distinguish physical-device and emulator results.
 
 - [ ] The reproduction no longer triggers the reported behavior.
 - [ ] Relevant regression verification and any limitations are recorded.
+
+<!-- Follow [issue attribution](../../CONTRIBUTING.md#issue-attribution).
+     Replace with the actual disclosed model and provider no-reply address for
+     each model that materially authored or revised this issue. Name the model,
+     not the client; never invent an identity. Preserve existing trailers in
+     chronological order and append newly contributing models without duplicates.
+     Omit this placeholder for human-only issues. -->
+Co-Authored-By: <actual model> <provider no-reply address>

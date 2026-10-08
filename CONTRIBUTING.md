@@ -340,3 +340,21 @@ duplicate-trailer defect to fix.
 
 Finish the PR with the same visible `Co-Authored-By` identity used for the source
 work, as required by [PR accountability](#pull-requests-and-accountability-index).
+
+### Issue attribution
+
+AI-authored or AI-assisted issue descriptions must conclude with one
+`Co-Authored-By` trailer per distinct model that materially authors or revises
+the issue. Name the actual disclosed model and its provider's no-reply address,
+using the same trailer format as commits and PRs. Client, harness, and tool names
+(such as Claude Code, Cursor, or Antigravity) do not identify the model. If the
+model identity is unavailable, disclose that limitation rather than inventing
+an identity or substituting the client name.
+
+When another model materially revises or expands an issue, append its trailer
+to the concluding attribution block. Preserve existing trailers in chronological
+order and do not duplicate a model already credited. Human-only issues omit
+attribution; remove the issue template's placeholder in that case.
+
+Apply this policy to new issues and material revisions. Do not edit existing
+open or closed issues solely to apply attribution policy.
