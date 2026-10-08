@@ -144,6 +144,55 @@ class DeviceQualificationTest(unittest.TestCase):
         with self.assertRaises(subprocess.CalledProcessError):
             device_layer.get_wallpaper_pid("device")
 
+    @patch.object(device_layer, "run_adb")
+    def test_wallpaper_visibility_aggregates_complete_fields(self, run_adb: MagicMock) -> None:
+        cases = (
+            (b"mVisible=false\nmVisible=true", True),
+            (b"mVisible=true\nmVisible=false", True),
+            (b"mVisible=false\nmVisible=false", False),
+            (b"mVisible=true\nmVisible=true", True),
+            (b"mVisible=false mVisible=true mReportedVisible=false", True),
+            (b"mVisible=false mVisible=false", False),
+            (b"mVisible=trueish", None),
+            (b"mVisible=false-ish", None),
+            (b"mVisible=false=broken", None),
+            (b"mVisible=true\xef\xbf\xbd", None),
+            (b"mVisible=", None),
+            (b"mVisible=\nmVisible=false", None),
+            (b"mVisible=false mVisible=unknown", None),
+            (b"mVisible=false mVisible=", None),
+            (b"mVisible=true mVisible=unknown", True),
+            (b"mVisible=unknown mVisible=true", True),
+            (b"mReportedVisible=true other_mVisible=false", None),
+            (b"mVisible=false mReportedVisible=true", False),
+            (b"mVisible=false; mVisible=false}", False),
+            (b"mVisible= mVisible=true", True),
+            (b"mVisible= mVisible=false", None),
+            (b"no matching pattern", None),
+            (b"", None),
+        )
+        for output, expected in cases:
+            with self.subTest(output=output):
+                run_adb.return_value = output
+                self.assertIs(device_layer.read_wallpaper_visible("device"), expected)
+        run_adb.assert_called_with(
+            ["shell", "dumpsys", "activity", "service", device_layer.SERVICE_NAME], serial="device"
+        )
+
+    @patch.object(device_layer, "run_adb")
+    def test_failed_wallpaper_visible_probe_stays_none(self, run_adb: MagicMock) -> None:
+        errors = (
+            subprocess.CalledProcessError(1, ["adb"], stderr=b"device offline"),
+            subprocess.TimeoutExpired(["adb"], 10, stderr=b"transport timeout"),
+            OSError("adb transport closed"),
+        )
+        for error in errors:
+            with self.subTest(error=error), contextlib.redirect_stderr(io.StringIO()) as error_output:
+                run_adb.side_effect = error
+                self.assertIsNone(device_layer.read_wallpaper_visible("device"))
+            self.assertIn("wallpaper visibility probe failed", error_output.getvalue())
+            self.assertIn(device_layer.error_detail(error), error_output.getvalue())
+
     @patch.object(
         device_layer,
         "run_adb",
@@ -989,6 +1038,7 @@ class PhasePrerequisiteTest(unittest.TestCase):
         with (
             patch.object(device_layer, "sleep_screen", return_value=True),
             patch.object(device_layer, "read_screen_on", return_value=False) as read_screen,
+            patch.object(device_layer, "read_wallpaper_visible", return_value=None),
             patch.object(device_layer, "wake_screen", return_value=False) as wake,
             patch.object(device_layer.AdbDevice, "dismiss_keyguard") as dismiss,
             patch.object(device_layer.AdbDevice, "show_home") as home,
@@ -1004,6 +1054,105 @@ class PhasePrerequisiteTest(unittest.TestCase):
         capture.assert_not_called()
         self.assertEqual(failures, ["Device wake was not confirmed after the screen-off interval"])
         self.assertEqual(results, [])
+
+    def test_screen_off_wake_preserves_visibility_and_wake_observations(self) -> None:
+        """Visibility is tri-state; no visibility result proves rendering stopped."""
+        cases = (
+            (False, "wallpaper reported hidden (mVisible=false)"),
+            (None, "wallpaper visibility was unreadable"),
+            (True, "wallpaper reported visible (mVisible=true)"),
+        )
+        for visible, diagnostic in cases:
+            results: list[tuple[str, str]] = []
+            failures: list[str] = []
+            with (
+                self.subTest(visible=visible),
+                patch.object(device_layer, "sleep_screen", return_value=True),
+                patch.object(device_layer, "read_screen_on", side_effect=[False, True]),
+                patch.object(device_layer, "read_wallpaper_visible", return_value=visible),
+                patch.object(device_layer, "wake_screen", return_value=True) as wake,
+                patch.object(device_layer.AdbDevice, "dismiss_keyguard") as dismiss,
+                patch.object(device_layer.AdbDevice, "show_home") as home,
+                patch.object(device_layer, "capture_frame", return_value=(2, 2, bytes(16))),
+                patch.object(device_layer, "detect_hand_angle", return_value=123.456),
+                patch.object(qualification.time, "sleep"),
+                contextlib.redirect_stdout(io.StringIO()) as output,
+            ):
+                qualification.phase_screen_off_wake(device_layer.AdbDevice("device"), results, failures)
+            if visible is True:
+                self.assertEqual(
+                    failures, ["Wallpaper reported visible (mVisible=true) while the screen was confirmed off"]
+                )
+            else:
+                self.assertEqual(failures, [])
+            wake.assert_called_once_with("device")
+            dismiss.assert_called_once()
+            home.assert_called_once()
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0][0], "screen-off / wake navigation")
+            self.assertIn(diagnostic, results[0][1])
+            self.assertIn("rendering while asleep was not measured", results[0][1])
+            self.assertIn("hand detected after wake at 123.456°", results[0][1])
+            self.assertIn("screen off after the 4s sleep interval", results[0][1])
+            for unsupported in ("halted", "within 1s", "off for 4s"):
+                self.assertNotIn(unsupported, results[0][1])
+                self.assertNotIn(unsupported, output.getvalue())
+
+    def test_visible_while_off_failure_survives_wake_recovery_and_cleanup(self) -> None:
+        """The violation fails the run even after recovery or a later wake failure."""
+        baseline = qualification.DeviceBaseline(
+            serial="device",
+            run_start_marker="date",
+            physical_size="1080x2408",
+            size_override=None,
+            screen_was_on=True,
+            night_mode="auto",
+            wallpaper_pid=123,
+        )
+        for wake_ok, wake_error in ((True, None), (False, None), (False, RuntimeError("wake probe failed"))):
+            with contextlib.ExitStack() as stack:
+                stack.enter_context(self.subTest(wake_ok=wake_ok, wake_error=wake_error))
+                stack.enter_context(patch.object(sys, "argv", ["harness", "--max-pss-growth-kb", "10"]))
+                stack.enter_context(patch.object(qualification, "read_device_baseline", return_value=baseline))
+                stack.enter_context(patch.object(qualification, "phase_environment_setup", return_value=True))
+                for phase in (
+                    "phase_baseline_capture",
+                    "phase_preview_navigation",
+                    "phase_surface_recreation",
+                    "phase_process_rebind",
+                    "phase_time_travel",
+                    "phase_total_pss_growth",
+                ):
+                    stack.enter_context(patch.object(qualification, phase))
+                stack.enter_context(patch.object(device_layer, "sleep_screen", return_value=True))
+                stack.enter_context(patch.object(device_layer, "read_screen_on", side_effect=[False, True]))
+                stack.enter_context(
+                    patch.object(device_layer, "run_adb", return_value=b"mVisible=false\nmVisible=true")
+                )
+                wake = stack.enter_context(
+                    patch.object(device_layer, "wake_screen", return_value=wake_ok, side_effect=wake_error)
+                )
+                stack.enter_context(patch.object(device_layer.AdbDevice, "dismiss_keyguard"))
+                stack.enter_context(patch.object(device_layer.AdbDevice, "show_home"))
+                stack.enter_context(patch.object(device_layer, "capture_frame", return_value=(2, 2, bytes(16))))
+                stack.enter_context(patch.object(device_layer, "detect_hand_angle", return_value=123.456))
+                stack.enter_context(patch.object(qualification.time, "sleep"))
+                restore = stack.enter_context(patch.object(qualification, "restore_device", return_value=True))
+                stack.enter_context(patch.object(qualification, "phase_renderer_log_scan", return_value=True))
+                stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+                error_output = stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
+                with self.assertRaises(SystemExit) as exit_error:
+                    qualification.main()
+            self.assertEqual(exit_error.exception.code, 1)
+            wake.assert_called_once_with("device")
+            restore.assert_called_once()
+            self.assertIn(
+                "Wallpaper reported visible (mVisible=true) while the screen was confirmed off", error_output.getvalue()
+            )
+            if wake_error is not None:
+                self.assertIn("wake probe failed", error_output.getvalue())
+            elif not wake_ok:
+                self.assertIn("Device wake was not confirmed", error_output.getvalue())
 
     def test_an_awake_screen_is_left_alone_before_a_phase(self) -> None:
         """A visible screen must not gain extra wake, keyguard, or home input."""
