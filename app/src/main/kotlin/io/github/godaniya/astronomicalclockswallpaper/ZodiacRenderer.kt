@@ -65,6 +65,11 @@ internal class ZodiacRenderer {
         paint.color = palette.gold
         paint.strokeWidth = DIVIDER_WIDTH
         val halfBand = RING_INNER_WIDTH / 2
+        val centerSquared = circle.center.x * circle.center.x + circle.center.y * circle.center.y
+        val innerRadius = circle.radius - halfBand
+        val outerRadius = circle.radius + halfBand
+        val innerRadiusSquared = innerRadius * innerRadius
+        val outerRadiusSquared = outerRadius * outerRadius
         var firstDegenerateIndex = -1
         var firstDegenerateDistance = 0.0
         var firstNonFiniteIndex = -1
@@ -81,20 +86,9 @@ internal class ZodiacRenderer {
             } else {
                 val ux = point.x / distance
                 val uy = point.y / distance
-                val start =
-                    rayCircleDistance(
-                        directionX = ux,
-                        directionY = uy,
-                        center = circle.center,
-                        radius = circle.radius - halfBand,
-                    )
-                val end =
-                    rayCircleDistance(
-                        directionX = ux,
-                        directionY = uy,
-                        center = circle.center,
-                        radius = circle.radius + halfBand,
-                    )
+                val projectionAlong = ux * circle.center.x + uy * circle.center.y
+                val start = rayCircleDistance(projectionAlong, centerSquared, innerRadiusSquared)
+                val end = rayCircleDistance(projectionAlong, centerSquared, outerRadiusSquared)
                 val startX = (ux * start).toFloat()
                 val startY = (uy * start).toFloat()
                 val endX = (ux * end).toFloat()
@@ -141,10 +135,8 @@ internal class ZodiacRenderer {
         }
     }
 
-    private fun rayCircleDistance(directionX: Double, directionY: Double, center: DialPoint, radius: Double): Double {
-        val centerSquared = center.x * center.x + center.y * center.y
-        val projectionAlong = directionX * center.x + directionY * center.y
-        val rawDiscriminant = projectionAlong * projectionAlong - centerSquared + radius * radius
+    private fun rayCircleDistance(projectionAlong: Double, centerSquared: Double, radiusSquared: Double): Double {
+        val rawDiscriminant = projectionAlong * projectionAlong - centerSquared + radiusSquared
         val discriminant = maxOf(a = 0.0, b = rawDiscriminant)
         return projectionAlong + sqrt(discriminant)
     }
@@ -172,10 +164,10 @@ internal class ZodiacRenderer {
             paint.textAlign = Paint.Align.CENTER
             paint.textSize = SIGN_SIZE * DialStyle.TEXT_UNITS
             val textOffset = -(paint.ascent() + paint.descent()) / CENTER_DIVISOR
-            for ((index, sign) in SIGNS.withIndex()) {
+            for (index in SIGNS.indices) {
                 val point = projection.eclipticPoint(index * DEGREES_PER_SIGN + SIGN_OFFSET_DEG)
                 canvas.drawText(
-                    sign,
+                    SIGNS[index],
                     point.x.toFloat() * DialStyle.TEXT_UNITS,
                     point.y.toFloat() * DialStyle.TEXT_UNITS + textOffset,
                     paint,

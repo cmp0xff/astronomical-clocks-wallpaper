@@ -128,10 +128,11 @@ class DialRendererTest {
         val sites = listOf(prague, prague.copy(latitudeDeg = -33.87))
         for (site in sites) {
             val projection = OrlojProjection(site)
+            val noonBitmap = render(time = LocalTime.NOON, geometry = site)
+            val midnightBitmap = render(time = LocalTime.MIDNIGHT, geometry = site)
             for (index in 0 until 12) {
                 // Keep the civil hand away from the probed boundary and sign centre.
-                val time = if (index in 5..7) LocalTime.NOON else LocalTime.MIDNIGHT
-                val bitmap = render(time = time, geometry = site)
+                val bitmap = if (index in 5..7) noonBitmap else midnightBitmap
                 val boundary = projection.eclipticPoint(index * 30.0)
                 val centre = projection.eclipticPoint(index * 30.0 + 15.0)
                 assertTrue(
@@ -151,10 +152,11 @@ class DialRendererTest {
         val sites = listOf(prague, prague.copy(latitudeDeg = -33.87))
         for (site in sites) {
             val projection = OrlojProjection(site)
+            val noonBitmap = render(time = LocalTime.NOON, geometry = site)
+            val midnightBitmap = render(time = LocalTime.MIDNIGHT, geometry = site)
             for (index in 0 until 12) {
                 // Keep the civil hand away from the probed boundary.
-                val time = if (index in 5..7) LocalTime.NOON else LocalTime.MIDNIGHT
-                val bitmap = render(time = time, geometry = site)
+                val bitmap = if (index in 5..7) noonBitmap else midnightBitmap
                 val boundary = projection.eclipticPoint(index * 30.0)
                 // Each divider runs along the ray from the dial centre through its boundary point, so it
                 // crosses the offset ring obliquely rather than square to it. Samples run along that ray
