@@ -146,8 +146,8 @@ without a lockfile. What it would not buy is rule cleanup: `PT009`, `PT019`, and
 `assertEqual`/`assertRaises` calls and the positionally-injected `unittest.mock.patch` parameters
 under any runner, so all three ignores would stay while their rationale above became false. It would
 also invert the standard-library-only decision recorded in [`pyproject.toml`](../pyproject.toml) and
-here, which the dependency rules in [AGENTS.md](../AGENTS.md) subject to owner approval and provenance
-recording, and it would need plugin autoload disabled to preserve CI's `python3 -I` hermeticity. That
+here, which the [contributor dependency rules](../CONTRIBUTING.md#quality-reputation-and-release-principles)
+subject to owner approval and provenance recording, and it would need plugin autoload disabled to preserve CI's `python3 -I` hermeticity. That
 is a separate change with that cost list, not part of this tooling.
 
 **Ruff through `astral-sh/ruff-action`, ty through `uvx`.** Ruff's official

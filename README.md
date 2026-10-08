@@ -68,11 +68,11 @@ Current implementation progress and milestones are tracked in the
 We welcome contributions that uphold the project's standards for astronomical
 accuracy, battery efficiency, and engineering rigor:
 
-- **For human contributors, testers, and maintainers**: Read
+- **For all contributors, including agents, testers, and maintainers**: Read
   [CONTRIBUTING.md](CONTRIBUTING.md) for contribution pathways, physical-device
   privacy rules, testing standards, and development setup.
 - **For AI coding agents and machine assistants**: Follow [AGENTS.md](AGENTS.md)
-  for operational boundaries, commit structure, and pull request accountability.
+  in addition to the shared contributor guide for agent operational instructions.
 
 ## License
 

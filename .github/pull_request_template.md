@@ -22,11 +22,12 @@
 <details>
 <summary>Accountability Index</summary>
 
-<!-- Update after each push and review round. Use actual native commit references,
+<!-- Follow CONTRIBUTING.md, "Pull requests and Accountability Index".
+     Update after each push and review round. Use actual native commit references,
      e.g. owner/repo@sha, without backticks. Keep full rationale in commits/threads.
      After the default squash merge these SHAs live on the PR head ref rather than
      in main's ancestry, so this table is not expected to match main commit for
-     commit; citing them is still correct. See AGENTS.md, "Merge method". -->
+     commit; citing them is still correct. See [merge policy](../CONTRIBUTING.md#merge-method). -->
 
 | Commit | What | Why |
 | --- | --- | --- |

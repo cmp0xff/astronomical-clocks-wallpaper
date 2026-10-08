@@ -79,8 +79,8 @@ Checked 2026-09-09 against the GitHub API for
 - Kotlin/JVM is distributed through [JitPack](https://jitpack.io/#cosinekitty/astronomy)
   (build-on-demand from the GitHub repo), not Maven Central.
 
-Mitigation already required by [AGENTS.md](../AGENTS.md) and #4: astronomy calculations sit
-behind a small calculation interface with no Android imports, and the engine is pinned by
+Mitigation already required by [contributor engineering contracts](../CONTRIBUTING.md#engineering-and-product-contracts)
+and #4: astronomy calculations sit behind a small calculation interface with no Android imports, and the engine is pinned by
 version or source revision. Because Astronomy Engine is MIT, its Kotlin source can be vendored
 at a pinned revision if JitPack or upstream becomes unavailable — preferred over switching
 engines, since the JVM/Kotlin astronomical-calculation field is otherwise thin.
