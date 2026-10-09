@@ -4,5 +4,6 @@ package io.github.godaniya.astronomicalclockswallpaper
 internal data class WallpaperSettings(
     val location: ObservingLocation?,
     val layers: DialLayers,
+    val display: DialDisplaySettings = DialDisplaySettings(),
     val appearance: DialAppearance = DialAppearance.SYSTEM,
 )

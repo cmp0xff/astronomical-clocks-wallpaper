@@ -503,7 +503,7 @@ class DialRendererTest {
         val warnings = ShadowLog.getLogsForTag("DialRenderer").filter { it.type == Log.WARN }
         assertEquals(2, warnings.size)
         assertTrue(warnings[0].msg.contains("empty canvas"))
-        assertTrue(warnings[1].msg.contains("radius below minimum"))
+        assertTrue(warnings[1].msg.contains("cannot fit the dial"))
 
         // One completed frame ends both episodes, so the next degenerate frame logs again.
         assertEquals(DialStyle.BACKGROUND, drawInto(throttled, prague).getPixel(1, 1))

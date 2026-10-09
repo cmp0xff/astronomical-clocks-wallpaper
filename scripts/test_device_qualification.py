@@ -49,6 +49,7 @@ DUPLICATED_CONSTANT_NAMES: Final = (
     "DEBUG_ACTION",
     "DEBUG_CLOCK_RESET_EXTRAS",
     "DEBUG_CLOCK_RESET_MESSAGE",
+    "DISPLAY_LOG_TAG",
     "DISPLAY_STATE_PATTERN",
     "KEYGUARD_SHOWING_PATTERN",
     "EXPECTED_ADVANCE_30M_DEG",
@@ -60,6 +61,8 @@ DUPLICATED_CONSTANT_NAMES: Final = (
     "HAND_SCAN_STEP_PX",
     "LIGHT_HAND_RGB_BOUNDS",
     "LIGHT_RIM_RGB",
+    "MAX_BRIGHTNESS",
+    "MIN_BRIGHTNESS",
     "MIN_SPLIT_FIELDS",
     "OVERRIDE_SIZE_PATTERN",
     "PHYSICAL_SIZE_PATTERN",
@@ -779,13 +782,109 @@ class HandDetectionTest(unittest.TestCase):
 
     def test_capture_frame_accepts_a_consistent_payload(self) -> None:
         raw = struct.pack("<IIII", 2, 2, 1, 0) + bytes(2 * 2 * BYTES_PER_PIXEL)
-        with patch.object(device_layer, "run_adb", return_value=raw):
+        with (
+            patch.object(device_layer, "run_adb", return_value=raw),
+            patch.object(device_layer, "read_dial_layout", return_value=device_layer.DialLayout(1, 1, 0.5)),
+        ):
             self.assertEqual(device_layer.capture_frame("device"), (2, 2, bytes(2 * 2 * BYTES_PER_PIXEL)))
 
     @patch.object(device_layer, "run_adb", return_value=bytes(8))
     def test_capture_frame_rejects_a_truncated_header(self, _run_adb: MagicMock) -> None:
         with self.assertRaisesRegex(RuntimeError, "payload too small"):
             device_layer.capture_frame("device")
+
+
+class ProcessRebindPhaseTest(unittest.TestCase):
+    """The rebind poll outlasts a transient startup capture but never hides a real failure."""
+
+    @patch.object(qualification, "ensure_screen_on", return_value=True)
+    @patch.object(device_layer, "run_adb")
+    @patch.object(
+        device_layer,
+        "get_wallpaper_pid",
+        side_effect=[FIXTURE_START_PID, FIXTURE_REBOUND_PID, FIXTURE_REBOUND_PID],
+    )
+    @patch.object(
+        device_layer,
+        "capture_frame",
+        side_effect=[
+            device_layer.ScreencapError("Expected one fresh visible dial layout, found 0"),
+            (2, 2, bytes(16)),
+        ],
+    )
+    @patch.object(device_layer, "detect_hand_angle", return_value=0.0)
+    @patch.object(qualification.time, "sleep")
+    def test_a_transient_capture_error_is_retried_until_the_hand_is_seen(
+        self,
+        _sleep: MagicMock,
+        _angle: MagicMock,
+        capture: MagicMock,
+        _pid: MagicMock,
+        _run_adb: MagicMock,
+        _ensure: MagicMock,
+    ) -> None:
+        """A fresh PID can precede a visible surface, so the first capture may find no layout yet."""
+        results: list[tuple[str, str]] = []
+        failures: list[str] = []
+        with contextlib.redirect_stdout(io.StringIO()):
+            qualification.phase_process_rebind(device_layer.AdbDevice("device"), results, failures)
+        self.assertEqual(capture.call_count, 2)
+        self.assertEqual(failures, [])
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0][0], "process rebind")
+
+    @patch.object(qualification, "ensure_screen_on", return_value=True)
+    @patch.object(device_layer, "run_adb")
+    @patch.object(
+        device_layer,
+        "get_wallpaper_pid",
+        side_effect=[FIXTURE_START_PID, *([FIXTURE_REBOUND_PID] * qualification.REBIND_POLL_COUNT)],
+    )
+    @patch.object(device_layer, "capture_frame", side_effect=device_layer.ScreencapError("no usable layout"))
+    @patch.object(device_layer, "detect_hand_angle", return_value=0.0)
+    @patch.object(qualification.time, "sleep")
+    def test_the_poll_budget_expiring_still_fails_the_phase(
+        self,
+        _sleep: MagicMock,
+        _angle: MagicMock,
+        capture: MagicMock,
+        _pid: MagicMock,
+        _run_adb: MagicMock,
+        _ensure: MagicMock,
+    ) -> None:
+        """Retrying must not turn a permanently absent surface into a passing row."""
+        results: list[tuple[str, str]] = []
+        failures: list[str] = []
+        with contextlib.redirect_stdout(io.StringIO()):
+            qualification.phase_process_rebind(device_layer.AdbDevice("device"), results, failures)
+        self.assertEqual(capture.call_count, qualification.REBIND_POLL_COUNT)
+        self.assertEqual(results, [])
+        self.assertEqual(
+            failures,
+            [f"Process recreation failed (PIDs: {FIXTURE_START_PID} -> {FIXTURE_REBOUND_PID}, angle=None)"],
+        )
+
+    @patch.object(qualification, "ensure_screen_on", return_value=True)
+    @patch.object(device_layer, "run_adb")
+    @patch.object(device_layer, "get_wallpaper_pid", side_effect=[FIXTURE_START_PID, FIXTURE_REBOUND_PID])
+    @patch.object(device_layer, "capture_frame", side_effect=subprocess.TimeoutExpired("screencap", 5))
+    @patch.object(device_layer, "detect_hand_angle", return_value=0.0)
+    @patch.object(qualification.time, "sleep")
+    def test_a_transport_error_is_not_retried(
+        self,
+        _sleep: MagicMock,
+        _angle: MagicMock,
+        capture: MagicMock,
+        _pid: MagicMock,
+        _run_adb: MagicMock,
+        _ensure: MagicMock,
+    ) -> None:
+        """Only ScreencapError is transient; a dead transport must stay loud, not become a delay."""
+        results: list[tuple[str, str]] = []
+        failures: list[str] = []
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(subprocess.TimeoutExpired):
+            qualification.phase_process_rebind(device_layer.AdbDevice("device"), results, failures)
+        self.assertEqual(capture.call_count, 1)
 
 
 class PhaseDecisionTest(unittest.TestCase):

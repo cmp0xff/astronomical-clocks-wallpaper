@@ -51,6 +51,11 @@ class SettingsActivityLayoutTest {
                 R.id.zodiac_ring,
                 R.id.sun_layer,
                 R.id.moon_layer,
+                R.id.display_size,
+                R.id.display_horizontal,
+                R.id.display_vertical,
+                R.id.display_brightness,
+                R.id.reset_display,
                 R.id.open_preview,
             ).forEach { id ->
                 val control = activity.findViewById<View>(id)

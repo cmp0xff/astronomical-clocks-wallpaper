@@ -13,7 +13,9 @@ import subprocess
 import sys
 import time
 from collections.abc import Iterable, Iterator, Sequence
-from typing import Final
+from dataclasses import dataclass
+from typing import Final, Self
+from uuid import uuid4
 
 # Allowed deviation of the measured hand advance from the expected value.
 ANGLE_TOLERANCE_DEG: Final = 0.5
@@ -29,6 +31,7 @@ SERVICE_NAME: Final = (
     f"{PACKAGE_NAME}/io.github.godaniya.astronomicalclockswallpaper.AstronomicalClocksWallpaperService"
 )
 SERVICE_LOG_TAG: Final = "AstronomicalClocksWallpaperService"
+DISPLAY_LOG_TAG: Final = "DialDisplay"
 
 DEBUG_CLOCK_RESET_EXTRAS: Final = ["--ez", "reset", "true"]
 DEBUG_CLOCK_RESET_MESSAGE: Final = "Debug clock reset to system UTC"
@@ -56,6 +59,20 @@ LIGHT_RIM_RGB: Final = (0xE8, 0xE2, 0xD2)
 RIM_PROBE_RADIUS_FRACTION: Final = 0.40
 RIM_PROBE_BEARINGS_DEG: Final = tuple(range(15, 360, 30))
 
+# Mirror of DialRenderer.kt, the source of truth: that file's RIM_WIDTH (0.008f) and OUTER_RADIUS
+# (1.37f) give DialViewport.STROKED_EXTENT = 1 + RIM_WIDTH / 2 / OUTER_RADIUS. The outer rim is
+# stroked half a RIM_WIDTH beyond the reported dial radius, so the drawn disc reaches
+# radius * STROKED_EXTENT, not radius. A report can satisfy cx - radius >= 0 while that half stroke is
+# clipped - about 1.6 px at Size 115% on a 1080 px display.
+RIM_WIDTH: Final = 0.008
+OUTER_RADIUS: Final = 1.37
+STROKED_EXTENT: Final = 1 + RIM_WIDTH / 2 / OUTER_RADIUS
+
+# The diagnostic prints Float values, so an extent recomputed from the printed radius and the printed
+# centre differ by a few hundred-thousandths of a pixel. This absorbs that without hiding the
+# stroke-sized clipping the extent check exists to catch.
+EXTENT_TOLERANCE_PX: Final = 0.01
+
 HAND_SCAN_OUTER_FRACTION: Final = 0.43
 HAND_SCAN_INNER_FRACTION: Final = 0.08
 HAND_SCAN_STEP_PX: Final = 2
@@ -72,6 +89,9 @@ COARSE_BIN_WIDTH_DEG: Final = 4.0
 REFINE_WEDGE_DEG: Final = 6.0
 FULL_TURN_DEG: Final = 360.0
 HALF_TURN_DEG: Final = FULL_TURN_DEG / 2
+
+MIN_BRIGHTNESS: Final = 80
+MAX_BRIGHTNESS: Final = 100
 
 SCREENCAP_HEADER_BYTES: Final = 16
 MIN_SPLIT_FIELDS: Final = 2
@@ -151,10 +171,94 @@ def select_target_serial(requested: str | None) -> str:
     sys.exit(1)
 
 
-def rim_probe_points(width: int, height: int) -> Iterator[tuple[int, int]]:
+@dataclass(frozen=True)
+class DialLayout:
+    """Resolved screen-space geometry and dimming from one visible debug engine."""
+
+    cx: float
+    cy: float
+    radius: float
+    brightness: int = 100
+
+
+class FramePixels(bytes):
+    """Captured pixels carrying the fresh diagnostic layout used for their analysis."""
+
+    layout: DialLayout
+
+    def __new__(cls, pixels: bytes, layout: DialLayout) -> Self:
+        """Associate captured bytes with their resolved placement."""
+        instance = super().__new__(cls, pixels)
+        instance.layout = layout
+        return instance
+
+
+def frame_layout(width: int, height: int, pixels: bytes) -> DialLayout:
+    """Use attached device diagnostics; plain bytes are centered host-only fixtures."""
+    if isinstance(pixels, FramePixels):
+        return pixels.layout
+    return DialLayout(width / 2.0, height / 2.0, HAND_SCAN_OUTER_FRACTION * min(width, height))
+
+
+def undim_rgb(rgb: tuple[int, int, int], brightness: int) -> tuple[int, int, int]:
+    """Reverse the renderer's quantized black overlay for ink classification."""
+    if brightness == MAX_BRIGHTNESS:
+        return rgb
+    alpha = int((MAX_BRIGHTNESS - brightness) * 255 / MAX_BRIGHTNESS)
+    red, green, blue = (min(255, round(channel * 255 / (255 - alpha))) for channel in rgb)
+    return red, green, blue
+
+
+def parse_dial_layout(output: str, token: str, width: int, height: int) -> DialLayout:
+    """Require one fresh, usable engine report matching the captured screen size."""
+    lines = [line for line in output.splitlines() if f"{DISPLAY_LOG_TAG}: DialLayout token={token} " in line]
+    if len(lines) != 1:
+        message = f"Expected one fresh visible dial layout, found {len(lines)}"
+        raise ScreencapError(message)
+    fields = dict(re.findall(r"(\w+)=([^ ]+)", lines[0]))
+    try:
+        layout = DialLayout(
+            float(fields["cx"]), float(fields["cy"]), float(fields["radius"]), int(fields["brightness"])
+        )
+        reported_size = (int(fields["width"]), int(fields["height"]))
+    except (KeyError, ValueError) as error:
+        message = "Unreadable or unusable dial layout"
+        raise ScreencapError(message) from error
+    extent = layout.radius * STROKED_EXTENT
+    if (
+        reported_size != (width, height)
+        or not all(math.isfinite(value) for value in (layout.cx, layout.cy, layout.radius))
+        or layout.radius <= 0
+        or not MIN_BRIGHTNESS <= layout.brightness <= MAX_BRIGHTNESS
+        or layout.cx - extent < -EXTENT_TOLERANCE_PX
+        or layout.cy - extent < -EXTENT_TOLERANCE_PX
+        or layout.cx + extent > width + EXTENT_TOLERANCE_PX
+        or layout.cy + extent > height + EXTENT_TOLERANCE_PX
+    ):
+        message = "Dial layout does not fit the captured screen"
+        raise ScreencapError(message)
+    return layout
+
+
+def read_dial_layout(serial: str | None, width: int, height: int) -> DialLayout:
+    """Request diagnostics without changing virtual time; reject ambiguity rather than guessing."""
+    token = uuid4().hex
+    run_adb(["shell", "am", "broadcast", "-a", DEBUG_ACTION, "--es", "diagnostics", token], serial=serial)
+    output = ""
+    for attempt in range(LOG_CONFIRM_ATTEMPTS):
+        output = run_adb(["logcat", "-d"], serial=serial).decode("utf-8", errors="replace")
+        if f"DialLayout token={token} " in output:
+            break
+        if attempt + 1 < LOG_CONFIRM_ATTEMPTS:
+            time.sleep(LOG_CONFIRM_INTERVAL_SECONDS)
+    return parse_dial_layout(output, token, width, height)
+
+
+def rim_probe_points(width: int, height: int, layout: DialLayout | None = None) -> Iterator[tuple[int, int]]:
     """Sample points in the civil-scale annulus, in the dial's own bearing convention."""
-    cx, cy = width / 2.0, height / 2.0
-    radius = RIM_PROBE_RADIUS_FRACTION * min(width, height)
+    resolved = layout or DialLayout(width / 2.0, height / 2.0, HAND_SCAN_OUTER_FRACTION * min(width, height))
+    cx, cy = resolved.cx, resolved.cy
+    radius = resolved.radius * RIM_PROBE_RADIUS_FRACTION / HAND_SCAN_OUTER_FRACTION
     for bearing in RIM_PROBE_BEARINGS_DEG:
         radians = math.radians(bearing)
         x = round(cx + radius * math.sin(radians))
@@ -184,8 +288,9 @@ def nearest_rim_rgb(rgb: tuple[int, int, int]) -> tuple[int, int, int]:
 
 def is_dark_palette(width: int, height: int, pixels: bytes) -> bool:
     """Classify the visible palette from the civil scale's own rim tone."""
-    rgb = modal_pixel_rgb(width, pixels, rim_probe_points(width, height))
-    return rgb is not None and nearest_rim_rgb(rgb) == DARK_RIM_RGB
+    layout = frame_layout(width, height, pixels)
+    rgb = modal_pixel_rgb(width, pixels, rim_probe_points(width, height, layout))
+    return rgb is not None and nearest_rim_rgb(undim_rgb(rgb, layout.brightness)) == DARK_RIM_RGB
 
 
 def within_rgb_bounds(channels: tuple[int, int, int], bounds: tuple[tuple[int, int], ...]) -> bool:
@@ -205,9 +310,10 @@ def is_light_hand_pixel(red: int, green: int, blue: int) -> bool:
 
 def collect_hand_points(width: int, height: int, pixels: bytes, *, is_dark: bool) -> list[tuple[float, float]]:
     """Collect the dial-centre offsets of every hand-ink pixel inside the dial region."""
-    cx, cy = width / 2.0, height / 2.0
-    max_radius = min(width, height) * HAND_SCAN_OUTER_FRACTION
-    min_radius = min(width, height) * HAND_SCAN_INNER_FRACTION
+    layout = frame_layout(width, height, pixels)
+    cx, cy = layout.cx, layout.cy
+    max_radius = layout.radius
+    min_radius = layout.radius * HAND_SCAN_INNER_FRACTION / HAND_SCAN_OUTER_FRACTION
     min_r_sq = min_radius * min_radius
     max_r_sq = max_radius * max_radius
 
@@ -226,7 +332,8 @@ def collect_hand_points(width: int, height: int, pixels: bytes, *, is_dark: bool
             dist_sq = dx * dx + dy * dy
             if min_r_sq <= dist_sq <= max_r_sq:
                 px = row_offset + x * PIXEL_STRIDE
-                if is_hand_pixel(pixels[px], pixels[px + 1], pixels[px + 2]):
+                rgb = undim_rgb((pixels[px], pixels[px + 1], pixels[px + 2]), layout.brightness)
+                if is_hand_pixel(*rgb):
                     points.append((dx, dy))
     return points
 
@@ -277,9 +384,8 @@ def size_restore_command(override: str | None) -> list[str]:
     return ["shell", "wm", "size", "reset"]
 
 
-def capture_frame(serial: str | None = None) -> tuple[int, int, bytes]:
-    """Capture one screencap frame as (width, height, RGBA pixels), validating the payload size."""
-    raw = run_adb(["exec-out", "screencap"], serial=serial)
+def decode_frame(raw: bytes) -> tuple[int, int, bytes]:
+    """Validate a screencap header and RGBA payload before using any pixels."""
     if len(raw) < SCREENCAP_HEADER_BYTES:
         message = "Failed to capture screencap; payload too small"
         raise ScreencapError(message)
@@ -290,6 +396,18 @@ def capture_frame(serial: str | None = None) -> tuple[int, int, bytes]:
         message = f"Unexpected screencap payload size: expected {expected_bytes} pixel bytes, got {len(pixels)}"
         raise ScreencapError(message)
     return width, height, pixels
+
+
+def capture_frame(serial: str | None = None) -> tuple[int, int, bytes]:
+    """Bracket the capture with fresh layout reports, rejecting a layout/surface change."""
+    width, height, _ = decode_frame(run_adb(["exec-out", "screencap"], serial=serial))
+    layout = read_dial_layout(serial, width, height)
+    actual_width, actual_height, pixels = decode_frame(run_adb(["exec-out", "screencap"], serial=serial))
+    confirmed = read_dial_layout(serial, actual_width, actual_height)
+    if (actual_width, actual_height) != (width, height) or confirmed != layout:
+        message = "Dial layout changed during capture; retry on a stable visible surface"
+        raise ScreencapError(message)
+    return width, height, FramePixels(pixels, layout)
 
 
 def read_display_size(serial: str) -> tuple[str | None, str | None]:

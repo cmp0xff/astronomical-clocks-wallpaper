@@ -51,6 +51,41 @@ class OrlojRepresentativeExport {
         exportPraguePlus30m(calculator)
         val sitesByName = sites.toMap()
         exportEquinoxOrientations(calculator, EQUINOX_SITE_NAMES.map { name -> name to sitesByName.getValue(name) })
+        exportDisplayControls(calculator)
+    }
+
+    private fun exportDisplayControls(calculator: AstronomyCalculator) {
+        val prague = site(latitude = 50.08, longitude = 14.42, zoneId = PRAGUE)
+        val geometry = calculator.dialGeometry(EXPORT_INSTANT, prague)
+        val controls =
+            listOf(
+                "small-top-left" to DialDisplaySettings(size = 50, horizontal = 0, vertical = 0),
+                "small-bottom-right" to DialDisplaySettings(size = 50, horizontal = 100, vertical = 100),
+                "large-top-right" to DialDisplaySettings(size = 115, horizontal = 100, vertical = 0),
+                "large-bottom-left-dim" to
+                    DialDisplaySettings(size = 115, horizontal = 0, vertical = 100, brightness = 80),
+            )
+        for ((appearance, palette) in APPEARANCES) {
+            for ((name, display) in controls) {
+                val bitmap = Bitmap.createBitmap(IMAGE_WIDTH, IMAGE_HEIGHT, Bitmap.Config.ARGB_8888)
+                DialRenderer().renderDisplay(
+                    canvas = Canvas(bitmap),
+                    state = clockState(EXPORT_INSTANT.atZone(PRAGUE).toLocalTime()),
+                    geometry = geometry,
+                    layers = DialLayers(),
+                    style =
+                        DialRenderStyle(
+                            palette = palette,
+                            display = display,
+                            viewport =
+                                DialViewport
+                                    .full(width = IMAGE_WIDTH, height = IMAGE_HEIGHT),
+                        ),
+                )
+                savePng(bitmap, "display-$name-$appearance-api${Build.VERSION.SDK_INT}.png")
+                bitmap.recycle()
+            }
+        }
     }
 
     private fun exportSite(

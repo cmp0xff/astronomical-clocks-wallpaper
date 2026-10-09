@@ -420,7 +420,10 @@ class HandDetectionTest(unittest.TestCase):
 
     def test_capture_frame_accepts_a_consistent_payload(self) -> None:
         raw = struct.pack("<IIII", 2, 2, 1, 0) + bytes(2 * 2 * BYTES_PER_PIXEL)
-        with patch.object(device_layer, "run_adb", return_value=raw):
+        with (
+            patch.object(device_layer, "run_adb", return_value=raw),
+            patch.object(device_layer, "read_dial_layout", return_value=device_layer.DialLayout(1, 1, 0.5)),
+        ):
             self.assertEqual(device_layer.capture_frame("device"), (2, 2, bytes(2 * 2 * BYTES_PER_PIXEL)))
 
     @patch.object(device_layer, "run_adb", return_value=bytes(8))
@@ -593,6 +596,75 @@ class SmokeRendererLogTest(unittest.TestCase):
         self.assertIn("Hand advanced 7.500°", output.getvalue())
         self.assertIn("hand drawn afterwards", output.getvalue())
         return output.getvalue(), errors.getvalue()
+
+
+class DisplayDiagnosticTest(unittest.TestCase):
+    """Device captures require explicit layout and retain analysis at control extremes."""
+
+    def test_reports_reject_ambiguity_and_unusable_geometry(self) -> None:
+        line = (
+            f"{device_layer.DISPLAY_LOG_TAG}: DialLayout token=probe engine=1 preview=false "
+            "cx=540.0 cy=1204.0 radius=464.4 brightness=80 dark=true width=1080 height=2408"
+        )
+        expected = device_layer.DialLayout(540, 1204, 464.4, 80)
+        self.assertEqual(device_layer.parse_dial_layout(line, "probe", FRAME_WIDTH, FRAME_HEIGHT), expected)
+        for invalid in (
+            "",
+            f"{line}\n{line}",
+            line.replace("radius=464.4", "radius=nan"),
+            line.replace("width=1080", "width=1"),
+            line.replace("brightness=80", "brightness=70"),
+            line.replace("cx=540.0", "cx=0.0"),
+        ):
+            with self.subTest(invalid=invalid), self.assertRaises(device_layer.ScreencapError):
+                device_layer.parse_dial_layout(invalid, "probe", FRAME_WIDTH, FRAME_HEIGHT)
+
+    def test_reports_reject_a_clipped_outer_stroke(self) -> None:
+        extent = 464.4 * device_layer.STROKED_EXTENT
+        report = (
+            f"{device_layer.DISPLAY_LOG_TAG}: DialLayout token=probe engine=1 preview=false "
+            f"cx={extent} cy={FRAME_HEIGHT / 2} radius=464.4 brightness=100 dark=true "
+            f"width={FRAME_WIDTH} height={FRAME_HEIGHT}"
+        )
+        device_layer.parse_dial_layout(report, "probe", FRAME_WIDTH, FRAME_HEIGHT)
+        # The device's own Size 115% / Horizontal 0% endpoint report, where the rim is flush: this is
+        # what the tolerance exists to keep passing, because the extent recomputed from the printed
+        # radius exceeds the printed centre by a fraction of a pixel.
+        endpoint = report.replace(f"cx={extent}", "cx=535.61926").replace("radius=464.4", "radius=534.06")
+        device_layer.parse_dial_layout(endpoint, "probe", FRAME_WIDTH, FRAME_HEIGHT)
+        for clipped in (
+            report.replace(f"cx={extent}", "cx=464.4"),
+            report.replace(f"cy={FRAME_HEIGHT / 2}", f"cy={FRAME_HEIGHT - 464.4}"),
+        ):
+            with self.subTest(clipped=clipped), self.assertRaises(device_layer.ScreencapError):
+                device_layer.parse_dial_layout(clipped, "probe", FRAME_WIDTH, FRAME_HEIGHT)
+
+    def test_capture_rejects_layout_changes(self) -> None:
+        raw = struct.pack("<IIII", 2, 2, 1, 0) + bytes(16)
+        layouts = [device_layer.DialLayout(1, 1, 0.5), device_layer.DialLayout(1, 1, 0.6)]
+        with (
+            patch.object(device_layer, "run_adb", return_value=raw),
+            patch.object(device_layer, "read_dial_layout", side_effect=layouts),
+            self.assertRaisesRegex(device_layer.ScreencapError, "changed during capture"),
+        ):
+            device_layer.capture_frame("device")
+
+    def test_shifted_dimmed_hand_uses_diagnostics(self) -> None:
+        layout = device_layer.DialLayout(300, 600, 230, 80)
+        dim_factor = 0.8
+        rim = tuple(round(channel * dim_factor) for channel in device_layer.DARK_RIM_RGB)
+        hand = tuple(round(channel * dim_factor) for channel in DARK_HAND_RGB)
+        pixels = bytearray(bytes((*rim, 255)) * FRAME_WIDTH * FRAME_HEIGHT)
+        for step in range(180):
+            for stroke in (-1, 0, 1):
+                offset = (int(layout.cy + stroke) * FRAME_WIDTH + int(layout.cx + step)) * BYTES_PER_PIXEL
+                pixels[offset : offset + 3] = bytes(hand)
+        captured = device_layer.FramePixels(bytes(pixels), layout)
+        self.assertTrue(device_layer.is_dark_palette(FRAME_WIDTH, FRAME_HEIGHT, captured))
+        angle = device_layer.detect_hand_angle(FRAME_WIDTH, FRAME_HEIGHT, captured)
+        if angle is None:
+            self.fail("No hand found with resolved display diagnostics")
+        self.assertAlmostEqual(angle, 90.0, delta=device_layer.ANGLE_TOLERANCE_DEG)
 
 
 if __name__ == "__main__":

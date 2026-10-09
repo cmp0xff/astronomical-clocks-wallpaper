@@ -3,9 +3,11 @@
 The wallpaper uses accurate astronomical geometry with an original Canvas design inspired by
 the Prague Orloj. This is the foundation for #5. It includes the civil clock, zodiac,
 equator, tropics, horizon, and astronomical-night boundary. Sun rendering is implemented in #27;
-Moon position and illuminated phase are implemented in #28. Other astronomy layers, display size,
-position and brightness controls, calendar artwork, apostles, historical hour systems, and
-mechanical approximations remain outside this slice. It does not complete all of #5.
+Moon position and illuminated phase are implemented in #28. Display size, position and whole-wallpaper brightness controls extend this foundation under #5.
+Other astronomy layers, calendar artwork, apostles, historical hour systems and mechanical
+approximations remain deferred. Physical-device acceptance of #5 is recorded in
+[`testing/reports/2026-10-08-feat-5-display-controls.md`](testing/reports/2026-10-08-feat-5-display-controls.md);
+the coverage that pass could not exercise on the available hardware is tracked in #122.
 
 ## Astronomical frame
 
@@ -200,10 +202,10 @@ considered. In accordance with historical Orloj fidelity and visual minimalism, 
 added by default**. The radiant golden Sun marker riding the ecliptic ring already provides an unambiguous
 bearing against the outer Roman numeral scale, and an extra arm would clutter the dial face.
 
-Each engine listens for location and layer changes, maintains one immutable settings snapshot,
-and draws each frame from one instant. Updates take effect on the next visible tick. Hidden
-engines do not start rendering, and destroyed engines unregister both preference listeners.
-Rendering stays at one frame per second while visible.
+Each engine listens for location, layer, appearance and display-composition changes, maintains one
+immutable settings snapshot, and draws each frame from one instant. Updates take effect on the next
+visible tick. Hidden engines do not start rendering, and destroyed engines unregister all four
+preference listeners. Rendering stays at one frame per second while visible.
 
 ## Palette contrast
 
@@ -333,3 +335,33 @@ Representative PNGs for visual inspection are explicitly exported under `app/bui
 Run `./gradlew qualityGate :app:assembleDebug` and `scripts/verify-apk.sh`. Physical-device home and
 lit-lock-screen correctness for the Sun marker (#27) are documented in [2026-10-04-feat-27-sun-marker.md](testing/reports/2026-10-04-feat-27-sun-marker.md);
 frame cost and battery behavior remain unrun and are tracked in #6.
+
+## Display composition
+
+The [display control contract](design.md#orloj-layers-and-display-controls) preserves
+all projection mathematics. An outer radius of `0.43 × shortest usable dimension`
+at 100% becomes `radius × size / 100`. The common artwork transform is
+`translate(centerX, centerY)` then `scale(radius / 1.37)`; strokes, ticks, labels,
+markers and the equinox star retain their relative dimensions.
+
+The outer rim is at 1.37 sky-radius units and its stroke is 0.008 units wide.
+The safe extent is therefore `radius × (1 + 0.004 / 1.37)`. Each position slider
+interpolates from the near edge plus this extent to the far edge minus it.
+Defaults are exactly centered and retain previous zero-inset/full-brightness output.
+The usable rectangle is `min(surface, display metrics)` shifted by the engine's
+offsets and trimmed by the system insets, then clamped to the surface; the platform
+reports no wallpaper crop, so those clamps are the whole of it. The offsets pan that
+window only as far as the surface has slack beyond it, so a surface no larger than
+the display leaves the default centred. Non-finite bounds, a dial radius below 16
+pixels and a stroked extent wider than the shortest side are logged and skipped.
+
+After restoring the dial transform, one source-over black overlay covers the whole
+Canvas at alpha `floor((100 − brightness) × 255 / 100)`. The full-brightness path
+adds no overlay. Contrast coverage extends the existing information-bearing
+palette assertions over every supported brightness step, including the casing
+where a marker or civil hand crosses multiple plate tones. Decorative graticule
+exceptions remain those in the existing palette audit.
+
+`exportRepresentativeImages` adds small/large corner and dimmed exports in both
+themes on API 26/36. Native Canvas tests and exports do not establish physical
+wallpaper placement, launcher cropping or lit-lock behavior.

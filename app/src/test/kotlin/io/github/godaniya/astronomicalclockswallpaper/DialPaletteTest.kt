@@ -136,13 +136,27 @@ class DialPaletteTest {
     )
 
     private fun assertAtLeast(check: ContrastCase) {
-        val ratios =
-            listOfNotNull(
-                contrastRatio(first = check.ink, second = check.surface),
-                check.casing?.let { contrastRatio(first = it, second = check.surface) },
-            )
-        val best = ratios.max()
-        assertTrue("${check.label} needs ${check.minimum}:1, was $best", best >= check.minimum)
+        for (brightness in DialDisplaySettings.BRIGHTNESS_RANGE) {
+            val ratios =
+                listOfNotNull(
+                    contrastRatio(first = dim(check.ink, brightness), second = dim(check.surface, brightness)),
+                    check.casing?.let { casing ->
+                        contrastRatio(
+                            first = dim(casing, brightness),
+                            second = dim(check.surface, brightness),
+                        )
+                    },
+                )
+            val best = ratios.max()
+            assertTrue("${check.label} at $brightness needs ${check.minimum}:1, was $best", best >= check.minimum)
+        }
+    }
+
+    private fun dim(color: Int, brightness: Int): Int {
+        val alpha = ((100 - brightness) * 255f / 100).toInt()
+
+        fun channel(shift: Int): Int = ((color shr shift and 255) * (255 - alpha) / 255.0).toInt()
+        return 255 shl 24 or (channel(16) shl 16) or (channel(8) shl 8) or channel(0)
     }
 
     private fun contrastRatio(first: Int, second: Int): Double {

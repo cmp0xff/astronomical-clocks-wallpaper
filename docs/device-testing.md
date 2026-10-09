@@ -141,3 +141,44 @@ current build. Historical reports may receive documented editorial/privacy corre
 preserving measurements and attribution; new measurements belong in new reports.
 The matrix above links existing baseline evidence; new reports are linked from their PR and
 found through the directory listing rather than appended to this living guide.
+
+## Display controls acceptance (#5)
+
+This pass has been run. Its combined acceptance results are recorded in
+[`2026-10-08-feat-5-display-controls.md`](testing/reports/2026-10-08-feat-5-display-controls.md),
+with its source revision, APK SHA-256 and device-privacy limitations; coverage it
+could not exercise - the lit lock screen, landscape, and a genuinely panned or
+cropped surface - is tracked in #122. The steps below remain the procedure a later
+pass repeats on its own build: record that pass's results in a new dated report
+under `docs/testing/reports/`, with source revision, Android/API and APK SHA-256,
+and preserve device/location privacy. Do not close #5/v0.2 or create a
+release/tag from host results alone.
+
+1. In preview, home and lit lock, exercise Size 50/100/115%, both positions at
+   0/50/100%, and Brightness 80/100%. Check all four corners and recover using
+   **Reset display**. Check complete rim/strokes and proportional ticks/labels/
+   Sun/Moon/equinox marker in dark and light appearance.
+2. Confirm wallpaper-wide dimming, unchanged Settings and system screen brightness,
+   readable information and unchanged geometry. Verify Reset preserves site,
+   timezone, layer grouping and appearance; controls remain enabled without a site.
+3. Confirm changes on the next visible tick with independent preview/active engines.
+   Change orientation and recreate surfaces, including reported asymmetric insets,
+   scrolling/cropped launcher surfaces and offset changes. Check safe bounds and
+   logged skips if usable geometry is unavailable.
+4. Verify persistence after activity/process recreation and reboot. Exercise a remote
+   site, site-zone DST transition, phone-zone changes, site changes and no-site civil
+   clock fallback. Use virtual time for equinox rotation and moving sky checks.
+5. Run the existing smoke/qualification harnesses on the candidate. Device captures
+   now request fresh debug `DialLayout` reports without changing virtual time;
+   screen-space centre, radius and brightness drive the rim/hand probes. Multiple
+   visible reports, missing/unreadable diagnostics, dimension mismatches or geometry
+   outside the capture fail collection rather than falling back to centered guesses.
+
+Debug layout reports appear on layout changes and virtual-clock triggers. An explicit
+request is `adb shell am broadcast -a io.github.godaniya.astronomicalclockswallpaper.DEBUG_SET_TIME --es diagnostics <unique-token>`.
+Only visible engines with surfaces respond. Reports contain no site coordinates;
+release builds register no debug receiver. Unreported launcher crops or OEM wallpaper
+dimming need visual/device evidence and must be recorded as limitations; the
+launcher-crop case the #5 pass could not reproduce is tracked in #122.
+
+Full battery qualification and signed personal release remain v0.3 work.

@@ -15,6 +15,7 @@ import android.os.Looper
 import android.service.wallpaper.WallpaperService
 import android.util.Log
 import android.view.SurfaceHolder
+import android.view.WindowInsets
 import java.time.Clock
 import java.time.DateTimeException
 import java.time.Duration
@@ -48,13 +49,13 @@ class AstronomicalClocksWallpaperService : WallpaperService() {
         val isDebuggable = applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
         val clock = if (isDebuggable) mutableDebugClock else Clock.systemUTC()
         return createEngine(
-            draw = { canvas, state, geometry, layers, palette ->
-                dialRenderer.renderDial(
+            draw = { canvas, state, geometry, layers, palette, display, viewport ->
+                dialRenderer.renderDisplay(
                     canvas = canvas,
                     state = state,
                     geometry = geometry,
                     layers = layers,
-                    palette = palette,
+                    style = DialRenderStyle(palette = palette, display = display, viewport = viewport),
                 )
             },
             clock = clock,
@@ -87,9 +88,9 @@ class AstronomicalClocksWallpaperService : WallpaperService() {
         return engine
     }
 
-    /** Creates an engine with palette awareness and optional controlled surface holder. */
+    /** Creates an engine whose renderer receives display settings and its resolved viewport. */
     internal fun createEngine(
-        draw: (Canvas, ClockState, DialGeometry?, DialLayers, DialPalette) -> Unit,
+        draw: (Canvas, ClockState, DialGeometry?, DialLayers, DialPalette, DialDisplaySettings, DialViewport) -> Unit,
         holder: SurfaceHolder? = null,
         clock: Clock = Clock.systemUTC(),
         deviceZone: () -> ZoneId = ZoneId::systemDefault,
@@ -116,7 +117,12 @@ class AstronomicalClocksWallpaperService : WallpaperService() {
             object : BroadcastReceiver() {
                 override fun onReceive(context: Context, intent: Intent) {
                     if (intent.action == ACTION_DEBUG_SET_TIME) {
-                        handleDebugSetTime(intent)
+                        val token = intent.getStringExtra("diagnostics")
+                        if (token == null) {
+                            handleDebugSetTime(intent)
+                        } else {
+                            for (engine in activeEngines) engine.triggerDebugTick(token)
+                        }
                     }
                 }
             }
@@ -225,26 +231,43 @@ class AstronomicalClocksWallpaperService : WallpaperService() {
         }
     }
 
-    // Engine is a non-static Java inner class and requires the enclosing service instance. The class
-    // carries the four platform lifecycle overrides plus the tick-loop and drawing helpers, including
-    // #85's stopTicking, so it already sat at detekt's per-class function budget. The appearance
-    // feature adds one more callback, onConfigurationChanged, which the enclosing service invokes
-    // rather than the platform; that addition is what takes the class past the budget, so the budget
-    // is suppressed narrowly here rather than by splitting the engine's lifecycle surface.
+    // Engine needs its enclosing service because its Java superclass is a non-static inner class.
+    // Keep the platform lifecycle, display callbacks, diagnostics and tick loop together: splitting
+    // them solely for the function budget would separate rendering from its lifecycle guards.
     @Suppress("UnnecessaryInnerClass", "TooManyFunctions")
     private inner class ClockEngine(
-        private val draw: (Canvas, ClockState, DialGeometry?, DialLayers, DialPalette) -> Unit,
+        private val draw: (
+            Canvas,
+            ClockState,
+            DialGeometry?,
+            DialLayers,
+            DialPalette,
+            DialDisplaySettings,
+            DialViewport,
+        ) -> Unit,
         private val frameHolder: SurfaceHolder?,
         private val clock: Clock,
         private val deviceZone: () -> ZoneId,
         private val calculator: AstronomyCalculator,
     ) : Engine() {
+        private val engineResources
+            get() =
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    displayContext?.resources ?: resources
+                } else {
+                    resources
+                }
         private val handler = Handler(Looper.getMainLooper())
         private val locationStore = LocationStore(applicationContext, deviceZone)
         private val dialSettingsStore = DialSettingsStore(applicationContext)
+        private val displayStore = DialDisplayStore(applicationContext)
+        private val viewport = WallpaperViewport()
+        private var diagnosedLayout: String? = null
+        private var diagnosticToken: String = "layout"
         private val appearanceStore = AppearanceStore(applicationContext)
         private var settings = loadSettings()
         private var isDestroyed = false
+        private var isPreviewEngine = false
         private var currentConfig: Configuration? = null
         private val settingsListener =
             SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
@@ -260,8 +283,9 @@ class AstronomicalClocksWallpaperService : WallpaperService() {
         // onSurfaceDestroyed cancels the tick loop but leaves isEngineVisible true, so the debug
         // trigger must also check that a surface exists: runTick would otherwise draw onto a released
         // surface and its finally would re-arm the periodic loop across the surface gap. Set from
-        // onSurfaceChanged, which the framework calls immediately after onSurfaceCreated.
-        private var isSurfaceAvailable = false
+        // onSurfaceChanged, which the framework calls immediately after onSurfaceCreated. Injected
+        // ready holders also mark it available for the internal frame-test seam.
+        private var isSurfaceAvailable = frameHolder?.surface?.isValid == true
 
         // Both of these faults recur once a second while they last, so they log the first occurrence
         // and a periodic summary rather than a stack trace per tick.
@@ -287,6 +311,7 @@ class AstronomicalClocksWallpaperService : WallpaperService() {
             locationStore.registerListener(settingsListener)
             dialSettingsStore.registerListener(settingsListener)
             appearanceStore.registerListener(settingsListener)
+            displayStore.registerListener(settingsListener)
         }
 
         private fun loadSettings(): WallpaperSettings {
@@ -295,6 +320,7 @@ class AstronomicalClocksWallpaperService : WallpaperService() {
                     location = locationStore.load(),
                     layers = dialSettingsStore.load(),
                     appearance = appearanceStore.load(),
+                    display = displayStore.load(),
                 )
             return settings
         }
@@ -321,12 +347,17 @@ class AstronomicalClocksWallpaperService : WallpaperService() {
             runTick()
         }
 
+        override fun onCreate(surfaceHolder: SurfaceHolder) {
+            super.onCreate(surfaceHolder)
+            isPreviewEngine = isPreview
+        }
+
         override fun onVisibilityChanged(visible: Boolean) {
             if (isDestroyed) {
                 return
             }
             isEngineVisible = visible
-            if (visible) {
+            if (visible && isSurfaceAvailable) {
                 runTick()
             } else {
                 stopTicking()
@@ -335,6 +366,7 @@ class AstronomicalClocksWallpaperService : WallpaperService() {
 
         override fun onSurfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
             super.onSurfaceChanged(holder, format, width, height)
+            if (isDestroyed) return
             isSurfaceAvailable = true
             // Redraw for the new surface and restart the tick. The framework can destroy and
             // recreate the surface without a visibility change, and onSurfaceDestroyed cancels the
@@ -342,6 +374,22 @@ class AstronomicalClocksWallpaperService : WallpaperService() {
             if (isEngineVisible) {
                 runTick()
             }
+        }
+
+        override fun onApplyWindowInsets(insets: WindowInsets) {
+            super.onApplyWindowInsets(insets)
+            viewport.insets(insets)
+        }
+
+        override fun onOffsetsChanged(
+            xOffset: Float,
+            yOffset: Float,
+            xOffsetStep: Float,
+            yOffsetStep: Float,
+            xPixelOffset: Int,
+            yPixelOffset: Int,
+        ) {
+            viewport.offsets(xPixels = xPixelOffset, yPixels = yPixelOffset)
         }
 
         override fun onSurfaceDestroyed(holder: SurfaceHolder) {
@@ -357,11 +405,13 @@ class AstronomicalClocksWallpaperService : WallpaperService() {
             locationStore.unregisterListener(settingsListener)
             dialSettingsStore.unregisterListener(settingsListener)
             appearanceStore.unregisterListener(settingsListener)
+            displayStore.unregisterListener(settingsListener)
             stopTicking()
             super.onDestroy()
         }
 
-        fun triggerDebugTick() {
+        fun triggerDebugTick(token: String = "clock") {
+            diagnosticToken = token
             if (isDestroyed || !isEngineVisible || !isSurfaceAvailable) {
                 // The skip is deliberate, but naming the failed guard keeps the common "broadcast
                 // arrived yet the dial did not move" case diagnosable from the device harness.
@@ -372,6 +422,7 @@ class AstronomicalClocksWallpaperService : WallpaperService() {
                 )
                 return
             }
+            diagnosedLayout = null
             runTick()
         }
 
@@ -381,6 +432,7 @@ class AstronomicalClocksWallpaperService : WallpaperService() {
         // tick loop, while severe VM errors still propagate.
         @Suppress("TooGenericExceptionCaught")
         private fun runTick() {
+            if (isDestroyed || !isEngineVisible || !isSurfaceAvailable) return
             try {
                 drawFrame()
                 renderFailureLog.recordSuccess()
@@ -428,6 +480,34 @@ class AstronomicalClocksWallpaperService : WallpaperService() {
             }
         }
 
+        private fun diagnoseLayout(usable: DialViewport, display: DialDisplaySettings, palette: DialPalette) {
+            if (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE == 0) return
+            val placement = usable.resolve(display)
+            val layout =
+                if (placement == null) {
+                    "DialLayout token=$diagnosticToken engine=${System.identityHashCode(
+                        this,
+                    )} preview=$isPreviewEngine unusable"
+                } else {
+                    "DialLayout token=$diagnosticToken engine=${System.identityHashCode(
+                        this,
+                    )} preview=$isPreviewEngine " +
+                        // The engine draws in surface coordinates; the framework scrolls the surface so
+                        // the clamped window origin resolved for this frame lands at screen 0. The
+                        // harnesses probe captured screen pixels, so subtract that origin - the scroll,
+                        // not the raw reported offset, and not the inset-adjusted usable rectangle.
+                        "cx=${placement.centerX - viewport.windowOriginX} " +
+                        "cy=${placement.centerY - viewport.windowOriginY} " +
+                        "radius=${placement.radius} brightness=${display.brightness} " +
+                        "dark=${palette == DialStyle.DARK_PALETTE} " +
+                        "width=${engineResources.displayMetrics.widthPixels} height=${engineResources.displayMetrics.heightPixels}"
+                }
+            if (layout != diagnosedLayout) {
+                Log.d("DialDisplay", layout)
+                diagnosedLayout = layout
+            }
+        }
+
         private fun drawFrame() {
             wallpaperFrame.drawWallpaperFrame(frameHolder ?: surfaceHolder) { canvas ->
                 val instant = clock.instant()
@@ -435,12 +515,22 @@ class AstronomicalClocksWallpaperService : WallpaperService() {
                 val location = snapshot.location
                 val civilTime = instant.atZone(location?.zoneId ?: deviceZone()).toLocalTime()
                 val geometry = dialGeometryOrNull(instant, location)
-                val config = currentConfig ?: resources.configuration
+                val config = currentConfig ?: engineResources.configuration
                 val isSystemNight =
                     config.uiMode and Configuration.UI_MODE_NIGHT_MASK ==
                         Configuration.UI_MODE_NIGHT_YES
                 val palette = DialStyle.paletteFor(snapshot.appearance, isSystemNight)
-                draw(canvas, clockState(civilTime), geometry, snapshot.layers, palette)
+                val metrics = engineResources.displayMetrics
+                val usable =
+                    viewport
+                        .resolve(
+                            surfaceWidth = canvas.width,
+                            surfaceHeight = canvas.height,
+                            displayWidth = metrics.widthPixels,
+                            displayHeight = metrics.heightPixels,
+                        )
+                diagnoseLayout(usable, snapshot.display, palette)
+                draw(canvas, clockState(civilTime), geometry, snapshot.layers, palette, snapshot.display, usable)
             }
         }
     }

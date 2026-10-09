@@ -72,6 +72,7 @@ class AstronomicalClocksWallpaperServiceTest {
         val engine = controller.get().onCreateEngine()
         val looper = shadowOf(Looper.getMainLooper())
 
+        engine.onSurfaceChanged(engine.surfaceHolder, SURFACE_FORMAT, SURFACE_WIDTH, SURFACE_HEIGHT)
         engine.onVisibilityChanged(true)
         assertTrue(looper.nextScheduledTaskTime > Duration.ZERO)
 
@@ -87,6 +88,7 @@ class AstronomicalClocksWallpaperServiceTest {
         val looper = shadowOf(Looper.getMainLooper())
         val holder = engine.surfaceHolder
 
+        engine.onSurfaceChanged(engine.surfaceHolder, SURFACE_FORMAT, SURFACE_WIDTH, SURFACE_HEIGHT)
         engine.onVisibilityChanged(true)
         assertTrue(looper.nextScheduledTaskTime > Duration.ZERO)
 

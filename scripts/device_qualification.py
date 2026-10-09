@@ -341,12 +341,19 @@ def phase_process_rebind(device: device_layer.AdbDevice, results: list[tuple[str
         for _ in range(REBIND_POLL_COUNT):
             time.sleep(REBIND_POLL_SECONDS)
             curr_pid = device.get_wallpaper_pid()
-            if curr_pid is not None and curr_pid != pid_before:
-                pid_after = curr_pid
+            if curr_pid is None or curr_pid == pid_before:
+                continue
+            pid_after = curr_pid
+            try:
                 w_kill, h_kill, px_kill = device.capture_frame()
-                angle_post_kill = device_layer.detect_hand_angle(w_kill, h_kill, px_kill)
-                if angle_post_kill is not None:
-                    break
+            except device_layer.ScreencapError:
+                # A fresh PID exists before its engine is necessarily visible with a surface, so the
+                # first layout reports after rebind can be absent or unusable. Retry within the poll
+                # budget; the budget expiring still fails below rather than guessing a layout.
+                continue
+            angle_post_kill = device_layer.detect_hand_angle(w_kill, h_kill, px_kill)
+            if angle_post_kill is not None:
+                break
         print(f"PID transition: {pid_before} -> {pid_after}")
 
         if pid_after is not None and pid_after != pid_before and angle_post_kill is not None:

@@ -89,6 +89,7 @@ class SettingsActivity : Activity() {
         )
         bindDialLayers(hasLocation = location != null)
         bindAppearanceControls()
+        bindDisplayControls()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {

@@ -44,4 +44,9 @@
   <string name="appearance_system">System default</string>
   <string name="appearance_light">Light</string>
   <string name="appearance_dark">Dark</string>
+    <string name="display_size">Size: %1$d%%</string>
+    <string name="display_horizontal">Horizontal position: %1$d%%</string>
+    <string name="display_vertical">Vertical position: %1$d%%</string>
+    <string name="display_brightness">Brightness: %1$d%%</string>
+    <string name="reset_display">Reset display</string>
 </resources>

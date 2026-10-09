@@ -1,6 +1,7 @@
 package io.github.godaniya.astronomicalclockswallpaper
 
 import android.graphics.Canvas
+import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.Typeface
@@ -38,7 +39,7 @@ internal class DialRenderer {
     private val undersizedDialLog =
         RepeatedFailureLog(
             tag = TAG,
-            message = "skipping dial: radius below minimum",
+            message = "skipping dial: viewport cannot fit the dial",
             level = Log.WARN,
         )
 
@@ -49,20 +50,44 @@ internal class DialRenderer {
         geometry: DialGeometry? = null,
         layers: DialLayers = DialLayers(),
         palette: DialPalette = DialStyle.DARK_PALETTE,
+    ) = renderDisplay(
+        canvas = canvas,
+        state = state,
+        geometry = geometry,
+        layers = layers,
+        style =
+            DialRenderStyle(
+                palette = palette,
+                display = DialDisplaySettings(),
+                viewport = DialViewport.full(width = canvas.width, height = canvas.height),
+            ),
+    )
+
+    fun renderDisplay(
+        canvas: Canvas,
+        state: ClockState,
+        geometry: DialGeometry?,
+        layers: DialLayers,
+        style: DialRenderStyle,
     ) {
+        val palette = style.palette
+        val display = style.display
+        val viewport = style.viewport
         if (canvas.width <= 0 || canvas.height <= 0) {
             emptyCanvasLog.recordFailure(detail = "${canvas.width}x${canvas.height}")
             return
         }
         canvas.drawColor(palette.background)
-        val radius = minOf(a = canvas.width, b = canvas.height) * RADIUS_FRACTION
-        if (radius < MIN_DIAL_RADIUS) {
-            undersizedDialLog.recordFailure(detail = "$radius < $MIN_DIAL_RADIUS")
+        val placement = viewport.resolve(display)
+        if (placement == null) {
+            undersizedDialLog.recordFailure(detail = "unusable viewport=$viewport display=$display")
+            applyBrightness(canvas, display.brightness)
             return
         }
+        val radius = placement.radius
         val checkpoint = canvas.save()
         try {
-            canvas.translate(canvas.width / CENTER_DIVISOR, canvas.height / CENTER_DIVISOR)
+            canvas.translate(placement.centerX, placement.centerY)
             canvas.scale(radius / OUTER_RADIUS, radius / OUTER_RADIUS)
             drawCivilScale(canvas, palette)
             val projection = geometry?.let(::OrlojProjection)
@@ -84,28 +109,55 @@ internal class DialRenderer {
                     isZodiacBandVisible = layers.isZodiacRingEnabled,
                 )
             }
-            // The marker needs both a projected position and a phase, so like the Sun it is drawn
-            // only when the geometry carries them; the caller owns that suppression.
-            if (projection != null && layers.isMoonEnabled) {
-                val moonPoint = projection.moonPoint
-                val moonPhase = geometry.moonPhaseLongitudeDeg
-                if (moonPoint != null && moonPhase != null) {
-                    moon.draw(
-                        canvas = canvas,
-                        point = moonPoint,
-                        phase = MoonDiscPhase(longitudeDeg = moonPhase, isSouthern = projection.isSouthern),
-                        palette = palette,
-                        isZodiacBandVisible = layers.isZodiacRingEnabled,
-                    )
-                }
-            }
+            drawMoon(
+                canvas = canvas,
+                projection = projection,
+                phase = geometry?.moonPhaseLongitudeDeg,
+                layers = layers,
+                palette = palette,
+            )
             drawCivilHand(canvas, state.hourAngle, palette)
         } finally {
             canvas.restoreToCount(checkpoint)
         }
+        applyBrightness(canvas, display.brightness)
         // Only a frame that ran to completion ends the episode, so a throw leaves both counters alone.
         emptyCanvasLog.recordSuccess()
         undersizedDialLog.recordSuccess()
+    }
+
+    private fun applyBrightness(canvas: Canvas, brightness: Int) {
+        if (brightness < FULL_BRIGHTNESS) {
+            canvas
+                .drawColor(
+                    Color
+                        .argb(((FULL_BRIGHTNESS - brightness) * MAX_ALPHA / FULL_BRIGHTNESS).toInt(), 0, 0, 0),
+                )
+        }
+    }
+
+    private fun drawMoon(
+        canvas: Canvas,
+        projection: OrlojProjection?,
+        phase: Double?,
+        layers: DialLayers,
+        palette: DialPalette,
+    ) {
+        // The marker needs both a projected position and a phase, so like the Sun it is drawn
+        // only when the geometry carries them; the caller owns that suppression.
+        if (projection != null && layers.isMoonEnabled) {
+            val moonPoint = projection.moonPoint
+            val moonPhase = phase
+            if (moonPoint != null && moonPhase != null) {
+                moon.draw(
+                    canvas = canvas,
+                    point = moonPoint,
+                    phase = MoonDiscPhase(longitudeDeg = moonPhase, isSouthern = projection.isSouthern),
+                    palette = palette,
+                    isZodiacBandVisible = layers.isZodiacRingEnabled,
+                )
+            }
+        }
     }
 
     private fun drawCivilScale(canvas: Canvas, palette: DialPalette) {
@@ -178,10 +230,10 @@ internal class DialRenderer {
         canvas.drawCircle(0f, 0f, HUB_INNER_RADIUS, paint)
     }
 
-    private companion object {
+    internal companion object {
         const val CENTER_DIVISOR = 2f
-        const val RADIUS_FRACTION = 0.43f
-        const val MIN_DIAL_RADIUS = 16f
+        const val FULL_BRIGHTNESS = 100
+        const val MAX_ALPHA = 255f
         const val OUTER_RADIUS = 1.37f
         const val SCALE_INNER_RADIUS = 1.05f
         const val RIM_WIDTH = 0.008f

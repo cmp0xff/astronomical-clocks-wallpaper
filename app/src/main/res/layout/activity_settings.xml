@@ -119,6 +119,56 @@
         android:minHeight="48dp"
         android:text="@string/appearance_dark" />
     </RadioGroup>
+    <TextView
+      android:id="@+id/display_size_label"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:labelFor="@+id/display_size"
+      android:text="@string/display_size" />
+    <SeekBar
+      android:id="@+id/display_size"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:minHeight="48dp" />
+    <TextView
+      android:id="@+id/display_horizontal_label"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:labelFor="@+id/display_horizontal"
+      android:text="@string/display_horizontal" />
+    <SeekBar
+      android:id="@+id/display_horizontal"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:minHeight="48dp" />
+    <TextView
+      android:id="@+id/display_vertical_label"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:labelFor="@+id/display_vertical"
+      android:text="@string/display_vertical" />
+    <SeekBar
+      android:id="@+id/display_vertical"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:minHeight="48dp" />
+    <TextView
+      android:id="@+id/display_brightness_label"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:labelFor="@+id/display_brightness"
+      android:text="@string/display_brightness" />
+    <SeekBar
+      android:id="@+id/display_brightness"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:minHeight="48dp" />
+    <Button
+      android:id="@+id/reset_display"
+      android:layout_width="wrap_content"
+      android:layout_height="wrap_content"
+      android:minHeight="48dp"
+      android:text="@string/reset_display" />
     <Button
       android:id="@+id/open_preview"
       android:layout_width="wrap_content"
