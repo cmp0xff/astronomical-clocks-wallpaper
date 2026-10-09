@@ -14,6 +14,7 @@ from types import ModuleType
 from typing import Final
 from unittest.mock import MagicMock, patch
 from xml.sax.saxutils import escape as xml_escape
+from zoneinfo import ZoneInfo
 
 import device_layer
 import device_qualification as qualification
@@ -78,6 +79,8 @@ DUPLICATED_CONSTANT_NAMES: Final = (
     "ADB_TIMEOUT_SECONDS",
     "ADB_RESTORE_TIMEOUT_SECONDS",
     "ANGLE_TOLERANCE_DEG",
+    "CIVIL_MIDNIGHT_ANGLE_DEG",
+    "CIVIL_SECONDS_PER_DEGREE",
     "COARSE_BIN_COUNT",
     "COARSE_BIN_WIDTH_DEG",
     "DARK_HAND_MIN_RED_MINUS_BLUE",
@@ -335,12 +338,59 @@ class DeviceQualificationTest(unittest.TestCase):
     @patch.object(
         device_layer,
         "run_adb",
+        side_effect=subprocess.CalledProcessError(
+            1,
+            ["adb"],
+            stderr=b"cat: " + device_layer.LOCATION_PREFS_PATH.encode() + b": No such file or directory",
+        ),
+    )
+    def test_a_missing_saved_site_prefs_file_reads_as_absent(self, _run_adb: MagicMock) -> None:
+        """A prefs file never written is the store's "no saved site", not a probe error."""
+        self.assertIsNone(device_layer.read_saved_site_zone_id("device"))
+
+    @patch.object(device_layer, "run_adb", return_value=prefs_xml({"version": 2}).encode())
+    def test_a_readable_prefs_file_with_no_loadable_record_reads_as_absent(self, _run_adb: MagicMock) -> None:
+        """A successful read whose record the store rejects still means "no saved site", not an error."""
+        self.assertIsNone(device_layer.read_saved_site_zone_id("device"))
+
+    @patch.object(
+        device_layer,
+        "run_adb",
         side_effect=subprocess.CalledProcessError(1, ["adb"], stderr=b"package not debuggable"),
     )
-    def test_a_saved_site_zone_read_failure_is_not_a_zone(self, _run_adb: MagicMock) -> None:
-        with contextlib.redirect_stderr(io.StringIO()) as error_output:
-            self.assertIsNone(device_layer.read_saved_site_zone_id("device"))
-        self.assertIn("saved-site prefs probe failed", error_output.getvalue())
+    def test_a_saved_site_probe_failure_raises_instead_of_reading_as_absent(self, _run_adb: MagicMock) -> None:
+        """A failed read must not be read as "no saved site"; that would fall back to the device zone."""
+        with self.assertRaises(device_layer.ProbeError) as raised:
+            device_layer.read_saved_site_zone_id("device")
+        self.assertIn("saved-site prefs probe failed", str(raised.exception))
+        self.assertIn("package not debuggable", str(raised.exception))
+
+    @patch.object(device_layer, "run_adb", side_effect=OSError("adb transport closed"))
+    def test_a_saved_site_probe_oserror_raises(self, _run_adb: MagicMock) -> None:
+        with self.assertRaises(device_layer.ProbeError):
+            device_layer.read_saved_site_zone_id("device")
+
+    @patch.object(
+        device_layer,
+        "run_adb",
+        side_effect=subprocess.TimeoutExpired(cmd="adb", timeout=device_layer.ADB_TIMEOUT_SECONDS),
+    )
+    def test_a_saved_site_probe_timeout_raises_instead_of_aborting_the_run(self, _run_adb: MagicMock) -> None:
+        """A stalled transport must fail this phase through ProbeError, not escape to main()."""
+        with self.assertRaises(device_layer.ProbeError):
+            device_layer.read_saved_site_zone_id("device")
+
+    @patch.object(
+        device_layer,
+        "run_adb",
+        side_effect=subprocess.CalledProcessError(
+            1, ["adb"], stderr=b"cat: /data/local/tmp/nope.xml: No such file or directory"
+        ),
+    )
+    def test_an_absent_marker_naming_another_path_is_not_a_saved_site_absence(self, _run_adb: MagicMock) -> None:
+        """An ENOENT about some other path is a probe error, not the store's "no saved site"."""
+        with self.assertRaises(device_layer.ProbeError):
+            device_layer.read_saved_site_zone_id("device")
 
     @patch.object(device_layer, "run_adb", return_value=b"100\n")
     def test_clock_tick_rate_is_parsed(self, _run_adb: MagicMock) -> None:
@@ -939,6 +989,25 @@ class HandDetectionTest(unittest.TestCase):
             self.fail("a full sample set must be refined")
         self.assertAlmostEqual(refined, 0.0)
 
+    def test_civil_hand_angle_matches_the_pinned_clock_state_anchors(self) -> None:
+        """Mirror ClockStateTest.kt: noon is up, midnight down, 06:00 270°, 18:00 90°."""
+        anchors = ((0, 180.0), (6 * 3600, 270.0), (12 * 3600, 0.0), (18 * 3600, 90.0), (3 * 3600 + 15 * 60, 228.75))
+        for seconds, want in anchors:
+            with self.subTest(seconds=seconds):
+                self.assertAlmostEqual(device_layer.civil_hand_angle_deg(seconds), want, places=6)
+
+    def test_civil_hand_angle_wraps_across_noon(self) -> None:
+        self.assertAlmostEqual(device_layer.civil_hand_angle_deg(11 * 3600 + 59 * 60 + 59), 359.995833, places=5)
+        self.assertAlmostEqual(device_layer.civil_hand_angle_deg(12 * 3600 + 1), 0.004167, places=5)
+
+    def test_signed_circular_difference_wraps_across_zero(self) -> None:
+        self.assertAlmostEqual(device_layer.signed_circular_difference_deg(1.0, 359.0), 2.0)
+        self.assertAlmostEqual(device_layer.signed_circular_difference_deg(359.0, 1.0), -2.0)
+        self.assertAlmostEqual(device_layer.signed_circular_difference_deg(198.75, 168.75), 30.0)
+        # A half turn resolves to -180, so the documented range is the half-open [-180, 180).
+        self.assertAlmostEqual(device_layer.signed_circular_difference_deg(0.0, 180.0), -180.0)
+        self.assertAlmostEqual(device_layer.signed_circular_difference_deg(180.0, 0.0), -180.0)
+
     def test_dark_hand_stroke_is_located_on_a_synthetic_frame(self) -> None:
         frame = hand_frame(device_layer.DARK_RIM_RGB, DARK_HAND_RGB, HAND_UP_BEARING_DEG)
         angle = device_layer.detect_hand_angle(FRAME_WIDTH, FRAME_HEIGHT, frame)
@@ -1156,8 +1225,97 @@ class PhaseDecisionTest(unittest.TestCase):
         self.assertIn("Europe/Prague", results[0][1])
         self.assertIn("saved site", results[0][1])
         self.assertIn("2026-06-20T21:15:00Z", results[0][1])
+        self.assertIn("absolute civil-hand angle", results[0][1])
         self.assertIn("bracketed within 10s, not resolved", results[0][1])
         self.assertEqual(send.call_count, 5)
+
+    def test_expected_rollover_angles_are_the_absolute_civil_angles(self) -> None:
+        """The four Europe/Prague probe instants map to the absolute civil-hand angles 168.75 to 191.25°."""
+        zone = ZoneInfo("Europe/Prague")
+        instants = qualification.rollover_instants(zone)
+        expected = qualification.expected_rollover_angles_deg(zone, instants)
+        wants = [168.75, 179.958333, 180.041667, 191.25]
+        for value, want in zip(expected, wants, strict=True):
+            self.assertAlmostEqual(value, want, places=4)
+        # The expected angles depend on the zone: interpreting the same instants in another zone
+        # shifts them, so a probe that resolved the wrong zone lands far outside the tolerance.
+        tokyo = qualification.expected_rollover_angles_deg(ZoneInfo("Asia/Tokyo"), instants)
+        self.assertNotEqual([round(value, 3) for value in expected], [round(value, 3) for value in tokyo])
+
+    def test_evaluate_rollover_flags_a_hand_that_jumps_backwards(self) -> None:
+        """A backward step across a discriminable gap is reported even though residuals also fail."""
+        zone = ZoneInfo("Europe/Prague")
+        instants = qualification.rollover_instants(zone)
+        measured = [168.75, 179.958, 180.042, 180.0]
+        _, _, problems = qualification.evaluate_rollover(zone, instants, measured, "Europe/Prague")
+        self.assertTrue(any("did not advance monotonically" in problem for problem in problems))
+
+    def test_evaluate_rollover_accepts_the_exact_tolerance_boundary(self) -> None:
+        """A residual of exactly the 0.5° tolerance passes, matching the time-travel boundary."""
+        zone = ZoneInfo("Europe/Prague")
+        instants = qualification.rollover_instants(zone)
+        measured = [168.75, 179.958, 180.042, 191.75]
+        _, residuals, problems = qualification.evaluate_rollover(zone, instants, measured, "Europe/Prague")
+        self.assertAlmostEqual(residuals[-1], 0.5)
+        self.assertEqual(problems, [])
+
+    @patch.object(qualification, "ensure_screen_on", return_value=True)
+    @patch.object(device_layer, "read_saved_site_zone_id", return_value="Europe/Prague")
+    @patch.object(device_layer, "detect_hand_angle", side_effect=[198.75, 209.958, 210.042, 221.25])
+    @patch.object(device_layer, "capture_frame", return_value=(2, 2, bytes(16)))
+    @patch.object(device_layer, "send_debug_clock_broadcast", return_value=True)
+    @patch.object(qualification.time, "sleep")
+    def test_midnight_rollover_rejects_a_constant_angular_shift(
+        self,
+        _sleep: MagicMock,
+        _send: MagicMock,
+        _capture: MagicMock,
+        _angle: MagicMock,
+        _zone: MagicMock,
+        _ensure: MagicMock,
+    ) -> None:
+        """The relative check accepted a fixed +30° error on every sample; the absolute one rejects it."""
+        results: list[tuple[str, str]] = []
+        failures: list[str] = []
+        with contextlib.redirect_stdout(io.StringIO()):
+            qualification.phase_midnight_rollover(device_layer.AdbDevice("device"), results, failures)
+        self.assertEqual(results, [])
+        self.assertEqual(len(failures), 4)
+        for failure in failures:
+            self.assertIn("residual +30.000°", failure)
+            self.assertIn("exceeds the 0.5° tolerance", failure)
+
+    @patch.object(qualification, "ensure_screen_on", return_value=True)
+    @patch.object(device_layer, "read_device_timezone")
+    @patch.object(
+        device_layer,
+        "read_saved_site_zone_id",
+        side_effect=device_layer.ProbeError("saved-site prefs probe failed: package not debuggable"),
+    )
+    @patch.object(device_layer, "send_debug_clock_broadcast")
+    @patch.object(device_layer, "capture_frame")
+    @patch.object(qualification.time, "sleep")
+    def test_midnight_rollover_fails_loudly_when_the_saved_site_probe_fails(
+        self,
+        _sleep: MagicMock,
+        capture: MagicMock,
+        send: MagicMock,
+        _saved: MagicMock,
+        device_zone: MagicMock,
+        _ensure: MagicMock,
+    ) -> None:
+        """A failed saved-site read must fail the phase, not fall back to the device timezone."""
+        results: list[tuple[str, str]] = []
+        failures: list[str] = []
+        with contextlib.redirect_stdout(io.StringIO()):
+            qualification.phase_midnight_rollover(device_layer.AdbDevice("device"), results, failures)
+        self.assertEqual(results, [])
+        self.assertEqual(len(failures), 1)
+        self.assertIn("the saved-site preference probe failed", failures[0])
+        self.assertIn("package not debuggable", failures[0])
+        device_zone.assert_not_called()
+        send.assert_not_called()
+        capture.assert_not_called()
 
     @patch.object(qualification, "ensure_screen_on", return_value=True)
     @patch.object(device_layer, "read_device_timezone", return_value="Europe/Prague")

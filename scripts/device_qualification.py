@@ -4,7 +4,8 @@
 Run observable live-wallpaper checks on one physical Android device via ADB.
 
 This harness verifies lifecycle transitions, dial rendering accuracy across time shifts,
-screen-off CPU quiescence, midnight date rollover, memory growth stability, and log cleanliness.
+screen-off CPU quiescence, midnight date rollover, memory growth stability, and renderer-log
+diagnostics.
 
 The shared device layer owns the ADB primitives, the dial/frame analysis, and the target device
 identity; this module keeps the qualification phases, its restore policy, and its report.
@@ -39,7 +40,6 @@ SCREEN_OFF_CPU_BUDGET_SECONDS: Final = 0.05
 # falling back to the device's). The reference date fixes a summer instant whose zone offset is
 # stable across the 90-minute window, and the four samples bracket local civil midnight by 10
 # seconds (23:15:00, 23:59:50, 00:00:10, 00:45:00) so a frozen hand cannot sit within tolerance.
-SECONDS_PER_DAY: Final = 86400.0
 ROLLOVER_FIRST_LOCAL: Final = (2026, 6, 20, 23, 15, 0)
 ROLLOVER_SAMPLE_OFFSETS_SECONDS: Final = (0.0, 2690.0, 2710.0, 5400.0)
 
@@ -605,7 +605,13 @@ def set_debug_instant(device: device_layer.AdbDevice, instant_str: str) -> tuple
 
 
 def resolve_rollover_zone(device: device_layer.AdbDevice) -> tuple[str, str] | None:
-    """Resolve the zone the service renders with: the saved site's, else the device's."""
+    """
+    Resolve the zone the service renders with: the saved site's, else the device's.
+
+    A device_layer.ProbeError from the saved-site read propagates: a None saved zone means a
+    successful read confirmed no saved record, so the device timezone is the correct fallback, but a
+    failed read must not be read as absence.
+    """
     saved_site_zone = device.read_saved_site_zone_id()
     if saved_site_zone:
         return saved_site_zone, "saved site"
@@ -624,45 +630,57 @@ def rollover_instants(zone: ZoneInfo) -> list[str]:
     ]
 
 
-def expected_rollover_offsets_deg() -> list[float]:
-    """Return each sample's expected clockwise hand offset from the first sample, in degrees."""
-    return [offset * device_layer.FULL_TURN_DEG / SECONDS_PER_DAY for offset in ROLLOVER_SAMPLE_OFFSETS_SECONDS]
+def expected_rollover_angles_deg(zone: ZoneInfo, instants: list[str]) -> list[float]:
+    """Return each UTC instant's absolute civil-hand angle in the zone, clockwise from the top."""
+    angles: list[float] = []
+    for instant in instants:
+        local = datetime.fromisoformat(instant).astimezone(zone)
+        angles.append(device_layer.civil_hand_angle_deg(local.hour * 3600 + local.minute * 60 + local.second))
+    return angles
 
 
 def evaluate_rollover(
-    instants: list[str], angles: list[float], zone_id: str
+    zone: ZoneInfo, instants: list[str], angles: list[float], zone_id: str
 ) -> tuple[list[float], list[float], list[str]]:
-    """Return (offsets, residuals, problems) for one civil-midnight sweep."""
-    expected = expected_rollover_offsets_deg()
-    offsets = [(angle - angles[0]) % device_layer.FULL_TURN_DEG for angle in angles]
-    residuals = [offset - want for offset, want in zip(offsets, expected, strict=True)]
+    """Return (expected absolute angles, circular residuals, problems) for one civil-midnight sweep."""
+    expected = expected_rollover_angles_deg(zone, instants)
+    residuals = [
+        device_layer.signed_circular_difference_deg(angle, want) for angle, want in zip(angles, expected, strict=True)
+    ]
     problems: list[str] = []
-    for instant, offset, residual in zip(instants, offsets, residuals, strict=True):
+    for instant, residual in zip(instants, residuals, strict=True):
         if round(abs(residual), ANGLE_REPORT_DECIMALS) > device_layer.ANGLE_TOLERANCE_DEG:
             problems.append(
-                f"Midnight rollover at {instant} (zone {zone_id}) advanced {offset:.3f}°, "
-                f"residual {residual:+.3f}° exceeds the {device_layer.ANGLE_TOLERANCE_DEG}° tolerance"
+                f"Midnight rollover at {instant} (zone {zone_id}) hand angle residual {residual:+.3f}° "
+                f"exceeds the {device_layer.ANGLE_TOLERANCE_DEG}° tolerance"
             )
-    for index in range(1, len(offsets)):
+    for index in range(1, len(angles)):
         # Only gaps wider than the probe jitter can order adjacent samples: the 20-second pair sits
         # 0.083° apart, below the tolerance, so it is checked as a bracket, not ordered against itself.
         discriminable = expected[index] - expected[index - 1] > device_layer.ANGLE_TOLERANCE_DEG
-        if discriminable and offsets[index] < offsets[index - 1]:
+        if discriminable and angles[index] < angles[index - 1]:
             problems.append(
                 f"Midnight rollover did not advance monotonically at {instants[index]} "
-                f"({offsets[index - 1]:.3f}° -> {offsets[index]:.3f}°) in zone {zone_id}"
+                f"({angles[index - 1]:.3f}° -> {angles[index]:.3f}°) in zone {zone_id}"
             )
-    return offsets, residuals, problems
+    return expected, residuals, problems
 
 
 def phase_midnight_rollover(
     device: device_layer.AdbDevice, results: list[tuple[str, str]], failures: list[str]
 ) -> None:
-    """Step the virtual clock across the rendered zone's civil midnight and confirm the hand advances."""
+    """Step the virtual clock across the rendered zone's civil midnight and confirm the civil hand."""
     print("\n--- Phase 6: Midnight Date Rollover ---")
     if not ensure_screen_on(device, failures):
         return
-    resolved = resolve_rollover_zone(device)
+    try:
+        resolved = resolve_rollover_zone(device)
+    except device_layer.ProbeError as error:
+        failures.append(
+            "Midnight rollover could not be verified: the saved-site preference probe failed, "
+            f"so the rendered zone is unknown ({device_layer.error_detail(error)})"
+        )
+        return
     if resolved is None:
         failures.append(
             "Midnight rollover could not be verified: neither the saved site zone nor the device timezone was readable"
@@ -690,22 +708,24 @@ def phase_midnight_rollover(
             return
         angles.append(angle)
 
-    offsets, residuals, problems = evaluate_rollover(instants, angles, zone_id)
+    expected, residuals, problems = evaluate_rollover(zone, instants, angles, zone_id)
     print(
-        f"Midnight rollover in {zone_id} ({source}): offsets "
-        f"{[round(offset, ANGLE_REPORT_DECIMALS) for offset in offsets]}, residuals "
+        f"Midnight rollover in {zone_id} ({source}): expected absolute angles "
+        f"{[round(value, ANGLE_REPORT_DECIMALS) for value in expected]}, measured "
+        f"{[round(angle, ANGLE_REPORT_DECIMALS) for angle in angles]}, residuals "
         f"{[round(residual, ANGLE_REPORT_DECIMALS) for residual in residuals]}"
     )
     if problems:
         failures.extend(problems)
     else:
+        expected_text = ", ".join(f"{value:.3f}°" for value in expected)
         residual_text = ", ".join(f"{residual:+.3f}°" for residual in residuals)
         results.append(
             (
                 "midnight date rollover",
                 (
-                    f"zone {zone_id} ({source}); samples {', '.join(instants)} advanced the hand "
-                    f"{offsets[-1]:.3f}° across civil midnight (residuals {residual_text}); "
+                    f"zone {zone_id} ({source}); samples {', '.join(instants)} each matched the zone's "
+                    f"absolute civil-hand angle (expected {expected_text}; residuals {residual_text}); "
                     "the boundary is bracketed within 10s, not resolved"
                 ),
             )

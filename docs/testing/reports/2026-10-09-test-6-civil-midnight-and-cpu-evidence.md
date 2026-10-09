@@ -9,6 +9,10 @@ A re-run of the physical-device qualification for [#6: Qualify lifecycle, accura
 
 This is a new run with new measurements; the earlier report keeps its own numbers, corrected only editorially.
 
+## Editorial note (2026-10-09, third review round)
+
+This report's measurements are unchanged, but the rollover residuals it records are **relative offsets from the first sample**, so they only show 90 minutes of movement: a constant angular error on every sample would have passed. The harness now compares each measured angle with the instant's absolute civil-hand angle in the resolved zone, with a constant-shift regression test, and re-runs the phase; that evidence is in [`2026-10-09-test-6-absolute-rollover-and-probe-errors.md`](2026-10-09-test-6-absolute-rollover-and-probe-errors.md). The saved-site probe this run used has likewise gained the distinction recorded but not implemented then: a *failed* read now raises `device_layer.ProbeError` and fails the phase, instead of being read as "no saved site".
+
 ## Hardware & Environment Attribution
 
 - **Target Platform**: Physical device running Android 16 (API 36), display 1080x2408 (480 dpi), locale `de-DE`.

@@ -24,6 +24,15 @@ Review of [PR #123](https://github.com/godaniya/astronomical-clocks-wallpaper/pu
 - **The "zero warnings/errors" claim is withdrawn.** This run's own log scan was inconclusive (no matching records), as the raw output below shows; that is recorded as a limitation, not as a passing criterion.
 - **The acceptance matrix now follows issue #6's own criteria.** The previous matrix graded proxy categories (frame rate, memory, themes) that are not #6's acceptance list; section 3 is rebuilt from #6's eleven criteria, marking each as demonstrated or pending, and the rows the harness does not evidence are deferred to [#125](https://github.com/godaniya/astronomical-clocks-wallpaper/issues/125).
 
+### Corrected after review (2026-10-09, third round)
+
+A third review round on the same PR found further overstatement in the matrix and two defects in the qualification harness; the raw measurements above are unchanged.
+
+- **Zero-rendering row downgraded to Partly.** Row 1 was marked "Demonstrated (bounded)", but `mVisible=false` is only a lifecycle state and a bounded CPU reading is not frame evidence — the same distinction the [2026-10-07 correction](2026-10-07-test-6-background-pause-qualification.md#editorial-correction-2026-10-08) drew. The row now reads **Partly — frame/producer evidence pending**, and the missing producer trace/frame counter is carried by [#125](https://github.com/godaniya/astronomical-clocks-wallpaper/issues/125).
+- **Rollover row strengthened to the absolute check.** The rollover sweep previously compared each sample against the first, so a constant angular error on every sample would still have passed. The harness now compares each measured angle with the instant's absolute civil-hand angle in the resolved zone ([2026-10-09-test-6-absolute-rollover-and-probe-errors.md](2026-10-09-test-6-absolute-rollover-and-probe-errors.md)).
+- **A failed saved-site probe no longer reads as "no saved site".** `read_saved_site_zone_id` previously returned `None` for both a failed probe and a successful read with nothing saved, so a transient or permission failure silently fell back to the device timezone; it now raises and fails the phase loudly.
+- **The module contract no longer claims log cleanliness.** The harness documents renderer-log diagnostics, matching `phase_renderer_log_scan`, which reports an empty successful scan as inconclusive.
+
 ## Hardware & Environment Attribution
 
 - **Target Platform**: Physical device running Android 16 (API 36), display 1080x2408 (480 dpi).
@@ -121,9 +130,9 @@ The rows below follow issue #6's own acceptance criteria, in its order. A row is
 
 | # | Criterion (abridged from #6) | Evidence | Status |
 |---|---|---|:---:|
-| 1 | Zero rendering while hidden and while the screen is off | `mVisible=false` from `dumpsys activity service`, plus the bounded screen-off CPU window (0 ticks over a measured 4.01 s at `CLK_TCK=100`, <0.010 s against a 0.05 s budget) in [2026-10-09-test-6-civil-midnight-and-cpu-evidence.md](2026-10-09-test-6-civil-midnight-and-cpu-evidence.md) and the window-identity re-run. A bounded window observation, not a producer trace. | **Demonstrated (bounded)** |
+| 1 | Zero rendering while hidden and while the screen is off | `mVisible=false` from `dumpsys activity service`, plus the bounded screen-off CPU window (0 ticks over a measured 4.01 s at `CLK_TCK=100`, <0.010 s against a 0.05 s budget) in [2026-10-09-test-6-civil-midnight-and-cpu-evidence.md](2026-10-09-test-6-civil-midnight-and-cpu-evidence.md) and the window-identity re-run. `mVisible` is a lifecycle state and a bounded CPU reading is not frame evidence; a producer trace or explicit frame counter while hidden and screen-off is still missing (the same distinction the [2026-10-07 correction](2026-10-07-test-6-background-pause-qualification.md#editorial-correction-2026-10-08) drew), and carries to [#125](https://github.com/godaniya/astronomical-clocks-wallpaper/issues/125). | **Partly — frame/producer evidence pending** |
 | 2 | Time, astronomy, location, settings restored after waking, lock/unlock, surface recreation, process recreation, **reboot** | Wake recovery, surface recreation, and `SIGKILL` rebind are recorded here; a **reboot** was never run. | **Partly — reboot pending** |
-| 3 | System-time changes and date rollover update civil time **and astronomy** from the same instant | The site-aware rollover sweep establishes the civil hand; no astronomy or date-element probe exists anywhere in the harness. | **Partly — astronomy pending** |
+| 3 | System-time changes and date rollover update civil time **and astronomy** from the same instant | The site-aware rollover sweep establishes the civil hand, and the absolute-angle re-run checks each measured angle against the resolved zone's own civil time rather than only relative movement ([2026-10-09-test-6-absolute-rollover-and-probe-errors.md](2026-10-09-test-6-absolute-rollover-and-probe-errors.md)); no astronomy or date-element probe exists anywhere in the harness. | **Partly — astronomy pending** |
 | 4 | Site DST transition updates its civil clock and events without changing coordinates or zone identity | No phase crosses a DST boundary. | **Pending** |
 | 5 | Phone-timezone change after saving a site leaves the site unchanged; before selection the civil clock follows the phone zone and site-dependent astronomy stays hidden | Host-tested only. | **Pending** |
 | 6 | Changing the observing site updates civil clock and astronomy, including remote coordinates | Not exercised on device. | **Pending** |
