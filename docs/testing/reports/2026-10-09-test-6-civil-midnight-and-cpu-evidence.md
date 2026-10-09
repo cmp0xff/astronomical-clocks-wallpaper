@@ -5,7 +5,7 @@
 A re-run of the physical-device qualification for [#6: Qualify lifecycle, accuracy and battery behavior](https://github.com/godaniya/astronomical-clocks-wallpaper/issues/6), addressing two evidence gaps that review of [PR #123](https://github.com/godaniya/astronomical-clocks-wallpaper/pull/123) found in the [final qualification report](2026-10-09-test-6-final-qualification.md):
 
 1. **Civil-midnight rollover.** That report's two instants crossed **UTC** midnight while the service renders each instant through the saved site's zone, so no civil date changed. This run derives the four probe instants from the device's saved site and brackets that site's own civil midnight.
-2. **Screen-off CPU.** That report's `20 CPU ticks` was a raw count with no measured interval and no clock-tick conversion. This run samples strictly inside a confirmed-off window, re-checks the screen and the process across it, converts ticks by the device clock-tick rate, and bounds the CPU time against a budget.
+2. **Screen-off CPU.** That report's `20 CPU ticks` was a raw count with no measured interval and no clock-tick conversion. This run samples strictly inside a confirmed-off window, re-checks the screen across it and the process at the sleep transition, converts ticks by the device clock-tick rate, and bounds the CPU time against a budget.
 
 This is a new run with new measurements; the earlier report keeps its own numbers, corrected only editorially.
 
@@ -100,7 +100,7 @@ Each sample's expected clockwise hand offset from the first is its local-time de
 
 ## Screen-off CPU observation
 
-The screen was confirmed off (`read_screen_on` false, `mVisible=false`) before and after a measured 4.01-second window; `time.monotonic()` bracketed the window, the wallpaper PID was re-read after confirming off (and again at window end) to reject a rebound process, and the combined utime+stime ticks from `/proc/<pid>/stat` moved by **0 ticks**. With `CLK_TCK = 100`, zero whole ticks bound the CPU time below one tick — under `0.010s`, i.e. under `0.25%` of the 4.01-second window — against a `0.05s` budget. This is a bounded window observation, not a duty cycle or a battery measurement.
+The screen was confirmed off (`read_screen_on` false, `mVisible=false`) before and after a measured 4.01-second window; `time.monotonic()` bracketed the window, the wallpaper PID was re-read after confirming off to reject a rebound process, and the combined utime+stime ticks from `/proc/<pid>/stat` moved by **0 ticks**. This recorded harness did not re-read the PID at the window's end, so it does not establish that the process was unchanged across the sample window itself; that gap was fixed and the harness re-run in [2026-10-09-test-6-window-pid-and-site-validation.md](2026-10-09-test-6-window-pid-and-site-validation.md). With `CLK_TCK = 100`, zero whole ticks bound the CPU time below one tick — under `0.010s`, i.e. under `0.25%` of the 4.01-second window — against a `0.05s` budget. This is a bounded window observation, not a duty cycle or a battery measurement.
 
 ## Limitations
 

@@ -208,6 +208,19 @@ def read_safe_pid(device: device_layer.AdbDevice) -> int | None:
         return None
 
 
+def confirm_pid_unchanged(
+    device: device_layer.AdbDevice, expected_pid: int | None, failures: list[str], *, description: str
+) -> int | None:
+    """Re-read the wallpaper PID and fail unless it still matches, returning the fresh reading."""
+    pid = read_safe_pid(device)
+    if pid is None or pid != expected_pid:
+        failures.append(
+            f"Wallpaper PID was not confirmed unchanged across the {description} "
+            f"(before={expected_pid}, after={pid}); the CPU sample is not attributable"
+        )
+    return pid
+
+
 def read_safe_cpu_ticks(device: device_layer.AdbDevice, pid: int | None) -> int | None:
     """Return process CPU ticks, returning None on missing pid or probe failure."""
     if pid is None:
@@ -301,18 +314,16 @@ def phase_screen_off_wake(device: device_layer.AdbDevice, results: list[tuple[st
 
     # A rebound process would make the tick reading describe a different process than the one under
     # test, so re-read the pid after the screen settles rather than sampling against the stale one.
-    pid = read_safe_pid(device)
-    if pid is None or pid != pid_before:
-        failures.append(
-            f"Wallpaper PID was not confirmed unchanged across the screen-off transition "
-            f"(before={pid_before}, after={pid}); the CPU sample is not attributable"
-        )
+    pid = confirm_pid_unchanged(device, pid_before, failures, description="screen-off transition")
 
     ticks_start = read_safe_cpu_ticks(device, pid)
     window_start = time.monotonic()
     time.sleep(SCREEN_OFF_SAMPLE_SECONDS)
     window_seconds = time.monotonic() - window_start
     ticks_end = read_safe_cpu_ticks(device, pid)
+    # A rebound inside the sample window would attribute the closing ticks to a different process
+    # than the one whose ticks opened it, so the identity is re-confirmed at the window's end.
+    confirm_pid_unchanged(device, pid, failures, description="CPU sample window")
     if device.read_screen_on() is not False:
         failures.append("Display was not confirmed off at the end of the CPU sample window")
     clock_ticks = device.read_process_cpu_clock_ticks()
@@ -658,10 +669,16 @@ def phase_midnight_rollover(
         )
         return
     zone_id, source = resolved
+    # Java's ZoneId.of accepts ids Python's ZoneInfo cannot build (fixed offsets, "Z", "UT"), so an
+    # id that does not resolve here is not proof that the app fell back to the device zone: fail
+    # loudly rather than sample a zone the wallpaper may not be rendering.
     try:
         zone = ZoneInfo(zone_id)
     except (ZoneInfoNotFoundError, ValueError):
-        failures.append(f"Midnight rollover could not be verified: unrecognized timezone {zone_id!r}")
+        failures.append(
+            f"Midnight rollover could not be verified: the rendered zone {zone_id!r} ({source}) "
+            "does not resolve to a timezone this harness can construct"
+        )
         return
 
     instants = rollover_instants(zone)

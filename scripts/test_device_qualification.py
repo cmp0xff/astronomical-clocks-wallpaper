@@ -4,6 +4,7 @@
 import argparse
 import contextlib
 import io
+import json
 import math
 import struct
 import subprocess
@@ -12,6 +13,7 @@ import unittest
 from types import ModuleType
 from typing import Final
 from unittest.mock import MagicMock, patch
+from xml.sax.saxutils import escape as xml_escape
 
 import device_layer
 import device_qualification as qualification
@@ -48,6 +50,29 @@ VALID_PREFS_XML: Final = (
     "</string>\n"
     "</map>\n"
 )
+
+# One record LocationStore.load() accepts: integral version 1, in-range coordinates, a known source,
+# and a real IANA zone. Tests derive rejected variants from it field by field.
+VALID_LOCATION_RECORD: Final = {
+    "version": 1,
+    "latitude": 50.08,
+    "longitude": 14.42,
+    "source": "MANUAL",
+    "zoneId": "Europe/Prague",
+}
+
+
+def prefs_xml(record: object) -> str:
+    """Wrap a stored record in the shared_prefs XML envelope, escaping quotes as LocationStore does."""
+    text = record if isinstance(record, str) else json.dumps(record)
+    escaped = xml_escape(text, {'"': "&quot;"})
+    return (
+        "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n"
+        "<map>\n"
+        f'    <string name="location">{escaped}</string>\n'
+        "</map>\n"
+    )
+
 
 DUPLICATED_CONSTANT_NAMES: Final = (
     "ADB_TIMEOUT_SECONDS",
@@ -239,16 +264,65 @@ class DeviceQualificationTest(unittest.TestCase):
             "<map></map>",
             '<map><string name="latitude">50.08</string></map>',
             "<map><string",
-            '<map><string name="location">not json</string></map>',
-            '<map><string name="location"></string></map>',
-            '<map><string name="location">{&quot;version&quot;:1}</string></map>',
-            '<map><string name="location">[1,2]</string></map>',
-            '<map><string name="location">{&quot;zoneId&quot;:&quot;&quot;}</string></map>',
-            '<map><string name="location">{&quot;zoneId&quot;:5}</string></map>',
+            prefs_xml("not json"),
+            prefs_xml(""),
+            prefs_xml("[1, 2]"),
+            prefs_xml("5"),
+            prefs_xml('{"version": 1} trailing'),
         )
         for xml in cases:
             with self.subTest(xml=xml):
                 self.assertIsNone(device_layer.parse_saved_site_zone(xml))
+
+    def test_saved_site_zone_parser_mirrors_the_store_record_validation(self) -> None:
+        """Only a record LocationStore.load() accepts yields its zone; rejected records fall back."""
+        accepted = (
+            VALID_LOCATION_RECORD,
+            {**VALID_LOCATION_RECORD, "latitude": 90, "longitude": 180},
+            {**VALID_LOCATION_RECORD, "latitude": -90, "longitude": -180},
+            {**VALID_LOCATION_RECORD, "source": "CURRENT_COARSE"},
+        )
+        for record in accepted:
+            with self.subTest(record=record):
+                self.assertEqual(device_layer.parse_saved_site_zone(prefs_xml(record)), "Europe/Prague")
+
+        def without(key: str) -> dict[str, object]:
+            return {name: value for name, value in VALID_LOCATION_RECORD.items() if name != key}
+
+        rejected = (
+            without("version"),
+            {**VALID_LOCATION_RECORD, "version": "1"},
+            {**VALID_LOCATION_RECORD, "version": 1.0},
+            {**VALID_LOCATION_RECORD, "version": True},
+            {**VALID_LOCATION_RECORD, "version": 2},
+            without("latitude"),
+            {**VALID_LOCATION_RECORD, "latitude": "50.08"},
+            {**VALID_LOCATION_RECORD, "latitude": True},
+            {**VALID_LOCATION_RECORD, "latitude": None},
+            {**VALID_LOCATION_RECORD, "latitude": 90.0001},
+            {**VALID_LOCATION_RECORD, "latitude": -90.0001},
+            {**VALID_LOCATION_RECORD, "latitude": float("nan")},
+            without("longitude"),
+            {**VALID_LOCATION_RECORD, "longitude": "14.42"},
+            {**VALID_LOCATION_RECORD, "longitude": 180.0001},
+            without("source"),
+            {**VALID_LOCATION_RECORD, "source": "manual"},
+            {**VALID_LOCATION_RECORD, "source": "GPS"},
+            {**VALID_LOCATION_RECORD, "source": 5},
+            {**VALID_LOCATION_RECORD, "source": ["MANUAL"]},
+            without("zoneId"),
+            {**VALID_LOCATION_RECORD, "zoneId": 5},
+            {**VALID_LOCATION_RECORD, "zoneId": None},
+            {**VALID_LOCATION_RECORD, "zoneId": ""},
+        )
+        for record in rejected:
+            with self.subTest(record=record):
+                self.assertIsNone(device_layer.parse_saved_site_zone(prefs_xml(record)))
+
+    def test_a_present_but_unbuildable_zone_is_returned_for_the_phase_to_reject(self) -> None:
+        """A stored zone the harness cannot build must not be read as "use the device zone"."""
+        record = {**VALID_LOCATION_RECORD, "zoneId": "Invalid/Zone"}
+        self.assertEqual(device_layer.parse_saved_site_zone(prefs_xml(record)), "Invalid/Zone")
 
     @patch.object(device_layer, "run_adb", return_value=VALID_PREFS_XML.encode())
     def test_saved_site_zone_reads_the_shared_prefs_file(self, run_adb: MagicMock) -> None:
@@ -1145,6 +1219,39 @@ class PhaseDecisionTest(unittest.TestCase):
         capture.assert_not_called()
 
     @patch.object(qualification, "ensure_screen_on", return_value=True)
+    @patch.object(device_layer, "read_device_timezone", return_value=None)
+    @patch.object(device_layer, "read_saved_site_zone_id", return_value="Invalid/Zone")
+    @patch.object(device_layer, "send_debug_clock_broadcast")
+    @patch.object(device_layer, "capture_frame")
+    @patch.object(qualification.time, "sleep")
+    def test_midnight_rollover_fails_on_an_unrecognized_zone(
+        self,
+        _sleep: MagicMock,
+        capture: MagicMock,
+        send: MagicMock,
+        _saved: MagicMock,
+        _device_zone: MagicMock,
+        _ensure: MagicMock,
+    ) -> None:
+        """A zone the harness cannot build fails loudly; it must not probe the device zone instead."""
+        results: list[tuple[str, str]] = []
+        failures: list[str] = []
+        with contextlib.redirect_stdout(io.StringIO()):
+            qualification.phase_midnight_rollover(device_layer.AdbDevice("device"), results, failures)
+        self.assertEqual(
+            failures,
+            [
+                (
+                    "Midnight rollover could not be verified: the rendered zone 'Invalid/Zone' (saved site) "
+                    "does not resolve to a timezone this harness can construct"
+                )
+            ],
+        )
+        self.assertEqual(results, [])
+        send.assert_not_called()
+        capture.assert_not_called()
+
+    @patch.object(qualification, "ensure_screen_on", return_value=True)
     @patch.object(device_layer, "read_saved_site_zone_id", return_value="Europe/Prague")
     @patch.object(device_layer, "detect_hand_angle", side_effect=[168.75, 179.958, 180.042, 180.042])
     @patch.object(device_layer, "capture_frame", return_value=(2, 2, bytes(16)))
@@ -1666,14 +1773,46 @@ class PhasePrerequisiteTest(unittest.TestCase):
         self.assertEqual(len(results), 1)
 
     def test_screen_off_wake_fails_when_the_process_changes_mid_window(self) -> None:
-        """A rebound PID means the sampled ticks no longer describe the wallpaper under test."""
+        """A PID that rebounds by the window's end means the closing ticks belong to another process."""
         results: list[tuple[str, str]] = []
         failures: list[str] = []
         with (
             patch.object(device_layer, "sleep_screen", return_value=True),
             patch.object(device_layer, "read_screen_on", side_effect=[False, False, True]),
             patch.object(device_layer, "read_wallpaper_visible", return_value=False),
-            patch.object(device_layer, "get_wallpaper_pid", side_effect=[123, 124]),
+            patch.object(device_layer, "get_wallpaper_pid", side_effect=[123, 123, 124]),
+            patch.object(device_layer, "read_process_cpu_ticks", side_effect=[100, 100]),
+            patch.object(device_layer, "read_process_cpu_clock_ticks", return_value=100),
+            patch.object(qualification.time, "monotonic", side_effect=[10.0, 14.0]),
+            patch.object(device_layer, "wake_screen", return_value=True),
+            patch.object(device_layer.AdbDevice, "dismiss_keyguard"),
+            patch.object(device_layer.AdbDevice, "show_home"),
+            patch.object(device_layer, "capture_frame", return_value=(2, 2, bytes(16))),
+            patch.object(device_layer, "detect_hand_angle", return_value=123.456),
+            patch.object(qualification.time, "sleep"),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            qualification.phase_screen_off_wake(device_layer.AdbDevice("device"), results, failures)
+        self.assertEqual(
+            failures,
+            [
+                (
+                    "Wallpaper PID was not confirmed unchanged across the CPU sample window "
+                    "(before=123, after=124); the CPU sample is not attributable"
+                )
+            ],
+        )
+        self.assertEqual(len(results), 1)
+
+    def test_screen_off_wake_fails_when_the_process_changes_across_the_sleep_transition(self) -> None:
+        """A rebound between the two settling reads is rejected before the window even opens."""
+        results: list[tuple[str, str]] = []
+        failures: list[str] = []
+        with (
+            patch.object(device_layer, "sleep_screen", return_value=True),
+            patch.object(device_layer, "read_screen_on", side_effect=[False, False, True]),
+            patch.object(device_layer, "read_wallpaper_visible", return_value=False),
+            patch.object(device_layer, "get_wallpaper_pid", side_effect=[123, 124, 124]),
             patch.object(device_layer, "read_process_cpu_ticks", side_effect=[100, 100]),
             patch.object(device_layer, "read_process_cpu_clock_ticks", return_value=100),
             patch.object(qualification.time, "monotonic", side_effect=[10.0, 14.0]),

@@ -107,6 +107,16 @@ LOCATION_PREFS_NAME: Final = "observing_location"
 LOCATION_PREFS_KEY: Final = "location"
 LOCATION_PREFS_PATH: Final = f"/data/data/{PACKAGE_NAME}/shared_prefs/{LOCATION_PREFS_NAME}.xml"
 
+# Mirror of LocationStore.kt and ObservingLocation.kt record validation, the source of truth.
+# LocationStore.load() ignores a record whose version is not the integral 1, whose latitude or
+# longitude is not an in-range JSON number, or whose source is not one of these names, and only then
+# does it fall back to the device zone. A harness that read a rejected record's zone would probe a
+# civil midnight the service never renders, so parse_saved_site_zone applies the same checks.
+LOCATION_RECORD_VERSION: Final = 1
+LOCATION_SOURCES: Final = frozenset({"CURRENT_COARSE", "MANUAL"})
+LOCATION_MAX_LATITUDE: Final = 90.0
+LOCATION_MAX_LONGITUDE: Final = 180.0
+
 MIN_BRIGHTNESS: Final = 80
 MAX_BRIGHTNESS: Final = 100
 
@@ -534,8 +544,37 @@ def read_process_cpu_clock_ticks(serial: str) -> int | None:
     return int(value) if value.isdigit() and int(value) > 0 else None
 
 
+def is_saved_coordinate_in_range(value: object, limit: float) -> bool:
+    """Report whether value is a JSON number within ±limit, excluding JSON true/false (a Python int)."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and -limit <= value <= limit
+
+
+def saved_record_zone_id(record: dict[str, object]) -> str | None:
+    """Return a record's stored zoneId when LocationStore.load() accepts the record, else None."""
+    # json.loads rejects trailing data after the object, as Kotlin's parseRecord does.
+    version = record.get("version")
+    if isinstance(version, bool) or not isinstance(version, int) or version != LOCATION_RECORD_VERSION:
+        return None
+    if not (
+        is_saved_coordinate_in_range(record.get("latitude"), LOCATION_MAX_LATITUDE)
+        and is_saved_coordinate_in_range(record.get("longitude"), LOCATION_MAX_LONGITUDE)
+    ):
+        return None
+    source = record.get("source")
+    if not isinstance(source, str) or source not in LOCATION_SOURCES:
+        return None
+    zone_id = record.get("zoneId")
+    # A stored zoneId is returned as-is, without testing that Python can build it. The store treats an
+    # absent, empty, or non-string id as "no stored zone" (None here, so the caller uses the device
+    # zone), but for a present id the app's ZoneId.of and Python's ZoneInfo accept different strings:
+    # ZoneId.of takes fixed offsets ("+02:00"), "Z", and "UT" that ZoneInfo rejects. The phase must
+    # reject an id it cannot build loudly rather than substitute the device zone for one the app
+    # would still have rendered, which would let the rollover check pass on the wrong civil midnight.
+    return zone_id if isinstance(zone_id, str) and zone_id else None
+
+
 def parse_saved_site_zone(prefs_xml: str) -> str | None:
-    """Return the saved observing site's zoneId from the prefs XML, or None when it is unusable."""
+    """Return the saved site's stored zoneId when LocationStore.load() accepts the record, else None."""
     # S314: the XML is the app's own SharedPreferences file, read back from the debug package that
     # wrote it over an authenticated ADB channel; there is no attacker-supplied document here, and
     # the stdlib-only constraint rules out defusedxml.
@@ -555,8 +594,7 @@ def parse_saved_site_zone(prefs_xml: str) -> str | None:
             return None
         if not isinstance(record, dict):
             return None
-        zone_id = record.get("zoneId")
-        return zone_id if isinstance(zone_id, str) and zone_id else None
+        return saved_record_zone_id(record)
     return None
 
 

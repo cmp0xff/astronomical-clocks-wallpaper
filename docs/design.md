@@ -136,6 +136,8 @@ by a launcher cannot be inferred; physical acceptance remains required.
 #5 and v0.2 remain open until the owner merges the relevant PRs; the combined
 physical-device pass is recorded in
 [`testing/reports/2026-10-08-feat-5-display-controls.md`](testing/reports/2026-10-08-feat-5-display-controls.md),
-with the coverage it could not exercise tracked in #122. Full battery qualification
-and the signed personal release remain v0.3 work; this change creates no release or
-tag.
+with the coverage it could not exercise tracked in #122. #6's device qualification is
+recorded in [`testing/reports/2026-10-09-test-6-final-qualification.md`](testing/reports/2026-10-09-test-6-final-qualification.md);
+the acceptance criteria it did not evidence — including the battery/CPU comparison
+protocol — are tracked in #125 and no longer block v0.3. The signed personal release
+remains v0.3 work; this change creates no release or tag.

@@ -2,7 +2,7 @@
 
 ## Overview
 
-Physical-device qualification run fulfilling and closing [#6: Qualify lifecycle, accuracy and battery behavior](https://github.com/godaniya/astronomical-clocks-wallpaper/issues/6) for Milestone **v0.3 — Personal APK**.
+Physical-device qualification run for [#6: Qualify lifecycle, accuracy and battery behavior](https://github.com/godaniya/astronomical-clocks-wallpaper/issues/6) (Milestone **v0.3 — Personal APK**). It demonstrates the subset of #6's acceptance list that the harness actually measures; the criteria it does not evidence are carried by [#125](https://github.com/godaniya/astronomical-clocks-wallpaper/issues/125) and are not v0.3 blockers.
 
 This final qualification synthesizes and builds upon the merged device and lifecycle work addressing aspects of #6:
 - Initial live-wallpaper feasibility and engine transitions (issue #2, PR #103)
@@ -10,10 +10,10 @@ This final qualification synthesizes and builds upon the merged device and lifec
 - Shared device harness layer with teardown restoration (PR #110)
 - Screen-off visibility, wake recovery, and PSS sampling (PR #111)
 
-This run validates all remaining qualification requirements:
+This run records three observations:
 1. **Screen-off CPU inactivity**: Combined user and system CPU ticks sampled from `/proc/<pid>/stat` while the display was sleeping and the engine was hidden (`mVisible=false`) recorded **20 CPU ticks**, a raw observation whose confirmed-off interval and clock-tick conversion were never captured, so it carries no CPU rate (see the correction below).
 2. **Midnight date rollover**: Two instants straddling `2026-06-20T23:59:50Z` to `2026-06-21T00:00:10Z` advanced the hand 0.079° against 0.083° expected (residual −0.005°). Those instants cross **UTC** midnight, not the saved site's civil midnight, and the general 0.5° tolerance cannot reject a frozen hand on a 0.083° step, so this did not establish civil-date rollover (see the correction below).
-3. **Full multi-phase lifecycle qualification**: Executing all 8 phases of `scripts/device_qualification.py` with clean exit code 0.
+3. **Full multi-phase lifecycle qualification**: Executing all nine phases (Phase 0–8) of `scripts/device_qualification.py` with clean exit code 0.
 
 ### Corrected after review (2026-10-09)
 
@@ -21,7 +21,8 @@ Review of [PR #123](https://github.com/godaniya/astronomical-clocks-wallpaper/pu
 
 - **The screen-off CPU row is a raw observation, not a rate.** The 20-tick sample began before the sleep request; no confirmed-off interval and no clock-tick rate (`getconf CLK_TCK`) were recorded, and the count was never converted to CPU seconds. It therefore establishes no CPU percentage and no "dormancy". A bounded re-run supplies that evidence in [2026-10-09-test-6-civil-midnight-and-cpu-evidence.md](2026-10-09-test-6-civil-midnight-and-cpu-evidence.md).
 - **The midnight row did not establish civil rollover.** Its two instants cross UTC midnight; with the saved `Europe/Prague` site they land at 02:00 local, where no civil date changes, and the general 0.5° tolerance accepts a frozen hand for the 0.083° step. The site-aware four-instant re-run in the same new report supersedes it.
-- **Criterion 11's "zero warnings/errors" is withdrawn.** This run's own log scan was inconclusive (no matching records), as the raw output below shows; the corrected row says so.
+- **The "zero warnings/errors" claim is withdrawn.** This run's own log scan was inconclusive (no matching records), as the raw output below shows; that is recorded as a limitation, not as a passing criterion.
+- **The acceptance matrix now follows issue #6's own criteria.** The previous matrix graded proxy categories (frame rate, memory, themes) that are not #6's acceptance list; section 3 is rebuilt from #6's eleven criteria, marking each as demonstrated or pending, and the rows the harness does not evidence are deferred to [#125](https://github.com/godaniya/astronomical-clocks-wallpaper/issues/125).
 
 ## Hardware & Environment Attribution
 
@@ -114,24 +115,26 @@ Result: `Configured checks passed; renderer log scan was inconclusive.` Clean ex
 
 ---
 
-## 3. Systematic Qualification Matrix for Issue #6
+## 3. Acceptance matrix for Issue #6
 
-All acceptance criteria defined in #6 are addressed below; criteria 1, 5, and 6 rest on the corrected reading of this run and the site-aware re-run, and criterion 11 on that re-run's scan, not on this run's inconclusive one.
+The rows below follow issue #6's own acceptance criteria, in its order. A row is **Demonstrated** only where the numbered criterion is met by recorded physical-device evidence; rows the harness does not exercise are **Pending** and are carried by [#125](https://github.com/godaniya/astronomical-clocks-wallpaper/issues/125) rather than claimed here.
 
-| # | Criterion | Verification Method & Observed Evidence | Status |
+| # | Criterion (abridged from #6) | Evidence | Status |
 |---|---|---|:---:|
-| 1 | **Zero rendering while hidden and screen off** | Verified via `mVisible=false` query in `dumpsys activity service`, cancellation of recurring tick loop in `ClockEngine.onVisibilityChanged(false)`, and a `/proc/<pid>/stat` utime/stime observation of **20 ticks** while asleep (a raw count with no rate claim — see the correction above). A bounded, confirmed-off measurement is recorded in [2026-10-09-test-6-civil-midnight-and-cpu-evidence.md](2026-10-09-test-6-civil-midnight-and-cpu-evidence.md). | **QUALIFIED** |
-| 2 | **Wallpaper lifecycle transitions** | Verified complete transition paths: preview entry/exit, home navigation, screen sleep, wake recovery, surface change/recreation, and `SIGKILL` process rebind. | **QUALIFIED** |
-| 3 | **Stable frame rate & zero frame leaks** | Verified 1 Hz tick scheduling anchored to system second boundaries via `ClockEngine`; surface destruction cancels handler callbacks immediately preventing orphaned draws. | **QUALIFIED** |
-| 4 | **Memory footprint & PSS bounds** | Verified total PSS stability (~30–33 MB total PSS on Android 16); 10-second sampling observes stable memory within agreed bounds with no runaway growth. | **QUALIFIED** |
-| 5 | **Battery drain & CPU wake-locks** | Verified zero wake-locks held (no `WAKE_LOCK` permission requested in manifest; confirmed via `verify-apk.sh`). The screen-off CPU observation was previously called "completely dormant"; it is not, and the bounded measurement lives in the re-run report (see the correction above). | **QUALIFIED** |
-| 6 | **Midnight date rollover** | This run's two instants cross UTC, not the site's civil midnight, and cannot reject a frozen hand (see the correction above). Qualified instead by the site-aware four-instant re-run in [2026-10-09-test-6-civil-midnight-and-cpu-evidence.md](2026-10-09-test-6-civil-midnight-and-cpu-evidence.md). | **QUALIFIED** |
-| 7 | **Timezone transitions & DST** | Verified timezone decoupling (site timezone independent of phone timezone) in #21/#24/#42 and virtual time broadcasts. | **QUALIFIED** |
-| 8 | **Coordinate updates & location changes** | Verified location storage, permission recovery, and pure-read lifecycle in #3, #35, and #119. | **QUALIFIED** |
-| 9 | **Process recreation & persistence** | Verified non-stopping `SIGKILL` rebinds under 10 polls at 0.5s intervals; live wallpaper surface rebinds cleanly and resumes 1 Hz ticking. | **QUALIFIED** |
-| 10 | **Themes & display appearance** | Verified dynamic Dark and Light palette detection, display resizing, and contrast preservation across #31 and #120. | **QUALIFIED** |
-| 11 | **Diagnostics & error logs** | This run's logcat scan returned no matching records and was recorded as inconclusive, **not** as zero warnings/errors (see the correction above). The re-run's scan in [2026-10-09-test-6-civil-midnight-and-cpu-evidence.md](2026-10-09-test-6-civil-midnight-and-cpu-evidence.md) was likewise inconclusive with no matching records. | **Inconclusive** |
+| 1 | Zero rendering while hidden and while the screen is off | `mVisible=false` from `dumpsys activity service`, plus the bounded screen-off CPU window (0 ticks over a measured 4.01 s at `CLK_TCK=100`, <0.010 s against a 0.05 s budget) in [2026-10-09-test-6-civil-midnight-and-cpu-evidence.md](2026-10-09-test-6-civil-midnight-and-cpu-evidence.md) and the window-identity re-run. A bounded window observation, not a producer trace. | **Demonstrated (bounded)** |
+| 2 | Time, astronomy, location, settings restored after waking, lock/unlock, surface recreation, process recreation, **reboot** | Wake recovery, surface recreation, and `SIGKILL` rebind are recorded here; a **reboot** was never run. | **Partly — reboot pending** |
+| 3 | System-time changes and date rollover update civil time **and astronomy** from the same instant | The site-aware rollover sweep establishes the civil hand; no astronomy or date-element probe exists anywhere in the harness. | **Partly — astronomy pending** |
+| 4 | Site DST transition updates its civil clock and events without changing coordinates or zone identity | No phase crosses a DST boundary. | **Pending** |
+| 5 | Phone-timezone change after saving a site leaves the site unchanged; before selection the civil clock follows the phone zone and site-dependent astronomy stays hidden | Host-tested only. | **Pending** |
+| 6 | Changing the observing site updates civil clock and astronomy, including remote coordinates | Not exercised on device. | **Pending** |
+| 7 | Preview and active instances coexist and clean up callbacks/resources without leaks, duplicate loops, or crashes | Preview navigation returned to home; cleanup was explicitly "not inspected". | **Pending** |
+| 8 | Render-failure handling: a `drawDial` throw is logged, not rethrown to the main `Handler`, via a narrowly-typed catch (detekt `TooGenericExceptionCaught`) | Not exercised; the log scan finds no matching records. | **Pending** |
+| 9 | Astronomy reference checks for representative locations, including hemisphere and polar cases | Not re-run on the current build. | **Pending** |
+| 10 | Battery/CPU measurement with recorded firmware, revision, brightness, duration, baseline, screen-on/off conditions, and an agreed budget | Only a bounded screen-off CPU window and a PSS delta exist; the comparison protocol is undefined and unrun. | **Pending** |
+| 11 | Reproducible device test matrix with pass/fail evidence and unresolved defects | This matrix and the re-run reports it links. The rows above stay pending. | **Partly published** |
+
+No row is claimed as more than its evidence supports. The two overstatements this report originally carried — a rate inferred from a raw tick count, and civil rollover inferred from a UTC-crossing step — are corrected above and superseded by the re-runs.
 
 ## Conclusion
 
-Every criterion for **Issue #6: Qualify lifecycle, accuracy and battery behavior** is either satisfied with physical-hardware evidence or explicitly bounded, with two limits recorded against this run: the screen-off CPU row is a raw tick count with no rate, and the midnight row crossed UTC rather than the site's civil midnight. Both are superseded by the site-aware, budgeted re-run in [2026-10-09-test-6-civil-midnight-and-cpu-evidence.md](2026-10-09-test-6-civil-midnight-and-cpu-evidence.md). Criterion 11 (log cleanliness) remains inconclusive in both runs and is not claimed as established.
+This report records the harness-covered subset of **Issue #6** with physical-hardware evidence, and the re-runs supersede its two weakest rows. The criteria the harness does not evidence — reboot restoration, same-instant astronomy, DST, phone-zone/no-site behavior, site changes, preview/active cleanup, render-failure handling, representative/polar astronomy, and the full battery comparison protocol — are **not** claimed as satisfied; they are carried by [#125](https://github.com/godaniya/astronomical-clocks-wallpaper/issues/125) and no longer block Milestone v0.3. Independently, the renderer log scan was inconclusive in this run (no matching records), so it establishes no clean-log claim.
