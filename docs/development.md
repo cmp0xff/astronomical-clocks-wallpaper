@@ -295,16 +295,24 @@ The debug APK is `app/build/outputs/apk/debug/app-debug.apk`, with application I
 `io.github.godaniya.astronomicalclockswallpaper.debug`. `scripts/verify-apk.sh` checks its ID, SDK metadata,
 wallpaper declaration, that the only requested permission is `ACCESS_COARSE_LOCATION`, the debug flag
 and signature, and the complete bundled Astronomy Engine license, then records SHA-256.
-The stable release ID is `io.github.godaniya.astronomicalclockswallpaper`; release signing belongs to #7.
-Debug signing keys are disposable and local/CI APKs may require uninstalling the previous debug app.
+The stable release ID is `io.github.godaniya.astronomicalclockswallpaper`.
+Release builds are unsigned; [release preparation](releasing.md) describes the
+separate signing, verification, draft creation, qualification, and owner publication
+steps. No public releases exist yet. Debug signing keys are disposable and local/CI
+APKs may require uninstalling the previous debug app.
 
 GitHub Actions runs on pull requests and pushes to `main`. Actions use immutable commit references,
-and the jobs have only `contents: read`. The host checks and the Android build run as separate
+and these quality-gate jobs have only `contents: read`. The host checks and the Android build run as separate
 parallel jobs, so a failure in one does not withhold the other's artifacts and diagnostics. Open the
 **Android quality gate** run and download `debug-apk-<source revision>` or
 `check-reports-<source revision>`. The PR run checks GitHub's merge revision, recorded in the
 artifact name and `toolchain.txt`. Check reports upload even on failure; the APK uploads only after a
 successful gate and APK verification. No release credentials are used.
+
+The release workflow's pinned-Temurin install block is repeated in three jobs, and the
+debug and release APK verifiers share near-identical metadata and license checks. Extracting
+a composite action and one parameterized verifier is a recorded follow-up, deferred so
+security-critical workflow changes stay reviewable one at a time.
 
 Install a downloaded debug APK with `adb install -r app-debug.apk`, open **Astro Clocks**, and
 tap **Open wallpaper preview**. See [device-testing.md](device-testing.md) for the physical-device

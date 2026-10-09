@@ -1,0 +1,141 @@
+name: Prepare draft release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      ANDROID_HOME: ${{ github.workspace }}/.android-sdk
+      ANDROID_SDK_ROOT: ${{ github.workspace }}/.android-sdk
+      RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Validate tag and current main ancestry
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          source scripts/release-common.sh
+          validate_release_tag "$RELEASE_TAG"
+          require_increasing_version_code "$release_code" "$(highest_prior_version_code "$RELEASE_TAG")"
+          main_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor HEAD "$main_sha"
+      - name: Install pinned Temurin JDK
+        run: |
+          set -euo pipefail
+          archive=OpenJDK21U-jdk_x64_linux_hotspot_21.0.12.1_1.tar.gz
+          curl --fail --location --silent --show-error \
+            "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12.1%2B1/$archive" \
+            -o "$RUNNER_TEMP/$archive"
+          printf '%s  %s\n' \
+            ce79869e1307ed8ee1e2baa86a412b1eb5b75d10a01006d788a6f968bcfaee94 \
+            "$RUNNER_TEMP/$archive" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP"
+          echo "JAVA_HOME=$RUNNER_TEMP/jdk-21.0.12.1+1" >> "$GITHUB_ENV"
+          echo "$RUNNER_TEMP/jdk-21.0.12.1+1/bin" >> "$GITHUB_PATH"
+      - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+      - name: Install pinned Android SDK
+        run: scripts/setup-android-sdk.sh
+      - name: Build unsigned release without signing credentials
+        run: ./gradlew qualityGate :app:assembleRelease
+      - name: Upload exact unsigned APK
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: unsigned-release-${{ github.sha }}
+          path: app/build/outputs/apk/release/app-release-unsigned.apk
+          if-no-files-found: error
+
+  draft-release:
+    needs: build
+    environment: release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      ANDROID_HOME: ${{ github.workspace }}/.android-sdk
+      ANDROID_SDK_ROOT: ${{ github.workspace }}/.android-sdk
+      RELEASE_TAG: ${{ github.ref_name }}
+      RELEASE_CERT_SHA256: ${{ vars.RELEASE_CERT_SHA256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate public signing identity
+        run: |
+          set -euo pipefail
+          source scripts/release-common.sh
+          validate_release_tag "$RELEASE_TAG"
+          require_release_certificate
+      - name: Install pinned Temurin JDK
+        run: |
+          set -euo pipefail
+          archive=OpenJDK21U-jdk_x64_linux_hotspot_21.0.12.1_1.tar.gz
+          curl --fail --location --silent --show-error \
+            "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12.1%2B1/$archive" \
+            -o "$RUNNER_TEMP/$archive"
+          printf '%s  %s\n' \
+            ce79869e1307ed8ee1e2baa86a412b1eb5b75d10a01006d788a6f968bcfaee94 \
+            "$RUNNER_TEMP/$archive" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP"
+          echo "JAVA_HOME=$RUNNER_TEMP/jdk-21.0.12.1+1" >> "$GITHUB_ENV"
+          echo "$RUNNER_TEMP/jdk-21.0.12.1+1/bin" >> "$GITHUB_PATH"
+      - name: Install pinned Android SDK
+        run: scripts/setup-android-sdk.sh
+      - name: Download the build job's unsigned APK
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: unsigned-release-${{ github.sha }}
+          path: build/unsigned
+      - name: Sign exact artifact
+        env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+          RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          : "${RELEASE_KEYSTORE_BASE64:?Configure release environment signing secrets}"
+          scripts/sign-release-apk.sh build/unsigned/app-release-unsigned.apk build/signed-release.apk
+      - name: Verify and package
+        run: scripts/package-release.sh "$RELEASE_TAG" build/signed-release.apk
+      - name: Create draft for owner publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Fail on API errors as well as existing releases, including unpublished drafts.
+          existing=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases" \
+            --jq '.[] | .tag_name')
+          if printf '%s\n' "$existing" | grep -Fxq "$RELEASE_TAG"; then
+            echo 'ERROR: A release already exists for this tag.' >&2
+            exit 1
+          fi
+          flags=(--draft --verify-tag)
+          if [[ "$RELEASE_TAG" =~ ^v0\. || "$RELEASE_TAG" == *-* ]]; then
+            flags+=(--prerelease)
+          fi
+          name="AstronomicalClocksWallpaper-$RELEASE_TAG"
+          gh release create "$RELEASE_TAG" \
+            "build/dist/$name.apk" \
+            "build/dist/$name-sha256sums.txt" \
+            "build/dist/$name-signing-cert-sha256.txt" \
+            --title "Astronomical Clocks Wallpaper $RELEASE_TAG" \
+            --generate-notes "${flags[@]}"
