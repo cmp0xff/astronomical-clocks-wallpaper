@@ -56,6 +56,12 @@ WALLPAPER_VISIBLE_PATTERN: Final = re.compile(r"\bmVisible=([^\s,;}]*)")
 DARK_RIM_RGB: Final = (0x1C, 0x2C, 0x39)
 LIGHT_RIM_RGB: Final = (0xE8, 0xE2, 0xD2)
 
+# In /proc/<pid>/stat, fields after the closing parenthesis of comm:
+# index 11 is field 14 (utime) and index 12 is field 15 (stime).
+PROC_STAT_UTIME_INDEX: Final = 11
+PROC_STAT_STIME_INDEX: Final = 12
+PROC_STAT_MIN_FIELDS: Final = 13
+
 RIM_PROBE_RADIUS_FRACTION: Final = 0.40
 RIM_PROBE_BEARINGS_DEG: Final = tuple(range(15, 360, 30))
 
@@ -89,6 +95,13 @@ COARSE_BIN_WIDTH_DEG: Final = 4.0
 REFINE_WEDGE_DEG: Final = 6.0
 FULL_TURN_DEG: Final = 360.0
 HALF_TURN_DEG: Final = FULL_TURN_DEG / 2
+
+# 20 seconds on a 24-hour dial = 20 * (360 / 86400) = 1/12 degree ~= 0.083333°
+SECONDS_PER_DAY: Final = 86400.0
+MIDNIGHT_STEP_SECONDS: Final = 20.0
+EXPECTED_MIDNIGHT_STEP_DEG: Final = MIDNIGHT_STEP_SECONDS * FULL_TURN_DEG / SECONDS_PER_DAY
+MIDNIGHT_T0_INSTANT: Final = "2026-06-20T23:59:50Z"
+MIDNIGHT_T1_INSTANT: Final = "2026-06-21T00:00:10Z"
 
 MIN_BRIGHTNESS: Final = 80
 MAX_BRIGHTNESS: Final = 100
@@ -486,6 +499,26 @@ def get_wallpaper_pid(serial: str) -> int | None:
     return int(pids[0]) if pids and pids[0].isdigit() else None
 
 
+def read_process_cpu_ticks(serial: str, pid: int) -> int | None:
+    """Return the combined user and kernel CPU ticks for a process from /proc/<pid>/stat, or None."""
+    try:
+        output = run_adb(["shell", "cat", f"/proc/{pid}/stat"], serial=serial).decode("utf-8", errors="replace")
+    except (subprocess.SubprocessError, OSError) as error:
+        print(f"WARNING: process CPU stat probe failed: {error_detail(error)}", file=sys.stderr)
+        return None
+    rparen_index = output.rfind(")")
+    if rparen_index == -1:
+        return None
+    fields = output[rparen_index + 1 :].split()
+    if (
+        len(fields) >= PROC_STAT_MIN_FIELDS
+        and fields[PROC_STAT_UTIME_INDEX].isdigit()
+        and fields[PROC_STAT_STIME_INDEX].isdigit()
+    ):
+        return int(fields[PROC_STAT_UTIME_INDEX]) + int(fields[PROC_STAT_STIME_INDEX])
+    return None
+
+
 def read_wallpaper_visible(serial: str) -> bool | None:
     """Return any visible engine, all explicitly hidden engines, or an uncertain dump as True/False/None."""
     try:
@@ -612,6 +645,10 @@ class AdbDevice:
     def get_wallpaper_pid(self) -> int | None:
         """Return the wallpaper process ID on this device, or None."""
         return get_wallpaper_pid(self.serial)
+
+    def read_process_cpu_ticks(self, pid: int) -> int | None:
+        """Return the combined user and kernel CPU ticks for a process from /proc/<pid>/stat, or None."""
+        return read_process_cpu_ticks(self.serial, pid)
 
     def read_wallpaper_visible(self) -> bool | None:
         """Read whether the wallpaper engine is reported visible on this device."""

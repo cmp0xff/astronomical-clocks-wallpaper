@@ -23,6 +23,7 @@ import device_layer
 REBIND_POLL_COUNT: Final = 10
 REBIND_POLL_SECONDS: Final = 0.5
 PSS_SAMPLE_SECONDS: Final = 10.0
+ANGLE_REPORT_DECIMALS: Final = 3
 
 
 @dataclass(frozen=True)
@@ -181,15 +182,59 @@ def phase_baseline_capture(device: device_layer.AdbDevice, results: list[tuple[s
         failures.append("Hand not found at baseline t0")
 
 
+def read_safe_pid(device: device_layer.AdbDevice) -> int | None:
+    """Return the wallpaper PID, returning None on probe failure."""
+    try:
+        return device.get_wallpaper_pid()
+    except (subprocess.SubprocessError, OSError):
+        return None
+
+
+def read_safe_cpu_ticks(device: device_layer.AdbDevice, pid: int | None) -> int | None:
+    """Return process CPU ticks, returning None on missing pid or probe failure."""
+    if pid is None:
+        return None
+    try:
+        return device.read_process_cpu_ticks(pid)
+    except (subprocess.SubprocessError, OSError):
+        return None
+
+
+def format_screen_off_observation(*, wallpaper_visible: bool | None, ticks_delta: int | None, angle_wake: float) -> str:
+    """Build the descriptive observation record for the screen-off / wake phase."""
+    if wallpaper_visible is False:
+        visibility_text = "wallpaper reported hidden (mVisible=false)"
+    elif wallpaper_visible is True:
+        visibility_text = "wallpaper reported visible (mVisible=true)"
+    else:
+        visibility_text = "wallpaper visibility was unreadable"
+
+    if ticks_delta is not None and ticks_delta >= 0:
+        ticks_text = f"{ticks_delta} CPU ticks while asleep"
+    else:
+        ticks_text = "rendering while asleep was not measured"
+
+    return (
+        f"device reported screen off after the 4s sleep interval; "
+        f"{visibility_text}; {ticks_text}; "
+        f"hand detected after wake at {angle_wake:.3f}°"
+    )
+
+
 def phase_screen_off_wake(device: device_layer.AdbDevice, results: list[tuple[str, str]], failures: list[str]) -> None:
     """Sleep the screen, wake it, and confirm the hand is rendered again."""
     print("\n--- Phase 1: Screen-Off / Wake Navigation ---")
+    pid = read_safe_pid(device)
+    ticks_before = read_safe_cpu_ticks(device, pid)
+
     if not device.sleep_screen():
         failures.append("Screen sleep request failed; the screen-off / wake phase was skipped")
         return
     time.sleep(4.0)
     screen_went_off = device.read_screen_on() is False
     wallpaper_visible = device.read_wallpaper_visible()
+    ticks_during = read_safe_cpu_ticks(device, pid)
+
     if screen_went_off and wallpaper_visible is True:
         failures.append("Wallpaper reported visible (mVisible=true) while the screen was confirmed off")
 
@@ -205,23 +250,30 @@ def phase_screen_off_wake(device: device_layer.AdbDevice, results: list[tuple[st
     w_wake, h_wake, px_wake = device.capture_frame()
     angle_wake = device_layer.detect_hand_angle(w_wake, h_wake, px_wake)
 
-    if screen_went_off and screen_is_on and angle_wake is not None:
-        print(f"Screen-off state observed; hand detected after wake at {angle_wake:.3f}°.")
-        observation = "device reported screen off after the 4s sleep interval"
-        if wallpaper_visible is False:
-            observation += "; wallpaper reported hidden (mVisible=false)"
-        elif wallpaper_visible is True:
-            observation += "; wallpaper reported visible (mVisible=true)"
-        else:
-            observation += "; wallpaper visibility was unreadable"
-        observation += "; rendering while asleep was not measured"
-        observation += f"; hand detected after wake at {angle_wake:.3f}°"
-        results.append(("screen-off / wake navigation", observation))
-    else:
+    if not (screen_went_off and screen_is_on and angle_wake is not None):
         failures.append(
             f"Screen-off / wake navigation failed "
             f"(screen_off={screen_went_off}, screen_on_after_wake={screen_is_on}, hand={angle_wake})"
         )
+        return
+
+    print(f"Screen-off state observed; hand detected after wake at {angle_wake:.3f}°.")
+    ticks_delta = (
+        ticks_during - ticks_before
+        if ticks_before is not None and ticks_during is not None and ticks_during >= ticks_before
+        else None
+    )
+    if ticks_delta is not None and ticks_delta > 0:
+        print(f"WARNING: wallpaper process consumed {ticks_delta} CPU ticks while screen off.")
+
+    results.append(
+        (
+            "screen-off / wake navigation",
+            format_screen_off_observation(
+                wallpaper_visible=wallpaper_visible, ticks_delta=ticks_delta, angle_wake=angle_wake
+            ),
+        )
+    )
 
 
 def ensure_screen_on(device: device_layer.AdbDevice, failures: list[str]) -> bool:
@@ -425,7 +477,10 @@ def phase_time_travel(device: device_layer.AdbDevice, results: list[tuple[str, s
             f"(expected: {device_layer.EXPECTED_ADVANCE_12H_DEG:.3f}°, residual: {res_12h:+.3f}°)"
         )
 
-        if abs(res_30m) <= device_layer.ANGLE_TOLERANCE_DEG and abs(res_12h) <= device_layer.ANGLE_TOLERANCE_DEG:
+        if (
+            round(abs(res_30m), ANGLE_REPORT_DECIMALS) <= device_layer.ANGLE_TOLERANCE_DEG
+            and round(abs(res_12h), ANGLE_REPORT_DECIMALS) <= device_layer.ANGLE_TOLERANCE_DEG
+        ):
             results.append(
                 (
                     "time travel (+30m, +12h)",
@@ -441,11 +496,64 @@ def phase_time_travel(device: device_layer.AdbDevice, results: list[tuple[str, s
         failures.append("Hand angle missing during time travel")
 
 
+def set_debug_instant(device: device_layer.AdbDevice, instant_str: str) -> tuple[bool, float | None]:
+    """Set the virtual clock to an ISO instant, returning (confirmed, hand angle after)."""
+    expected_message = f"Debug clock fixed to instant: {instant_str}"
+    if not device.send_debug_clock_broadcast(["--es", "instant", instant_str], expected_message):
+        return False, None
+    time.sleep(0.3)
+    w_after, h_after, px_after = device.capture_frame()
+    return True, device_layer.detect_hand_angle(w_after, h_after, px_after)
+
+
+def phase_midnight_rollover(
+    device: device_layer.AdbDevice, results: list[tuple[str, str]], failures: list[str]
+) -> None:
+    """Step the virtual clock across midnight and confirm continuous rendering."""
+    print("\n--- Phase 6: Midnight Date Rollover ---")
+    if not ensure_screen_on(device, failures):
+        return
+    t0_str = device_layer.MIDNIGHT_T0_INSTANT
+    t1_str = device_layer.MIDNIGHT_T1_INSTANT
+    confirmed_t0, a_t0 = set_debug_instant(device, t0_str)
+    if not confirmed_t0 or a_t0 is None:
+        failures.append(f"Midnight t0 instant ({t0_str}) was not confirmed or hand not detected")
+        return
+    confirmed_t1, a_t1 = set_debug_instant(device, t1_str)
+    if not confirmed_t1 or a_t1 is None:
+        failures.append(f"Midnight t1 instant ({t1_str}) was not confirmed or hand not detected")
+        return
+
+    delta = (a_t1 - a_t0) % device_layer.FULL_TURN_DEG
+    residual = delta - device_layer.EXPECTED_MIDNIGHT_STEP_DEG
+    print(
+        f"Midnight rollover advance: {delta:.3f}° "
+        f"(expected: {device_layer.EXPECTED_MIDNIGHT_STEP_DEG:.3f}°, residual: {residual:+.3f}°)"
+    )
+    if round(abs(residual), ANGLE_REPORT_DECIMALS) <= device_layer.ANGLE_TOLERANCE_DEG:
+        results.append(
+            (
+                "midnight date rollover",
+                (
+                    f"20s midnight step ({t0_str} -> {t1_str}) moved hand {delta:.3f}° "
+                    f"(residual {residual:+.3f}°); smooth rollover confirmed"
+                ),
+            )
+        )
+    else:
+        failures.append(f"Midnight rollover residual exceeded tolerance: {residual:+.3f}°")
+
+    if not device.send_debug_clock_broadcast(
+        device_layer.DEBUG_CLOCK_RESET_EXTRAS, device_layer.DEBUG_CLOCK_RESET_MESSAGE
+    ):
+        failures.append("Post-midnight clock reset was not confirmed by the service log")
+
+
 def phase_total_pss_growth(
     device: device_layer.AdbDevice, max_pss_growth_kb: int, results: list[tuple[str, str]], failures: list[str]
 ) -> None:
     """Sample total PSS ten seconds apart and compare the growth against the supplied budget."""
-    print("\n--- Phase 6: Total PSS Growth ---")
+    print("\n--- Phase 7: Total PSS Growth ---")
     if not ensure_screen_on(device, failures):
         return
     if not device.send_debug_clock_broadcast(
@@ -489,7 +597,7 @@ def phase_renderer_log_scan(
     device: device_layer.AdbDevice, run_start_marker: str, results: list[tuple[str, str]], failures: list[str]
 ) -> bool:
     """Scan the run's renderer log lines and append the outcome to the results."""
-    print("\n--- Phase 7: Renderer Log Scan ---")
+    print("\n--- Phase 8: Renderer Log Scan ---")
     log_scan_inconclusive = False
     try:
         log_check = device.run_adb(
@@ -651,10 +759,13 @@ def main() -> None:
             current_phase = "virtual time travel"
             phase_time_travel(device, results, failures)
 
+            current_phase = "midnight date rollover"
+            phase_midnight_rollover(device, results, failures)
+
             current_phase = "total PSS growth"
             phase_total_pss_growth(device, args.max_pss_growth_kb, results, failures)
         else:
-            print("Skipping phases 1-6: environment setup was not confirmed.", file=sys.stderr)
+            print("Skipping phases 1-7: environment setup was not confirmed.", file=sys.stderr)
 
     except (subprocess.SubprocessError, OSError, RuntimeError) as error:
         failures.append(f"Run aborted during {current_phase}: {device_layer.error_detail(error)}")

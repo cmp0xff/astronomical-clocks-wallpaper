@@ -35,7 +35,7 @@ FIXTURE_START_PID: Final = 111
 
 FIXTURE_REBOUND_PID: Final = 222
 
-FIXTURE_HAND_ANGLES: Final = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 7.5, 180.0]
+FIXTURE_HAND_ANGLES: Final = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 7.5, 180.0, 179.957, 180.035]
 
 DUPLICATED_CONSTANT_NAMES: Final = (
     "ADB_TIMEOUT_SECONDS",
@@ -195,6 +195,28 @@ class DeviceQualificationTest(unittest.TestCase):
                 self.assertIsNone(device_layer.read_wallpaper_visible("device"))
             self.assertIn("wallpaper visibility probe failed", error_output.getvalue())
             self.assertIn(device_layer.error_detail(error), error_output.getvalue())
+
+    @patch.object(device_layer, "run_adb")
+    def test_process_cpu_ticks_reads_utime_and_stime(self, run_adb: MagicMock) -> None:
+        stat_line = b"123 (wallpaper.service) S 1 2 3 4 5 6 7 8 9 10 42 18 0 0\n"
+        run_adb.return_value = stat_line
+        self.assertEqual(device_layer.read_process_cpu_ticks("device", 123), 60)
+        run_adb.assert_called_with(["shell", "cat", "/proc/123/stat"], serial="device")
+
+    @patch.object(device_layer, "run_adb")
+    def test_process_cpu_ticks_returns_none_for_malformed_stat(self, run_adb: MagicMock) -> None:
+        cases = (b"invalid", b"123 (comm)", b"123 (comm) S 1 2", b"123 no_parens")
+        for output in cases:
+            with self.subTest(output=output):
+                run_adb.return_value = output
+                self.assertIsNone(device_layer.read_process_cpu_ticks("device", 123))
+
+    @patch.object(device_layer, "run_adb")
+    def test_process_cpu_ticks_handles_probe_failure(self, run_adb: MagicMock) -> None:
+        run_adb.side_effect = subprocess.CalledProcessError(1, ["adb"], stderr=b"no such process")
+        with contextlib.redirect_stderr(io.StringIO()) as error_output:
+            self.assertIsNone(device_layer.read_process_cpu_ticks("device", 123))
+        self.assertIn("process CPU stat probe failed", error_output.getvalue())
 
     @patch.object(
         device_layer,
@@ -504,6 +526,7 @@ class DeviceQualificationTest(unittest.TestCase):
             "phase_surface_recreation",
             "phase_process_rebind",
             "phase_time_travel",
+            "phase_midnight_rollover",
             "phase_total_pss_growth",
         )
         with contextlib.ExitStack() as stack:
@@ -635,7 +658,13 @@ class RendererLogScanTest(unittest.TestCase):
             patch.object(
                 device_layer,
                 "get_wallpaper_pid",
-                side_effect=[FIXTURE_START_PID, FIXTURE_START_PID, FIXTURE_START_PID, FIXTURE_REBOUND_PID],
+                side_effect=[
+                    FIXTURE_START_PID,
+                    FIXTURE_START_PID,
+                    FIXTURE_START_PID,
+                    FIXTURE_START_PID,
+                    FIXTURE_REBOUND_PID,
+                ],
             ),
             patch.object(device_layer, "send_debug_clock_broadcast", return_value=True),
             patch.object(qualification, "restore_device", return_value=True),
@@ -952,6 +981,72 @@ class PhaseDecisionTest(unittest.TestCase):
         capture.assert_not_called()
         angle.assert_not_called()
 
+    @patch.object(qualification, "ensure_screen_on", return_value=True)
+    @patch.object(device_layer, "detect_hand_angle", side_effect=[179.957, 180.035])
+    @patch.object(device_layer, "capture_frame", return_value=(2, 2, bytes(16)))
+    @patch.object(device_layer, "send_debug_clock_broadcast", return_value=True)
+    @patch.object(qualification.time, "sleep")
+    def test_midnight_rollover_records_step_within_tolerance(
+        self, _sleep: MagicMock, send: MagicMock, _capture: MagicMock, _angle: MagicMock, _ensure: MagicMock
+    ) -> None:
+        results: list[tuple[str, str]] = []
+        failures: list[str] = []
+        with contextlib.redirect_stdout(io.StringIO()):
+            qualification.phase_midnight_rollover(device_layer.AdbDevice("device"), results, failures)
+        self.assertEqual(failures, [])
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0][0], "midnight date rollover")
+        self.assertIn("smooth rollover confirmed", results[0][1])
+        self.assertEqual(send.call_count, 3)
+
+    @patch.object(qualification, "ensure_screen_on", return_value=True)
+    @patch.object(device_layer, "detect_hand_angle", side_effect=[179.0, 181.0])
+    @patch.object(device_layer, "capture_frame", return_value=(2, 2, bytes(16)))
+    @patch.object(device_layer, "send_debug_clock_broadcast", return_value=True)
+    @patch.object(qualification.time, "sleep")
+    def test_midnight_rollover_fails_when_residual_exceeds_tolerance(
+        self, _sleep: MagicMock, _send: MagicMock, _capture: MagicMock, _angle: MagicMock, _ensure: MagicMock
+    ) -> None:
+        results: list[tuple[str, str]] = []
+        failures: list[str] = []
+        with contextlib.redirect_stdout(io.StringIO()):
+            qualification.phase_midnight_rollover(device_layer.AdbDevice("device"), results, failures)
+        self.assertEqual(len(failures), 1)
+        self.assertIn("residual exceeded tolerance", failures[0])
+        self.assertEqual(results, [])
+
+    @patch.object(qualification, "ensure_screen_on", return_value=True)
+    @patch.object(device_layer, "detect_hand_angle")
+    @patch.object(device_layer, "capture_frame")
+    @patch.object(device_layer, "send_debug_clock_broadcast", return_value=False)
+    @patch.object(qualification.time, "sleep")
+    def test_midnight_rollover_skips_when_instant_broadcast_fails(
+        self, _sleep: MagicMock, _send: MagicMock, capture: MagicMock, angle: MagicMock, _ensure: MagicMock
+    ) -> None:
+        results: list[tuple[str, str]] = []
+        failures: list[str] = []
+        with contextlib.redirect_stdout(io.StringIO()):
+            qualification.phase_midnight_rollover(device_layer.AdbDevice("device"), results, failures)
+        self.assertEqual(len(failures), 1)
+        self.assertIn("was not confirmed", failures[0])
+        self.assertEqual(results, [])
+        capture.assert_not_called()
+        angle.assert_not_called()
+
+    def test_midnight_rollover_skips_when_screen_not_confirmed(self) -> None:
+        results: list[tuple[str, str]] = []
+        failures: list[str] = []
+        with (
+            patch.object(qualification, "ensure_screen_on", return_value=False),
+            patch.object(device_layer, "send_debug_clock_broadcast") as broadcast,
+            patch.object(device_layer, "capture_frame") as capture,
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            qualification.phase_midnight_rollover(device_layer.AdbDevice("device"), results, failures)
+        broadcast.assert_not_called()
+        capture.assert_not_called()
+        self.assertEqual(results, [])
+
     @patch.object(device_layer, "run_adb", return_value=b"--------- beginning of main\nW/DialRenderer: failed draw\n")
     def test_a_matching_warning_record_fails_the_log_scan(self, _run_adb: MagicMock) -> None:
         results: list[tuple[str, str]] = []
@@ -1197,6 +1292,35 @@ class PhasePrerequisiteTest(unittest.TestCase):
                 self.assertNotIn(unsupported, results[0][1])
                 self.assertNotIn(unsupported, output.getvalue())
 
+    def test_screen_off_wake_measures_cpu_ticks_inactivity(self) -> None:
+        """Confirmed screen-off reports CPU ticks delta when pid and proc stat succeed."""
+        cases = (
+            (0, "; 0 CPU ticks while asleep"),
+            (5, "; 5 CPU ticks while asleep"),
+        )
+        for delta, diagnostic in cases:
+            results: list[tuple[str, str]] = []
+            failures: list[str] = []
+            with (
+                self.subTest(delta=delta),
+                patch.object(device_layer, "sleep_screen", return_value=True),
+                patch.object(device_layer, "read_screen_on", side_effect=[False, True]),
+                patch.object(device_layer, "read_wallpaper_visible", return_value=False),
+                patch.object(device_layer, "get_wallpaper_pid", return_value=123),
+                patch.object(device_layer, "read_process_cpu_ticks", side_effect=[100, 100 + delta]),
+                patch.object(device_layer, "wake_screen", return_value=True),
+                patch.object(device_layer.AdbDevice, "dismiss_keyguard"),
+                patch.object(device_layer.AdbDevice, "show_home"),
+                patch.object(device_layer, "capture_frame", return_value=(2, 2, bytes(16))),
+                patch.object(device_layer, "detect_hand_angle", return_value=123.456),
+                patch.object(qualification.time, "sleep"),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                qualification.phase_screen_off_wake(device_layer.AdbDevice("device"), results, failures)
+            self.assertEqual(failures, [])
+            self.assertEqual(len(results), 1)
+            self.assertIn(diagnostic, results[0][1])
+
     def test_visible_while_off_failure_survives_wake_recovery_and_cleanup(self) -> None:
         """The violation fails the run even after recovery or a later wake failure."""
         baseline = qualification.DeviceBaseline(
@@ -1220,6 +1344,7 @@ class PhasePrerequisiteTest(unittest.TestCase):
                     "phase_surface_recreation",
                     "phase_process_rebind",
                     "phase_time_travel",
+                    "phase_midnight_rollover",
                     "phase_total_pss_growth",
                 ):
                     stack.enter_context(patch.object(qualification, phase))
@@ -1348,6 +1473,7 @@ class PhasePrerequisiteTest(unittest.TestCase):
                 "phase_preview_navigation",
                 "phase_process_rebind",
                 "phase_time_travel",
+                "phase_midnight_rollover",
                 "phase_total_pss_growth",
             ):
                 stack.enter_context(patch.object(module, phase))
