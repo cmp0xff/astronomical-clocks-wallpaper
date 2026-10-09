@@ -6,12 +6,14 @@ Provides an object-oriented device abstraction (AdbDevice), dial inspection help
 and shared constants used across host-side testing harnesses.
 """
 
+import json
 import math
 import re
 import struct
 import subprocess
 import sys
 import time
+import xml.etree.ElementTree as ET
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from typing import Final, Self
@@ -96,12 +98,14 @@ REFINE_WEDGE_DEG: Final = 6.0
 FULL_TURN_DEG: Final = 360.0
 HALF_TURN_DEG: Final = FULL_TURN_DEG / 2
 
-# 20 seconds on a 24-hour dial = 20 * (360 / 86400) = 1/12 degree ~= 0.083333°
-SECONDS_PER_DAY: Final = 86400.0
-MIDNIGHT_STEP_SECONDS: Final = 20.0
-EXPECTED_MIDNIGHT_STEP_DEG: Final = MIDNIGHT_STEP_SECONDS * FULL_TURN_DEG / SECONDS_PER_DAY
-MIDNIGHT_T0_INSTANT: Final = "2026-06-20T23:59:50Z"
-MIDNIGHT_T1_INSTANT: Final = "2026-06-21T00:00:10Z"
+# The observing-site preference mirror. LocationStore.kt writes its record under this file and
+# key, and AstronomicalClocksWallpaperService renders each instant through the saved site's zone,
+# so the civil hand follows this zone and not the device's. Reading it lets a host harness derive
+# the zone its rollover instants must be expressed in. The path targets the debug package because
+# only a debuggable build can be read with `run-as`.
+LOCATION_PREFS_NAME: Final = "observing_location"
+LOCATION_PREFS_KEY: Final = "location"
+LOCATION_PREFS_PATH: Final = f"/data/data/{PACKAGE_NAME}/shared_prefs/{LOCATION_PREFS_NAME}.xml"
 
 MIN_BRIGHTNESS: Final = 80
 MAX_BRIGHTNESS: Final = 100
@@ -519,6 +523,66 @@ def read_process_cpu_ticks(serial: str, pid: int) -> int | None:
     return None
 
 
+def read_process_cpu_clock_ticks(serial: str) -> int | None:
+    """Read the kernel's CPU ticks per second (getconf CLK_TCK), or None when it is unreadable."""
+    try:
+        output = run_adb(["shell", "getconf", "CLK_TCK"], serial=serial).decode("utf-8", errors="replace")
+    except (subprocess.SubprocessError, OSError) as error:
+        print(f"WARNING: clock-tick rate probe failed: {error_detail(error)}", file=sys.stderr)
+        return None
+    value = output.strip()
+    return int(value) if value.isdigit() and int(value) > 0 else None
+
+
+def parse_saved_site_zone(prefs_xml: str) -> str | None:
+    """Return the saved observing site's zoneId from the prefs XML, or None when it is unusable."""
+    # S314: the XML is the app's own SharedPreferences file, read back from the debug package that
+    # wrote it over an authenticated ADB channel; there is no attacker-supplied document here, and
+    # the stdlib-only constraint rules out defusedxml.
+    try:
+        root = ET.fromstring(prefs_xml)  # noqa: S314
+    except ET.ParseError:
+        return None
+    for element in root.iter("string"):
+        if element.get("name") != LOCATION_PREFS_KEY:
+            continue
+        raw = element.text
+        if not raw:
+            return None
+        try:
+            record = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(record, dict):
+            return None
+        zone_id = record.get("zoneId")
+        return zone_id if isinstance(zone_id, str) and zone_id else None
+    return None
+
+
+def read_saved_site_zone_id(serial: str) -> str | None:
+    """Read the saved observing-site zone from the debug package's prefs, or None when absent."""
+    try:
+        output = run_adb(["shell", "run-as", PACKAGE_NAME, "cat", LOCATION_PREFS_PATH], serial=serial).decode(
+            "utf-8", errors="replace"
+        )
+    except (subprocess.SubprocessError, OSError) as error:
+        print(f"WARNING: saved-site prefs probe failed: {error_detail(error)}", file=sys.stderr)
+        return None
+    return parse_saved_site_zone(output)
+
+
+def read_device_timezone(serial: str) -> str | None:
+    """Read the device's system timezone property, or None when it is unavailable or empty."""
+    try:
+        output = run_adb(["shell", "getprop", "persist.sys.timezone"], serial=serial).decode("utf-8", errors="replace")
+    except (subprocess.SubprocessError, OSError) as error:
+        print(f"WARNING: device timezone probe failed: {error_detail(error)}", file=sys.stderr)
+        return None
+    zone_id = output.strip()
+    return zone_id or None
+
+
 def read_wallpaper_visible(serial: str) -> bool | None:
     """Return any visible engine, all explicitly hidden engines, or an uncertain dump as True/False/None."""
     try:
@@ -649,6 +713,18 @@ class AdbDevice:
     def read_process_cpu_ticks(self, pid: int) -> int | None:
         """Return the combined user and kernel CPU ticks for a process from /proc/<pid>/stat, or None."""
         return read_process_cpu_ticks(self.serial, pid)
+
+    def read_process_cpu_clock_ticks(self) -> int | None:
+        """Read this device's kernel CPU ticks per second, or None."""
+        return read_process_cpu_clock_ticks(self.serial)
+
+    def read_saved_site_zone_id(self) -> str | None:
+        """Read the saved observing-site zone id from this device's debug prefs, or None."""
+        return read_saved_site_zone_id(self.serial)
+
+    def read_device_timezone(self) -> str | None:
+        """Read this device's system timezone, or None."""
+        return read_device_timezone(self.serial)
 
     def read_wallpaper_visible(self) -> bool | None:
         """Read whether the wallpaper engine is reported visible on this device."""

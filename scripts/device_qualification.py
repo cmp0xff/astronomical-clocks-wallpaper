@@ -3,8 +3,8 @@
 """
 Run observable live-wallpaper checks on one physical Android device via ADB.
 
-This harness does not measure battery or CPU usage, count successful frames while hidden, inspect
-engine cleanup, or verify persisted settings after process recreation.
+This harness verifies lifecycle transitions, dial rendering accuracy across time shifts,
+screen-off CPU quiescence, midnight date rollover, memory growth stability, and log cleanliness.
 
 The shared device layer owns the ADB primitives, the dial/frame analysis, and the target device
 identity; this module keeps the qualification phases, its restore policy, and its report.
@@ -16,7 +16,9 @@ import sys
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Final
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import device_layer
 
@@ -24,6 +26,22 @@ REBIND_POLL_COUNT: Final = 10
 REBIND_POLL_SECONDS: Final = 0.5
 PSS_SAMPLE_SECONDS: Final = 10.0
 ANGLE_REPORT_DECIMALS: Final = 3
+
+# Screen-off CPU evidence: sample the wallpaper process's tick counter across a measured,
+# confirmed-off interval and bound its CPU time against a budget. One tick on the device clock
+# is the smallest observable unit, so a zero-tick sample bounds CPU time below one tick rather
+# than at zero.
+SCREEN_OFF_SETTLE_SECONDS: Final = 1.0
+SCREEN_OFF_SAMPLE_SECONDS: Final = 4.0
+SCREEN_OFF_CPU_BUDGET_SECONDS: Final = 0.05
+
+# Rollover instants are built in the zone the service actually renders with (the saved site's,
+# falling back to the device's). The reference date fixes a summer instant whose zone offset is
+# stable across the 90-minute window, and the four samples bracket local civil midnight by 10
+# seconds (23:15:00, 23:59:50, 00:00:10, 00:45:00) so a frozen hand cannot sit within tolerance.
+SECONDS_PER_DAY: Final = 86400.0
+ROLLOVER_FIRST_LOCAL: Final = (2026, 6, 20, 23, 15, 0)
+ROLLOVER_SAMPLE_OFFSETS_SECONDS: Final = (0.0, 2690.0, 2710.0, 5400.0)
 
 
 @dataclass(frozen=True)
@@ -200,7 +218,14 @@ def read_safe_cpu_ticks(device: device_layer.AdbDevice, pid: int | None) -> int 
         return None
 
 
-def format_screen_off_observation(*, wallpaper_visible: bool | None, ticks_delta: int | None, angle_wake: float) -> str:
+def format_screen_off_observation(
+    *,
+    wallpaper_visible: bool | None,
+    ticks_delta: int | None,
+    clock_ticks: int | None,
+    window_seconds: float | None,
+    angle_wake: float,
+) -> str:
     """Build the descriptive observation record for the screen-off / wake phase."""
     if wallpaper_visible is False:
         visibility_text = "wallpaper reported hidden (mVisible=false)"
@@ -209,34 +234,97 @@ def format_screen_off_observation(*, wallpaper_visible: bool | None, ticks_delta
     else:
         visibility_text = "wallpaper visibility was unreadable"
 
-    if ticks_delta is not None and ticks_delta >= 0:
-        ticks_text = f"{ticks_delta} CPU ticks while asleep"
+    if ticks_delta is not None and clock_ticks is not None and window_seconds:
+        if ticks_delta == 0:
+            # A zero-whole-tick sample bounds CPU time below one tick, never at exactly zero.
+            bound_seconds = 1 / clock_ticks
+            cpu_text = (
+                f"{ticks_delta} CPU ticks over the measured {window_seconds:.2f}s screen-off window at "
+                f"{clock_ticks} ticks/s (<{bound_seconds:.3f}s CPU, <{bound_seconds / window_seconds * 100:.2f}% "
+                f"of the window; budget {SCREEN_OFF_CPU_BUDGET_SECONDS:.2f}s)"
+            )
+        else:
+            cpu_seconds = ticks_delta / clock_ticks
+            cpu_text = (
+                f"{ticks_delta} CPU ticks over the measured {window_seconds:.2f}s screen-off window at "
+                f"{clock_ticks} ticks/s ({cpu_seconds:.3f}s CPU, {cpu_seconds / window_seconds * 100:.2f}% "
+                f"of the window; budget {SCREEN_OFF_CPU_BUDGET_SECONDS:.2f}s)"
+            )
     else:
-        ticks_text = "rendering while asleep was not measured"
+        cpu_text = "rendering while asleep was not measured"
 
-    return (
-        f"device reported screen off after the 4s sleep interval; "
-        f"{visibility_text}; {ticks_text}; "
-        f"hand detected after wake at {angle_wake:.3f}°"
-    )
+    return f"{visibility_text}; {cpu_text}; hand detected after wake at {angle_wake:.3f}°"
+
+
+def evaluate_screen_off_cpu(
+    *,
+    ticks_start: int | None,
+    ticks_end: int | None,
+    clock_ticks: int | None,
+    window_seconds: float,
+) -> tuple[int | None, str | None]:
+    """Return (tick delta, failure message) for one confirmed-off sample window."""
+    if ticks_start is None or ticks_end is None:
+        return None, "Failed to sample wallpaper CPU ticks during confirmed screen-off state"
+    if ticks_end < ticks_start:
+        return None, f"CPU ticks went backward during screen-off: {ticks_start} -> {ticks_end}"
+    if clock_ticks is None:
+        return None, "Could not read the device clock-tick rate (getconf CLK_TCK); CPU time is unbounded"
+    ticks_delta = ticks_end - ticks_start
+    cpu_seconds = ticks_delta / clock_ticks
+    if cpu_seconds > SCREEN_OFF_CPU_BUDGET_SECONDS:
+        return ticks_delta, (
+            f"Wallpaper process used {cpu_seconds:.3f}s CPU while screen off "
+            f"({ticks_delta} ticks over the measured {window_seconds:.2f}s window "
+            f"at {clock_ticks} ticks/s); budget {SCREEN_OFF_CPU_BUDGET_SECONDS:.2f}s"
+        )
+    return ticks_delta, None
 
 
 def phase_screen_off_wake(device: device_layer.AdbDevice, results: list[tuple[str, str]], failures: list[str]) -> None:
-    """Sleep the screen, wake it, and confirm the hand is rendered again."""
+    """Sleep the screen, bound the wallpaper's CPU use while it is off, wake it, and confirm the hand."""
     print("\n--- Phase 1: Screen-Off / Wake Navigation ---")
-    pid = read_safe_pid(device)
-    ticks_before = read_safe_cpu_ticks(device, pid)
+    pid_before = read_safe_pid(device)
 
     if not device.sleep_screen():
         failures.append("Screen sleep request failed; the screen-off / wake phase was skipped")
         return
-    time.sleep(4.0)
+    time.sleep(SCREEN_OFF_SETTLE_SECONDS)
     screen_went_off = device.read_screen_on() is False
     wallpaper_visible = device.read_wallpaper_visible()
-    ticks_during = read_safe_cpu_ticks(device, pid)
+    if not screen_went_off:
+        failures.append("Display was not confirmed off after sleep request")
+        return
 
-    if screen_went_off and wallpaper_visible is True:
+    if wallpaper_visible is True:
         failures.append("Wallpaper reported visible (mVisible=true) while the screen was confirmed off")
+
+    # A rebound process would make the tick reading describe a different process than the one under
+    # test, so re-read the pid after the screen settles rather than sampling against the stale one.
+    pid = read_safe_pid(device)
+    if pid is None or pid != pid_before:
+        failures.append(
+            f"Wallpaper PID was not confirmed unchanged across the screen-off transition "
+            f"(before={pid_before}, after={pid}); the CPU sample is not attributable"
+        )
+
+    ticks_start = read_safe_cpu_ticks(device, pid)
+    window_start = time.monotonic()
+    time.sleep(SCREEN_OFF_SAMPLE_SECONDS)
+    window_seconds = time.monotonic() - window_start
+    ticks_end = read_safe_cpu_ticks(device, pid)
+    if device.read_screen_on() is not False:
+        failures.append("Display was not confirmed off at the end of the CPU sample window")
+    clock_ticks = device.read_process_cpu_clock_ticks()
+
+    ticks_delta, cpu_failure = evaluate_screen_off_cpu(
+        ticks_start=ticks_start,
+        ticks_end=ticks_end,
+        clock_ticks=clock_ticks,
+        window_seconds=window_seconds,
+    )
+    if cpu_failure is not None:
+        failures.append(cpu_failure)
 
     # Wake device back up
     if not device.wake_screen():
@@ -250,7 +338,7 @@ def phase_screen_off_wake(device: device_layer.AdbDevice, results: list[tuple[st
     w_wake, h_wake, px_wake = device.capture_frame()
     angle_wake = device_layer.detect_hand_angle(w_wake, h_wake, px_wake)
 
-    if not (screen_went_off and screen_is_on and angle_wake is not None):
+    if not (screen_is_on and angle_wake is not None):
         failures.append(
             f"Screen-off / wake navigation failed "
             f"(screen_off={screen_went_off}, screen_on_after_wake={screen_is_on}, hand={angle_wake})"
@@ -258,19 +346,18 @@ def phase_screen_off_wake(device: device_layer.AdbDevice, results: list[tuple[st
         return
 
     print(f"Screen-off state observed; hand detected after wake at {angle_wake:.3f}°.")
-    ticks_delta = (
-        ticks_during - ticks_before
-        if ticks_before is not None and ticks_during is not None and ticks_during >= ticks_before
-        else None
-    )
     if ticks_delta is not None and ticks_delta > 0:
-        print(f"WARNING: wallpaper process consumed {ticks_delta} CPU ticks while screen off.")
+        print(f"Wallpaper process consumed {ticks_delta} CPU ticks while screen off.")
 
     results.append(
         (
             "screen-off / wake navigation",
             format_screen_off_observation(
-                wallpaper_visible=wallpaper_visible, ticks_delta=ticks_delta, angle_wake=angle_wake
+                wallpaper_visible=wallpaper_visible,
+                ticks_delta=ticks_delta,
+                clock_ticks=clock_ticks,
+                window_seconds=window_seconds if ticks_delta is not None else None,
+                angle_wake=angle_wake,
             ),
         )
     )
@@ -506,42 +593,106 @@ def set_debug_instant(device: device_layer.AdbDevice, instant_str: str) -> tuple
     return True, device_layer.detect_hand_angle(w_after, h_after, px_after)
 
 
+def resolve_rollover_zone(device: device_layer.AdbDevice) -> tuple[str, str] | None:
+    """Resolve the zone the service renders with: the saved site's, else the device's."""
+    saved_site_zone = device.read_saved_site_zone_id()
+    if saved_site_zone:
+        return saved_site_zone, "saved site"
+    device_timezone = device.read_device_timezone()
+    if device_timezone:
+        return device_timezone, "device timezone"
+    return None
+
+
+def rollover_instants(zone: ZoneInfo) -> list[str]:
+    """Return ISO UTC instants bracketing the zone's local civil midnight on the reference date."""
+    first = datetime(*ROLLOVER_FIRST_LOCAL, tzinfo=zone)
+    return [
+        (first + timedelta(seconds=offset)).astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        for offset in ROLLOVER_SAMPLE_OFFSETS_SECONDS
+    ]
+
+
+def expected_rollover_offsets_deg() -> list[float]:
+    """Return each sample's expected clockwise hand offset from the first sample, in degrees."""
+    return [offset * device_layer.FULL_TURN_DEG / SECONDS_PER_DAY for offset in ROLLOVER_SAMPLE_OFFSETS_SECONDS]
+
+
+def evaluate_rollover(
+    instants: list[str], angles: list[float], zone_id: str
+) -> tuple[list[float], list[float], list[str]]:
+    """Return (offsets, residuals, problems) for one civil-midnight sweep."""
+    expected = expected_rollover_offsets_deg()
+    offsets = [(angle - angles[0]) % device_layer.FULL_TURN_DEG for angle in angles]
+    residuals = [offset - want for offset, want in zip(offsets, expected, strict=True)]
+    problems: list[str] = []
+    for instant, offset, residual in zip(instants, offsets, residuals, strict=True):
+        if round(abs(residual), ANGLE_REPORT_DECIMALS) > device_layer.ANGLE_TOLERANCE_DEG:
+            problems.append(
+                f"Midnight rollover at {instant} (zone {zone_id}) advanced {offset:.3f}°, "
+                f"residual {residual:+.3f}° exceeds the {device_layer.ANGLE_TOLERANCE_DEG}° tolerance"
+            )
+    for index in range(1, len(offsets)):
+        # Only gaps wider than the probe jitter can order adjacent samples: the 20-second pair sits
+        # 0.083° apart, below the tolerance, so it is checked as a bracket, not ordered against itself.
+        discriminable = expected[index] - expected[index - 1] > device_layer.ANGLE_TOLERANCE_DEG
+        if discriminable and offsets[index] < offsets[index - 1]:
+            problems.append(
+                f"Midnight rollover did not advance monotonically at {instants[index]} "
+                f"({offsets[index - 1]:.3f}° -> {offsets[index]:.3f}°) in zone {zone_id}"
+            )
+    return offsets, residuals, problems
+
+
 def phase_midnight_rollover(
     device: device_layer.AdbDevice, results: list[tuple[str, str]], failures: list[str]
 ) -> None:
-    """Step the virtual clock across midnight and confirm continuous rendering."""
+    """Step the virtual clock across the rendered zone's civil midnight and confirm the hand advances."""
     print("\n--- Phase 6: Midnight Date Rollover ---")
     if not ensure_screen_on(device, failures):
         return
-    t0_str = device_layer.MIDNIGHT_T0_INSTANT
-    t1_str = device_layer.MIDNIGHT_T1_INSTANT
-    confirmed_t0, a_t0 = set_debug_instant(device, t0_str)
-    if not confirmed_t0 or a_t0 is None:
-        failures.append(f"Midnight t0 instant ({t0_str}) was not confirmed or hand not detected")
+    resolved = resolve_rollover_zone(device)
+    if resolved is None:
+        failures.append(
+            "Midnight rollover could not be verified: neither the saved site zone nor the device timezone was readable"
+        )
         return
-    confirmed_t1, a_t1 = set_debug_instant(device, t1_str)
-    if not confirmed_t1 or a_t1 is None:
-        failures.append(f"Midnight t1 instant ({t1_str}) was not confirmed or hand not detected")
+    zone_id, source = resolved
+    try:
+        zone = ZoneInfo(zone_id)
+    except (ZoneInfoNotFoundError, ValueError):
+        failures.append(f"Midnight rollover could not be verified: unrecognized timezone {zone_id!r}")
         return
 
-    delta = (a_t1 - a_t0) % device_layer.FULL_TURN_DEG
-    residual = delta - device_layer.EXPECTED_MIDNIGHT_STEP_DEG
+    instants = rollover_instants(zone)
+    angles: list[float] = []
+    for instant in instants:
+        confirmed, angle = set_debug_instant(device, instant)
+        if not confirmed or angle is None:
+            failures.append(f"Midnight sample instant ({instant}) was not confirmed or hand not detected")
+            return
+        angles.append(angle)
+
+    offsets, residuals, problems = evaluate_rollover(instants, angles, zone_id)
     print(
-        f"Midnight rollover advance: {delta:.3f}° "
-        f"(expected: {device_layer.EXPECTED_MIDNIGHT_STEP_DEG:.3f}°, residual: {residual:+.3f}°)"
+        f"Midnight rollover in {zone_id} ({source}): offsets "
+        f"{[round(offset, ANGLE_REPORT_DECIMALS) for offset in offsets]}, residuals "
+        f"{[round(residual, ANGLE_REPORT_DECIMALS) for residual in residuals]}"
     )
-    if round(abs(residual), ANGLE_REPORT_DECIMALS) <= device_layer.ANGLE_TOLERANCE_DEG:
+    if problems:
+        failures.extend(problems)
+    else:
+        residual_text = ", ".join(f"{residual:+.3f}°" for residual in residuals)
         results.append(
             (
                 "midnight date rollover",
                 (
-                    f"20s midnight step ({t0_str} -> {t1_str}) moved hand {delta:.3f}° "
-                    f"(residual {residual:+.3f}°); smooth rollover confirmed"
+                    f"zone {zone_id} ({source}); samples {', '.join(instants)} advanced the hand "
+                    f"{offsets[-1]:.3f}° across civil midnight (residuals {residual_text}); "
+                    "the boundary is bracketed within 10s, not resolved"
                 ),
             )
         )
-    else:
-        failures.append(f"Midnight rollover residual exceeded tolerance: {residual:+.3f}°")
 
     if not device.send_debug_clock_broadcast(
         device_layer.DEBUG_CLOCK_RESET_EXTRAS, device_layer.DEBUG_CLOCK_RESET_MESSAGE
