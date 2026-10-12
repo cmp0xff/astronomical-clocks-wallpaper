@@ -24,6 +24,16 @@ already carried the live wallpaper binding, so the baseline phase did not need t
 re-apply it. Before mutating anything the harness read the display size, screen state, night mode, and
 wallpaper PID.
 
+### Editorial note (2026-10-09, fourth review round)
+
+The screen-off / wake phase description and results row below ("Requests screen-off for four seconds,
+confirms the device reports off"; "Device reported screen off for 4s; hand visible within 1s of wake")
+carry the same overstatement that the [2026-10-07 report](2026-10-07-test-6-background-pause-qualification.md)
+withdrew: the harness samples the display state after its sleep interval and detects the hand after
+wake, so it measured neither a continuous screen-off duration nor wake latency, and it does not
+confirm the display stayed off throughout. The original numbers are unchanged — read "4s" as the
+requested sleep interval and "within 1s" as the post-wake detection, not as measured durations.
+
 ### Revised harness scope
 
 Run `python3 scripts/device_qualification.py --max-pss-growth-kb <agreed-limit>` on one attached

@@ -6,12 +6,14 @@ Provides an object-oriented device abstraction (AdbDevice), dial inspection help
 and shared constants used across host-side testing harnesses.
 """
 
+import json
 import math
 import re
 import struct
 import subprocess
 import sys
 import time
+import xml.etree.ElementTree as ET
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from typing import Final, Self
@@ -56,6 +58,12 @@ WALLPAPER_VISIBLE_PATTERN: Final = re.compile(r"\bmVisible=([^\s,;}]*)")
 DARK_RIM_RGB: Final = (0x1C, 0x2C, 0x39)
 LIGHT_RIM_RGB: Final = (0xE8, 0xE2, 0xD2)
 
+# In /proc/<pid>/stat, fields after the closing parenthesis of comm:
+# index 11 is field 14 (utime) and index 12 is field 15 (stime).
+PROC_STAT_UTIME_INDEX: Final = 11
+PROC_STAT_STIME_INDEX: Final = 12
+PROC_STAT_MIN_FIELDS: Final = 13
+
 RIM_PROBE_RADIUS_FRACTION: Final = 0.40
 RIM_PROBE_BEARINGS_DEG: Final = tuple(range(15, 360, 30))
 
@@ -90,6 +98,43 @@ REFINE_WEDGE_DEG: Final = 6.0
 FULL_TURN_DEG: Final = 360.0
 HALF_TURN_DEG: Final = FULL_TURN_DEG / 2
 
+# Mirror of CivilDialConstants.kt and ClockState.kt, the source of truth: ClockState derives the
+# 24-hour hand angle as (seconds_since_local_midnight / SECONDS_PER_DEGREE + MIDNIGHT_ANGLE_DEG) mod
+# 360, clockwise from screen up, so midnight is 180°, noon 0°, 06:00 270°, and 18:00 90° (pinned by
+# ClockStateTest.kt). detect_hand_angle returns that same convention, so no offset conversion is
+# needed here. The names are prefixed to keep them distinct from the Kotlin-origin constants mirrored.
+CIVIL_SECONDS_PER_DEGREE: Final = 240.0
+CIVIL_MIDNIGHT_ANGLE_DEG: Final = 180.0
+
+# The observing-site preference mirror. LocationStore.kt writes its record under this file and
+# key, and AstronomicalClocksWallpaperService renders each instant through the saved site's zone,
+# so the civil hand follows this zone and not the device's. Reading it lets a host harness derive
+# the zone its rollover instants must be expressed in. The path targets the debug package because
+# only a debuggable build can be read with `run-as`.
+LOCATION_PREFS_NAME: Final = "observing_location"
+LOCATION_PREFS_KEY: Final = "location"
+LOCATION_PREFS_PATH: Final = f"/data/data/{PACKAGE_NAME}/shared_prefs/{LOCATION_PREFS_NAME}.xml"
+
+# `run-as <pkg> cat <prefs>` exits non-zero both when the package or transport cannot be entered and
+# when the prefs file has never been written. Only the latter confirms the store holds no saved site,
+# so it is recognised by this strerror token naming that very path; an ENOENT about any other path is
+# a probe error, not an absence. The token is Android/locale dependent, so a miss raises a probe error
+# and fails the phase loudly — never a false "no saved site" that would silently fall back to the
+# device timezone and probe the wrong midnight.
+PREFS_FILE_ABSENT_MARKER: Final = "No such file or directory"
+
+# Mirror of LocationStore.kt and ObservingLocation.kt record validation, the source of truth.
+# LocationStore.load() ignores a record whose version is not the integral 1, whose latitude or
+# longitude is not an in-range JSON number, or whose source is not one of these names; the service
+# then renders the device zone. It renders the device zone for an absent or unbuildable zoneId as
+# well, and only the absent case is mirrored here (an unbuildable id is the phase's to reject; see
+# saved_record_zone_id). A harness that read a rejected record's zone would probe a civil midnight
+# the service never renders, so parse_saved_site_zone applies the same checks.
+LOCATION_RECORD_VERSION: Final = 1
+LOCATION_SOURCES: Final = frozenset({"CURRENT_COARSE", "MANUAL"})
+LOCATION_MAX_LATITUDE: Final = 90.0
+LOCATION_MAX_LONGITUDE: Final = 180.0
+
 MIN_BRIGHTNESS: Final = 80
 MAX_BRIGHTNESS: Final = 100
 
@@ -99,6 +144,10 @@ MIN_SPLIT_FIELDS: Final = 2
 
 class ScreencapError(RuntimeError):
     """A screencap that could not be decoded into a frame."""
+
+
+class ProbeError(RuntimeError):
+    """A device probe that did not complete, as opposed to a successful reading that found nothing."""
 
 
 def error_detail(error: BaseException) -> str:
@@ -338,6 +387,16 @@ def collect_hand_points(width: int, height: int, pixels: bytes, *, is_dark: bool
     return points
 
 
+def civil_hand_angle_deg(seconds_since_local_midnight: float) -> float:
+    """Return the absolute civil-hand angle for a local time, clockwise from the top of the dial."""
+    return (seconds_since_local_midnight / CIVIL_SECONDS_PER_DEGREE + CIVIL_MIDNIGHT_ANGLE_DEG) % FULL_TURN_DEG
+
+
+def signed_circular_difference_deg(first: float, second: float) -> float:
+    """Return first - second as the shortest signed angular difference, in the half-open [-180, 180)."""
+    return (first - second + HALF_TURN_DEG) % FULL_TURN_DEG - HALF_TURN_DEG
+
+
 def coarse_hand_angle(angles: Sequence[float]) -> float:
     """Return the centre of the 4-degree bin holding the most hand pixels."""
     bins = [0] * COARSE_BIN_COUNT
@@ -486,6 +545,133 @@ def get_wallpaper_pid(serial: str) -> int | None:
     return int(pids[0]) if pids and pids[0].isdigit() else None
 
 
+def read_process_cpu_ticks(serial: str, pid: int) -> int | None:
+    """Return the combined user and kernel CPU ticks for a process from /proc/<pid>/stat, or None."""
+    try:
+        output = run_adb(["shell", "cat", f"/proc/{pid}/stat"], serial=serial).decode("utf-8", errors="replace")
+    except (subprocess.SubprocessError, OSError) as error:
+        print(f"WARNING: process CPU stat probe failed: {error_detail(error)}", file=sys.stderr)
+        return None
+    rparen_index = output.rfind(")")
+    if rparen_index == -1:
+        return None
+    fields = output[rparen_index + 1 :].split()
+    if (
+        len(fields) >= PROC_STAT_MIN_FIELDS
+        and fields[PROC_STAT_UTIME_INDEX].isdigit()
+        and fields[PROC_STAT_STIME_INDEX].isdigit()
+    ):
+        return int(fields[PROC_STAT_UTIME_INDEX]) + int(fields[PROC_STAT_STIME_INDEX])
+    return None
+
+
+def read_process_cpu_clock_ticks(serial: str) -> int | None:
+    """Read the kernel's CPU ticks per second (getconf CLK_TCK), or None when it is unreadable."""
+    try:
+        output = run_adb(["shell", "getconf", "CLK_TCK"], serial=serial).decode("utf-8", errors="replace")
+    except (subprocess.SubprocessError, OSError) as error:
+        print(f"WARNING: clock-tick rate probe failed: {error_detail(error)}", file=sys.stderr)
+        return None
+    value = output.strip()
+    return int(value) if value.isdigit() and int(value) > 0 else None
+
+
+def is_saved_coordinate_in_range(value: object, limit: float) -> bool:
+    """Report whether value is a JSON number within ±limit, excluding JSON true/false (a Python int)."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and -limit <= value <= limit
+
+
+def saved_record_zone_id(record: dict[str, object]) -> str | None:
+    """Return a record's stored zoneId when LocationStore.load() accepts the record, else None."""
+    # json.loads rejects trailing data after the object, as Kotlin's parseRecord does.
+    version = record.get("version")
+    if isinstance(version, bool) or not isinstance(version, int) or version != LOCATION_RECORD_VERSION:
+        return None
+    if not (
+        is_saved_coordinate_in_range(record.get("latitude"), LOCATION_MAX_LATITUDE)
+        and is_saved_coordinate_in_range(record.get("longitude"), LOCATION_MAX_LONGITUDE)
+    ):
+        return None
+    source = record.get("source")
+    if not isinstance(source, str) or source not in LOCATION_SOURCES:
+        return None
+    zone_id = record.get("zoneId")
+    # A stored zoneId is returned as-is, without testing that Python can build it. The store treats an
+    # absent, empty, or non-string id as "no stored zone" (None here, so the caller uses the device
+    # zone), but for a present id the app's ZoneId.of and Python's ZoneInfo accept different strings:
+    # ZoneId.of takes fixed offsets ("+02:00"), "Z", and "UT" that ZoneInfo rejects. The phase must
+    # reject an id it cannot build loudly rather than substitute the device zone for one the app
+    # would still have rendered, which would let the rollover check pass on the wrong civil midnight.
+    return zone_id if isinstance(zone_id, str) and zone_id else None
+
+
+def parse_saved_site_zone(prefs_xml: str) -> str | None:
+    """Return the saved site's stored zoneId when LocationStore.load() accepts the record, else None."""
+    # S314: the XML is the app's own SharedPreferences file, read back from the debug package that
+    # wrote it over an authenticated ADB channel; there is no attacker-supplied document here, and
+    # the stdlib-only constraint rules out defusedxml.
+    try:
+        root = ET.fromstring(prefs_xml)  # noqa: S314
+    except ET.ParseError:
+        return None
+    for element in root.iter("string"):
+        if element.get("name") != LOCATION_PREFS_KEY:
+            continue
+        raw = element.text
+        if not raw:
+            return None
+        try:
+            record = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(record, dict):
+            return None
+        return saved_record_zone_id(record)
+    return None
+
+
+def read_saved_site_zone_id(serial: str) -> str | None:
+    """
+    Read the saved observing-site zone from the debug package's prefs.
+
+    Returns None only when the read succeeded and the store holds no loadable site (including the
+    prefs file never having been written). Any other failure raises ProbeError: a false None would
+    let the rollover phase fall back to the device timezone and pass on a civil midnight the
+    wallpaper never renders, whereas a false ProbeError only fails the phase loudly.
+    """
+    try:
+        output = run_adb(["shell", "run-as", PACKAGE_NAME, "cat", LOCATION_PREFS_PATH], serial=serial).decode(
+            "utf-8", errors="replace"
+        )
+    except subprocess.CalledProcessError as error:
+        stderr = error.stderr
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode("utf-8", errors="replace")
+        # The absent-file strerror must name the prefs path itself; an ENOENT about any other path is
+        # a probe error, not the store's "no saved site", so it must not reach the device-zone fallback.
+        if stderr and PREFS_FILE_ABSENT_MARKER in stderr and LOCATION_PREFS_PATH in stderr:
+            return None
+        message = f"saved-site prefs probe failed: {error_detail(error)}"
+        raise ProbeError(message) from error
+    except (subprocess.SubprocessError, OSError) as error:
+        # subprocess.TimeoutExpired lands here: like any other transport failure it must fail the
+        # phase through ProbeError rather than escape and abort the rest of the run.
+        message = f"saved-site prefs probe failed: {error_detail(error)}"
+        raise ProbeError(message) from error
+    return parse_saved_site_zone(output)
+
+
+def read_device_timezone(serial: str) -> str | None:
+    """Read the device's system timezone property, or None when it is unavailable or empty."""
+    try:
+        output = run_adb(["shell", "getprop", "persist.sys.timezone"], serial=serial).decode("utf-8", errors="replace")
+    except (subprocess.SubprocessError, OSError) as error:
+        print(f"WARNING: device timezone probe failed: {error_detail(error)}", file=sys.stderr)
+        return None
+    zone_id = output.strip()
+    return zone_id or None
+
+
 def read_wallpaper_visible(serial: str) -> bool | None:
     """Return any visible engine, all explicitly hidden engines, or an uncertain dump as True/False/None."""
     try:
@@ -612,6 +798,22 @@ class AdbDevice:
     def get_wallpaper_pid(self) -> int | None:
         """Return the wallpaper process ID on this device, or None."""
         return get_wallpaper_pid(self.serial)
+
+    def read_process_cpu_ticks(self, pid: int) -> int | None:
+        """Return the combined user and kernel CPU ticks for a process from /proc/<pid>/stat, or None."""
+        return read_process_cpu_ticks(self.serial, pid)
+
+    def read_process_cpu_clock_ticks(self) -> int | None:
+        """Read this device's kernel CPU ticks per second, or None."""
+        return read_process_cpu_clock_ticks(self.serial)
+
+    def read_saved_site_zone_id(self) -> str | None:
+        """Read this device's saved observing-site zone id, or None; raises ProbeError on failure."""
+        return read_saved_site_zone_id(self.serial)
+
+    def read_device_timezone(self) -> str | None:
+        """Read this device's system timezone, or None."""
+        return read_device_timezone(self.serial)
 
     def read_wallpaper_visible(self) -> bool | None:
         """Read whether the wallpaper engine is reported visible on this device."""
