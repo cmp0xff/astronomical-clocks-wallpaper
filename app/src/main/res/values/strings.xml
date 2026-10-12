@@ -21,6 +21,9 @@
   <string name="latitude_hint">Latitude (-90 to 90)</string>
   <string name="longitude_hint">Longitude (-180 to 180)</string>
   <string name="location_fetch_failed">Could not get the current location. Enter coordinates manually.</string>
+  <string name="location_provider_unavailable">No network location provider is available on this device. Enter coordinates manually.</string>
+  <string name="location_provider_disabled">Network-based location is turned off. Turn it on, or enter coordinates manually.</string>
+  <string name="location_timeout">Location request timed out. Try again or enter coordinates manually.</string>
   <string name="location_permission_denied">Location permission denied. Enter coordinates manually.</string>
   <string name="location_permission_interrupted">Location permission request did not complete. Enter coordinates manually, or try again.</string>
   <string name="location_permission_title">Current location permission</string>

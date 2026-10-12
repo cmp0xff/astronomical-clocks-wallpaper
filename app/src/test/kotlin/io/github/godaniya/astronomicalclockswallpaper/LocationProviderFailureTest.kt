@@ -29,7 +29,7 @@ class LocationProviderFailureTest {
     private val locationManager = application.getSystemService(Context.LOCATION_SERVICE) as LocationManager
     private val locationShadow = Shadow.extract<FailingLocationManagerShadow>(locationManager)
     private val provider = LocationProvider(application)
-    private val results = mutableListOf<CoordinateFix?>()
+    private val results = mutableListOf<LocationResult>()
 
     @Before
     fun prepareProvider() {
@@ -52,13 +52,13 @@ class LocationProviderFailureTest {
     @Test
     fun deniedRequestCleansUp() {
         locationShadow.requestFailure = SecurityException("request denied in test")
-        assertRequestFailureCleansUp()
+        assertRequestFailureCleansUp(LocationFailureReason.PERMISSION_DENIED)
     }
 
     @Test
     fun missingProviderCleansUp() {
         locationShadow.requestFailure = IllegalArgumentException("provider disappeared in test")
-        assertRequestFailureCleansUp()
+        assertRequestFailureCleansUp(LocationFailureReason.PROVIDER_UNAVAILABLE)
     }
 
     @Test
@@ -82,7 +82,7 @@ class LocationProviderFailureTest {
         shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(10))
         listener.onLocationChanged(Location(LocationManager.NETWORK_PROVIDER))
         provider.cancel()
-        assertEquals(listOf<CoordinateFix?>(null), results)
+        assertEquals(listOf(LocationResult.Failure(LocationFailureReason.TIMEOUT)), results)
         assertEquals(1, locationShadow.removalAttempts)
     }
 
@@ -96,17 +96,17 @@ class LocationProviderFailureTest {
         shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(10))
         assertEquals(
             listOf(
-                CoordinateFix(latitude = 10.0, longitude = 20.0),
+                LocationResult.Success(CoordinateFix(latitude = 10.0, longitude = 20.0)),
             ),
             results,
         )
         assertTrue(locationShadow.networkListeners().isEmpty())
     }
 
-    private fun assertRequestFailureCleansUp() {
+    private fun assertRequestFailureCleansUp(expectedReason: LocationFailureReason) {
         provider.fetch(forceFresh = true) { results.add(it) }
         shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(10))
-        assertEquals(listOf<CoordinateFix?>(null), results)
+        assertEquals(listOf(LocationResult.Failure(expectedReason)), results)
         assertTrue(locationShadow.networkListeners().isEmpty())
         assertEquals(1, locationShadow.removalAttempts)
     }

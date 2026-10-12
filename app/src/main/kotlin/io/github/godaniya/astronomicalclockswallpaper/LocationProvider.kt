@@ -29,16 +29,16 @@ internal class LocationProvider(
     private var activeTimeout: Runnable? = null
     private var requestGeneration = 0
 
-    fun fetch(forceFresh: Boolean = false, callback: (CoordinateFix?) -> Unit) {
+    fun fetch(forceFresh: Boolean = false, callback: (LocationResult) -> Unit) {
         cancel()
         if (!hasCoarsePermission()) {
             Log.w(TAG, "location fetch skipped: ACCESS_COARSE_LOCATION not granted")
-            callback(null)
+            callback(LocationResult.Failure(LocationFailureReason.PERMISSION_DENIED))
             return
         }
         if (NETWORK_PROVIDER !in locationManager.allProviders) {
             Log.w(TAG, "network location provider unavailable")
-            callback(null)
+            callback(LocationResult.Failure(LocationFailureReason.PROVIDER_UNAVAILABLE))
         } else {
             fetchAvailableLocation(forceFresh, callback)
         }
@@ -63,16 +63,16 @@ internal class LocationProvider(
     private fun hasCoarsePermission(): Boolean =
         context.checkSelfPermission(ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
 
-    private fun fetchAvailableLocation(forceFresh: Boolean, callback: (CoordinateFix?) -> Unit) {
+    private fun fetchAvailableLocation(forceFresh: Boolean, callback: (LocationResult) -> Unit) {
         val cached = if (forceFresh) null else lastKnownLocation()
         when {
             cached != null -> {
-                callback(cached)
+                callback(LocationResult.Success(cached))
             }
 
             !locationManager.isProviderEnabled(NETWORK_PROVIDER) -> {
                 Log.w(TAG, "network location provider disabled")
-                callback(null)
+                callback(LocationResult.Failure(LocationFailureReason.PROVIDER_DISABLED))
             }
 
             else -> {
@@ -107,14 +107,19 @@ internal class LocationProvider(
         return isRecent
     }
 
-    private fun requestFreshLocation(callback: (CoordinateFix?) -> Unit) {
+    private fun requestFreshLocation(callback: (LocationResult) -> Unit) {
         val generation = requestGeneration
-        val complete = { result: CoordinateFix? -> completeRequest(generation, result, callback) }
+        val complete = { result: LocationResult -> completeRequest(generation, result, callback) }
         val listener =
             object : LocationListener {
                 override fun onLocationChanged(location: Location) {
                     if (generation == requestGeneration) {
-                        complete(location.toCoordinateFix())
+                        val fix = location.toCoordinateFix()
+                        if (fix != null) {
+                            complete(LocationResult.Success(fix))
+                        } else {
+                            complete(LocationResult.Failure(LocationFailureReason.FETCH_FAILED))
+                        }
                     }
                 }
 
@@ -122,7 +127,7 @@ internal class LocationProvider(
                 override fun onProviderDisabled(provider: String) {
                     if (generation == requestGeneration) {
                         Log.w(TAG, "network location provider disabled during acquisition")
-                        complete(null)
+                        complete(LocationResult.Failure(LocationFailureReason.PROVIDER_DISABLED))
                     }
                 }
 
@@ -136,7 +141,7 @@ internal class LocationProvider(
             Runnable {
                 if (generation == requestGeneration) {
                     Log.w(TAG, "network location update timed out after ${timeoutMillis}ms")
-                    complete(null)
+                    complete(LocationResult.Failure(LocationFailureReason.TIMEOUT))
                 }
             }
         activeTimeout = timeout
@@ -145,14 +150,14 @@ internal class LocationProvider(
             requestSingleUpdate(NETWORK_PROVIDER, listener)
         } catch (e: SecurityException) {
             Log.w(TAG, "requestSingleUpdate denied", e)
-            complete(null)
+            complete(LocationResult.Failure(LocationFailureReason.PERMISSION_DENIED))
         } catch (e: IllegalArgumentException) {
             Log.w(TAG, "network location request unavailable", e)
-            complete(null)
+            complete(LocationResult.Failure(LocationFailureReason.PROVIDER_UNAVAILABLE))
         }
     }
 
-    private fun completeRequest(generation: Int, result: CoordinateFix?, callback: (CoordinateFix?) -> Unit) {
+    private fun completeRequest(generation: Int, result: LocationResult, callback: (LocationResult) -> Unit) {
         if (generation == requestGeneration) {
             cancel()
             callback(result)
@@ -185,4 +190,18 @@ internal fun Location.toCoordinateFix(): CoordinateFix? {
         return null
     }
     return CoordinateFix(latitude = latitude, longitude = longitude)
+}
+
+internal enum class LocationFailureReason {
+    PERMISSION_DENIED,
+    PROVIDER_UNAVAILABLE,
+    PROVIDER_DISABLED,
+    TIMEOUT,
+    FETCH_FAILED,
+}
+
+internal sealed interface LocationResult {
+    data class Success(val fix: CoordinateFix) : LocationResult
+
+    data class Failure(val reason: LocationFailureReason) : LocationResult
 }

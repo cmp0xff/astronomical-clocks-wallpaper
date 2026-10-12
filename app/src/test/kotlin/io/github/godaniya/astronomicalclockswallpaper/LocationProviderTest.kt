@@ -28,25 +28,25 @@ class LocationProviderTest {
     @Test
     fun fetchDeniedWithoutPermission() {
         shadowOf(application).denyPermissions(Manifest.permission.ACCESS_COARSE_LOCATION)
-        assertImmediateFailure()
+        assertImmediateFailure(LocationFailureReason.PERMISSION_DENIED)
     }
 
     @Test
     fun fetchNullWhenNetworkDisabled() {
         shadowOf(locationManager).setProviderEnabled(LocationManager.NETWORK_PROVIDER, false)
-        assertImmediateFailure()
+        assertImmediateFailure(LocationFailureReason.PROVIDER_DISABLED)
     }
 
     @Test
     fun fetchNullWithoutNetwork() {
         shadowOf(locationManager).removeProvider(LocationManager.NETWORK_PROVIDER)
-        assertImmediateFailure()
+        assertImmediateFailure(LocationFailureReason.PROVIDER_UNAVAILABLE)
     }
 
-    private fun assertImmediateFailure() {
-        val results = mutableListOf<CoordinateFix?>()
+    private fun assertImmediateFailure(expectedReason: LocationFailureReason) {
+        val results = mutableListOf<LocationResult>()
         LocationProvider(application).fetch { results.add(it) }
-        assertEquals(listOf<CoordinateFix?>(null), results)
+        assertEquals(listOf(LocationResult.Failure(expectedReason)), results)
         assertTrue(shadowOf(locationManager).networkListeners().isEmpty())
     }
 }
