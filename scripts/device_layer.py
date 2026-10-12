@@ -140,6 +140,12 @@ MAX_BRIGHTNESS: Final = 100
 
 SCREENCAP_HEADER_BYTES: Final = 16
 MIN_SPLIT_FIELDS: Final = 2
+# The home-screen wallpaper is the one the `mLastWallpaper` section names; the lock slot and the
+# desktop-file component are reported separately and must not be mistaken for it.
+HOME_WALLPAPER_SECTION: Final = "mLastWallpaper state:"
+HOME_WALLPAPER_COMPONENT_FIELD: Final = "mInfo.component="
+LOCK_WALLPAPER_SECTION: Final = "mLastLockWallpaper state:"
+STATIC_WALLPAPER_COMPONENT_FIELD: Final = "mWallpaperComponent="
 
 
 class ScreencapError(RuntimeError):
@@ -148,6 +154,38 @@ class ScreencapError(RuntimeError):
 
 class ProbeError(RuntimeError):
     """A device probe that did not complete, as opposed to a successful reading that found nothing."""
+
+
+def read_wallpaper_component(serial: str | None = None) -> str:
+    """
+    Return the home-screen wallpaper component from `dumpsys wallpaper`.
+
+    The `mLastWallpaper` section names the live home component, and that read is bounded to its own
+    section because the lock slot that follows it reports the same field — reading past the boundary
+    would silently report the lock wallpaper. When nothing live is bound the home section has no
+    component at all, and the dump then falls back to the per-file components, where the first
+    `mWallpaperComponent` line is the home slot; that fallback is what a static baseline reports.
+    """
+    output = run_adb(["shell", "dumpsys", "wallpaper"], serial=serial).decode("utf-8", errors="replace")
+    lines = output.splitlines()
+    section = next((index for index, line in enumerate(lines) if line.strip() == HOME_WALLPAPER_SECTION), None)
+    if section is not None:
+        boundary = next(
+            (
+                index
+                for index, line in enumerate(lines[section + 1 :], start=section + 1)
+                if line.strip() == LOCK_WALLPAPER_SECTION
+            ),
+            len(lines),
+        )
+        for line in lines[section + 1 : boundary]:
+            if HOME_WALLPAPER_COMPONENT_FIELD in line:
+                return line.split(HOME_WALLPAPER_COMPONENT_FIELD, 1)[1].strip()
+    for line in lines:
+        if STATIC_WALLPAPER_COMPONENT_FIELD in line:
+            return line.split(STATIC_WALLPAPER_COMPONENT_FIELD, 1)[1].strip()
+    detail = "dumpsys wallpaper reported no home-screen wallpaper component"
+    raise ProbeError(detail)
 
 
 def error_detail(error: BaseException) -> str:
