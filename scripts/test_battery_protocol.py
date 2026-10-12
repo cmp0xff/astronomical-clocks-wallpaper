@@ -47,7 +47,8 @@ Current Battery Service state:
         stat_line = "1234 (astro) S 1 1234 1234 0 -1 4194304 100 0 0 0 150 50 0 0 20 0 1 0 1000 0 0"
         cpu_seconds = parse_proc_stat_cpu_seconds(stat_line, clk_tck=100)
         self.assertIsNotNone(cpu_seconds)
-        self.assertAlmostEqual(2.0, cpu_seconds)
+        if cpu_seconds is not None:
+            self.assertAlmostEqual(2.0, cpu_seconds)
 
     def test_parse_proc_stat_cpu_seconds_invalid(self) -> None:
         self.assertIsNone(parse_proc_stat_cpu_seconds("short string"))
@@ -94,7 +95,9 @@ Current Battery Service state:
         )
         self.assertEqual(20000, run.discharge_uah)
         self.assertAlmostEqual(120000.0, run.discharge_rate_ua)
-        self.assertAlmostEqual(1.0, run.cpu_usage_pct)
+        self.assertIsNotNone(run.cpu_usage_pct)
+        if run.cpu_usage_pct is not None:
+            self.assertAlmostEqual(1.0, run.cpu_usage_pct)
 
     def test_read_process_uid(self) -> None:
         device = MagicMock()
@@ -129,8 +132,9 @@ Current Battery Service state:
         device.run_adb.return_value = b"  Total cpu time: u=1s s=200ms\n  Fg Service for: 40s\n  Unrelated line\n"
         summary = read_batterystats_summary(device)
         self.assertIsNotNone(summary)
-        self.assertIn("Total cpu time: u=1s s=200ms", summary)
-        self.assertIn("Fg Service for: 40s", summary)
+        if summary is not None:
+            self.assertIn("Total cpu time: u=1s s=200ms", summary)
+            self.assertIn("Fg Service for: 40s", summary)
 
 
 if __name__ == "__main__":
