@@ -75,18 +75,28 @@ def visible_record(
     *,
     cpu: float | None = None,
     pilot: bool = False,
-    revision: str = "rev",
+    baseline: str | None = None,
 ) -> dict[str, object]:
     """Build one visible-window record as the state file would carry it."""
     return {
         "phase": "visible",
         "arm": arm,
+        "baseline": baseline,
         "discharge_rate_ua": rate,
         "cpu_pct": cpu,
         "pilot": pilot,
-        "revision": revision,
+        "revision": "rev",
         "api_level": 36,
     }
+
+
+def pairs(count: int, live_rate: float, base_rate: float, *, cpu: float = 1.0) -> list[dict[str, object]]:
+    """Build `count` whole A/B pairs in the order an alternation records them."""
+    records: list[dict[str, object]] = []
+    for _ in range(count):
+        records.append(visible_record("A", live_rate, cpu=cpu))
+        records.append(visible_record("B", base_rate, baseline="stock"))
+    return records
 
 
 class ParseBatteryOutputTest(unittest.TestCase):
@@ -151,9 +161,16 @@ class TCriticalTest(unittest.TestCase):
     def test_table_reaches_thirty_degrees_of_freedom(self) -> None:
         self.assertAlmostEqual(2.042, subject.t_critical_95(30))
 
-    def test_normal_approximation_beyond_the_table(self) -> None:
-        self.assertAlmostEqual(subject.NORMAL_T_CRITICAL_95, subject.t_critical_95(31))
-        self.assertAlmostEqual(subject.NORMAL_T_CRITICAL_95, subject.t_critical_95(500))
+    def test_the_tail_is_expanded_rather_than_replaced_by_the_normal_value(self) -> None:
+        # The two-sided 95% t at 31 degrees of freedom is 2.0395; returning the normal 1.960 there
+        # would understate the interval by about 4%.
+        self.assertAlmostEqual(2.0395, subject.t_critical_95(31), places=3)
+        self.assertAlmostEqual(2.0003, subject.t_critical_95(60), places=3)
+        self.assertGreater(subject.t_critical_95(31), subject.NORMAL_T_CRITICAL_95)
+
+    def test_the_tail_tends_to_the_normal_value(self) -> None:
+        self.assertAlmostEqual(subject.NORMAL_T_CRITICAL_95, subject.t_critical_95(100_000), places=3)
+        self.assertGreater(subject.t_critical_95(1000), subject.NORMAL_T_CRITICAL_95)
 
     def test_two_and_three_pairs_do_not_borrow_the_four_pair_value(self) -> None:
         # The old two-branch lookup returned 3.182 for every n below 5, which understates the
@@ -367,16 +384,73 @@ class RestoreTest(unittest.TestCase):
         self.assertTrue(any("battery simulation reset failed" in problem for problem in problems))
         self.assertIn("system/screen_brightness did not read back as 35", problems)
 
+    def test_a_failing_restore_step_does_not_skip_the_later_ones(self) -> None:
+        # The airplane-mode write used to come first and its failure aborted the rest of the restore,
+        # leaving brightness, the timeout and the stay-awake setting unset. Each step is isolated now,
+        # so a device that rejects every write reports every step rather than only the first.
+        device = MagicMock()
+        device.run_adb.side_effect = subprocess.CalledProcessError(1, "settings put")
+        device.read_screen_on.return_value = True
+        snapshot = subject.DeviceStateSnapshot(
+            device,
+            brightness=35,
+            brightness_mode=1,
+            screen_timeout=300_000,
+            airplane_mode=0,
+            stay_on=1,
+            screen_on=True,
+        )
+        with patch.object(subject, "read_int_setting", return_value=None):
+            problems = snapshot.restore()
+        failures = [problem for problem in problems if "restore failed" in problem]
+        self.assertGreaterEqual(len(failures), 5)
+
     def test_the_settings_restore_is_not_lost_when_only_the_reset_fails(self) -> None:
         device = MagicMock()
         snapshot = MagicMock()
         snapshot.restore.return_value = []
         self.assertEqual([], subject.undo_phase_changes(device, snapshot))
 
+    def test_airplane_mode_is_restored_to_the_value_it_was_found_with(self) -> None:
+        # A device that had airplane mode on before a phase must still have it on afterwards; the
+        # restore used to switch it off unconditionally and then report its own write as a failure.
+        device = MagicMock()
+        device.run_adb.return_value = b""
+        device.read_screen_on.return_value = True
+        snapshot = subject.DeviceStateSnapshot(
+            device,
+            brightness=35,
+            brightness_mode=1,
+            screen_timeout=300_000,
+            airplane_mode=1,
+            stay_on=1,
+            screen_on=True,
+        )
+        restored_values = {
+            "screen_brightness": 35,
+            "screen_brightness_mode": 1,
+            "screen_off_timeout": 300_000,
+            "airplane_mode_on": 1,
+            "stay_on_while_plugged_in": 1,
+        }
+        with patch.object(subject, "read_int_setting", side_effect=lambda _d, _ns, key: restored_values[key]):
+            problems = snapshot.restore()
+        commands = [call.args[0] for call in device.run_adb.call_args_list]
+        airplane = [command for command in commands if "airplane-mode" in command]
+        self.assertEqual(1, len(airplane))
+        self.assertIn("enable", airplane[0])
+        self.assertEqual([], problems)
+
     def test_the_screen_timeout_is_pinned_under_the_key_the_platform_reads(self) -> None:
         device = MagicMock()
         snapshot = subject.DeviceStateSnapshot(
-            device, brightness=35, brightness_mode=1, screen_timeout=300_000, airplane_mode=0
+            device,
+            brightness=35,
+            brightness_mode=1,
+            screen_timeout=300_000,
+            airplane_mode=0,
+            stay_on=None,
+            screen_on=True,
         )
         snapshot.pin()
         written = [call.args[0] for call in device.run_adb.call_args_list]
@@ -443,49 +517,40 @@ class ReportTest(unittest.TestCase):
     def test_matched_arms_within_the_budget_pass(self) -> None:
         records = [
             visible_record("A", 1000.0, cpu=1.0),
-            visible_record("B", 1000.0),
-            visible_record("A", 1000.0, cpu=1.0),
-            visible_record("B", 1000.0),
-            visible_record("A", 1000.0, cpu=1.0),
-            visible_record("B", 1000.0),
-            visible_record("A", 1000.0, cpu=1.0),
-            visible_record("B", 1000.0),
-        ]
+            visible_record("B", 1000.0, baseline="stock"),
+        ] * 4
         lines = subject.report_lines(records)
-        self.assertTrue(any(line.startswith("B4 point estimate") and "PASS" in line for line in lines))
-        self.assertTrue(any(line.startswith("B4 CI upper bound") and "PASS" in line for line in lines))
+        self.assertTrue(any(line.startswith("B4 vs stock point estimate") and "PASS" in line for line in lines))
+        self.assertTrue(any(line.startswith("B4 vs stock CI upper bound") and "PASS" in line for line in lines))
         self.assertTrue(any(line.startswith("B5 visible CPU") and "PASS" in line for line in lines))
 
     def test_a_large_increase_fails_both_b4_lines(self) -> None:
-        records = [visible_record("A", 1200.0), visible_record("B", 1000.0)] * 4
-        lines = subject.report_lines(records)
-        self.assertTrue(any(line.startswith("B4 point estimate") and "FAIL" in line for line in lines))
-        self.assertTrue(any(line.startswith("B4 CI upper bound") and "FAIL" in line for line in lines))
+        lines = subject.report_lines(pairs(4, 1200.0, 1000.0))
+        self.assertTrue(any(line.startswith("B4 vs stock point estimate") and "FAIL" in line for line in lines))
+        self.assertTrue(any(line.startswith("B4 vs stock CI upper bound") and "FAIL" in line for line in lines))
 
     def test_visible_cpu_over_its_budget_fails(self) -> None:
-        records = [visible_record("A", 1000.0, cpu=6.4), visible_record("B", 1000.0)] * 4
-        lines = subject.report_lines(records)
+        lines = subject.report_lines(pairs(4, 1000.0, 1000.0, cpu=6.4))
         self.assertTrue(any(line.startswith("B5 visible CPU") and "FAIL" in line for line in lines))
 
     def test_pilot_windows_are_excluded_from_the_final_comparison(self) -> None:
-        records = [visible_record("A", 1000.0), visible_record("B", 1000.0)] * 4
+        records = pairs(4, 1000.0, 1000.0)
         records.append(visible_record("A", 99999.0, pilot=True))
         lines = subject.report_lines(records)
-        self.assertTrue(any(line.startswith("B4 point estimate") and "PASS" in line for line in lines))
+        self.assertTrue(any(line.startswith("B4 vs stock point estimate") and "PASS" in line for line in lines))
 
     def test_a_silent_discharge_channel_is_reported_not_crashed(self) -> None:
         # The target device's fuel gauge reports a constant counter, so every window's rate is zero.
         # B4 is then unmeasurable, and the criteria that *were* measured must still be reported.
-        records = [visible_record("A", 0.0, cpu=1.0), visible_record("B", 0.0)] * 4
+        records = [visible_record("A", 0.0, cpu=1.0), visible_record("B", 0.0, baseline="stock")] * 4
         lines = subject.report_lines(records)
-        self.assertTrue(any(line.startswith("B4 relative increase") and "NOT MEASURED" in line for line in lines))
+        self.assertTrue(any(line.startswith("B4 vs stock") and "NOT MEASURED" in line for line in lines))
         self.assertTrue(any(line.startswith("B5 visible CPU") for line in lines))
-        self.assertFalse(any(line.startswith("B4 point estimate") and "PASS" in line for line in lines))
+        self.assertFalse(any(line.startswith("B4 vs stock point estimate") and "PASS" in line for line in lines))
 
     def test_too_few_pairs_leaves_b4_unmeasured(self) -> None:
-        records = [visible_record("A", 1000.0), visible_record("B", 1000.0)] * 3
-        lines = subject.report_lines(records)
-        self.assertTrue(any(line.startswith("B4 relative increase") and "NOT MEASURED" in line for line in lines))
+        lines = subject.report_lines(pairs(3, 1000.0, 1000.0))
+        self.assertTrue(any(line.startswith("B4 vs stock") and "NOT MEASURED" in line for line in lines))
 
     def test_pss_growth_is_checked_against_its_budget(self) -> None:
         records = [{"phase": "memory", "pss_growth_kb": 992, "revision": "rev", "api_level": 36}]

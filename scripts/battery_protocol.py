@@ -108,6 +108,11 @@ T_CRITICAL_95_BY_DF: Final = {
     30: 2.042,
 }
 NORMAL_T_CRITICAL_95: Final = 1.960
+# Above the table the normal value is not good enough: the two-sided 95% t at 31 degrees of freedom
+# is 2.040, and returning 1.960 there would understate the interval by 4%. The Cornish-Fisher
+# expansion of the t quantile in powers of 1/nu is used instead, which reproduces the table to three
+# decimals at its top and tends to the normal value as nu grows.
+T_TAIL_TERMS: Final = (4.0, 96.0)
 MIN_PAIRED_SAMPLES: Final = 4
 
 # The arm guard's two provable facts. The live component is a deterministic read; which static image
@@ -120,6 +125,8 @@ LUMA_MAX: Final = 255.0
 MEDIAN_LUMA_NOTE: Final = "recorded, not gated: the OEM stock wallpaper on this device is a dark image"
 
 PINNED_BRIGHTNESS: Final = 128
+# Stay awake on every power source; see DeviceStateSnapshot.pin.
+STAY_ON_ALWAYS: Final = 7
 # A whole hour, so it comfortably exceeds the longest documented window (30 minutes) rather
 # than expiring at the same instant the window closes.
 LONG_SCREEN_TIMEOUT_MS: Final = 3_600_000
@@ -180,7 +187,13 @@ class Window:
         end = self.end_sample.process_cpu_seconds
         if start is None or end is None or self.duration_seconds <= 0:
             return None
-        return (max(0.0, end - start) / self.duration_seconds) * 100.0
+        if end < start:
+            detail = (
+                f"the process CPU counter went backwards ({start:.3f}s to {end:.3f}s), which means the "
+                "process restarted or the pid was recycled inside the window; the window is not a measurement"
+            )
+            raise device_layer.ProbeError(detail)
+        return ((end - start) / self.duration_seconds) * 100.0
 
 
 @dataclass(frozen=True)
@@ -210,9 +223,14 @@ class Record:
 
 
 class DeviceStateSnapshot:
-    """The device settings a phase changes, captured so they can be put back and checked."""
+    """
+    The device state a phase changes, captured so it can be put back and checked.
 
-    def __init__(
+    The screen's own power state is part of it: a hidden window turns the display off, and a phase
+    that returned that way would leave the device dark.
+    """
+
+    def __init__(  # noqa: PLR0913
         self,
         device: device_layer.AdbDevice,
         *,
@@ -220,6 +238,8 @@ class DeviceStateSnapshot:
         brightness_mode: int | None,
         screen_timeout: int | None,
         airplane_mode: int | None,
+        stay_on: int | None,
+        screen_on: bool | None,
     ) -> None:
         """Hold the values read before a phase changed anything."""
         self.device = device
@@ -227,64 +247,146 @@ class DeviceStateSnapshot:
         self.brightness_mode = brightness_mode
         self.screen_timeout = screen_timeout
         self.airplane_mode = airplane_mode
+        self.stay_on = stay_on
+        self.screen_on = screen_on
 
     @classmethod
     def capture(cls, device: device_layer.AdbDevice) -> DeviceStateSnapshot:
-        """Read the settings a measurement phase pins."""
+        """Read the state a measurement phase pins, including the display's own power state."""
         return cls(
             device,
             brightness=read_int_setting(device, "system", "screen_brightness"),
             brightness_mode=read_int_setting(device, "system", "screen_brightness_mode"),
             screen_timeout=read_int_setting(device, "system", "screen_off_timeout"),
             airplane_mode=read_int_setting(device, "global", "airplane_mode_on"),
+            stay_on=read_int_setting(device, "global", "stay_on_while_plugged_in"),
+            screen_on=device.read_screen_on(),
         )
 
     def pin(self) -> None:
-        """Pin brightness, the screen timeout, and airplane mode for a measurement."""
+        """Pin the display conditions a visible window is measured under."""
         self.device.run_adb(["shell", "settings", "put", "system", "screen_brightness_mode", "0"])
         self.device.run_adb(["shell", "settings", "put", "system", "screen_brightness", str(PINNED_BRIGHTNESS)])
         self.device.run_adb(["shell", "settings", "put", "system", "screen_off_timeout", str(LONG_SCREEN_TIMEOUT_MS)])
+        # The timeout alone does not hold the display: a device that reports itself as running on
+        # battery ignores the plugged-in stay-awake setting, which is exactly the state a discharge
+        # simulation puts it in. Staying awake on every power source is what keeps a visible window
+        # visible, and it is restored below like everything else.
+        self.device.run_adb(["shell", "settings", "put", "global", "stay_on_while_plugged_in", str(STAY_ON_ALWAYS)])
         set_airplane_mode(self.device, enabled=True)
 
     def restore(self) -> list[str]:
-        """Put every pinned setting back and report each one that could not be verified."""
+        """Put every pinned value back, isolating each step so none can skip the others."""
         problems: list[str] = []
-        set_airplane_mode(self.device, enabled=self.airplane_mode == 1)
-        # Auto-brightness is restored before the stored level, because turning it back on makes the
-        # framework recompute the level and write over whatever was there. Writing the level second
-        # and then re-reading it after a settle is what makes the check below meaningful.
-        for namespace, key, value in (
-            ("system", "screen_brightness_mode", self.brightness_mode),
-            ("system", "screen_brightness", self.brightness),
-            ("system", "screen_off_timeout", self.screen_timeout),
-        ):
-            if value is not None:
-                self.device.run_adb(["shell", "settings", "put", namespace, key, str(value)])
-        time.sleep(RESTORE_SETTLE_SECONDS)
-        for namespace, key, expected in (
-            ("system", "screen_brightness", self.brightness),
-            ("system", "screen_brightness_mode", self.brightness_mode),
-            ("system", "screen_off_timeout", self.screen_timeout),
-            ("global", "airplane_mode_on", self.airplane_mode),
-        ):
-            if expected is not None and read_int_setting(self.device, namespace, key) != expected:
-                problems.append(f"{namespace}/{key} did not read back as {expected}")
-        if read_battery_override_active(self.device):
-            problems.append("battery simulation is still active after cmd battery reset")
+        problems.extend(self._restore_settings())
+        problems.extend(self._restore_display())
         return problems
 
+    def _restore_settings(self) -> list[str]:
+        """Undo the settings writes, reporting each one that could not be verified."""
+        problems: list[str] = []
+        steps: list[tuple[str, list[str], str, str, int | None]] = [
+            (
+                # Restored to the value it was found with, not to off: a device that had airplane
+                # mode on before the phase must still have it on afterwards.
+                "airplane mode",
+                [
+                    "shell",
+                    "cmd",
+                    "connectivity",
+                    "airplane-mode",
+                    "enable" if self.airplane_mode else "disable",
+                ],
+                "global",
+                "airplane_mode_on",
+                self.airplane_mode,
+            ),
+            (
+                "brightness mode",
+                ["shell", "settings", "put", "system", "screen_brightness_mode", str(self.brightness_mode)],
+                "system",
+                "screen_brightness_mode",
+                self.brightness_mode,
+            ),
+            (
+                "brightness",
+                ["shell", "settings", "put", "system", "screen_brightness", str(self.brightness)],
+                "system",
+                "screen_brightness",
+                self.brightness,
+            ),
+            (
+                "screen timeout",
+                ["shell", "settings", "put", "system", "screen_off_timeout", str(self.screen_timeout)],
+                "system",
+                "screen_off_timeout",
+                self.screen_timeout,
+            ),
+        ]
+        for description, command, namespace, key, expected in steps:
+            if expected is None:
+                continue
+            problems.extend(self._apply(description, command, namespace, key, expected))
+        problems.extend(self._restore_stay_on())
+        return problems
 
-def undo_phase_changes(device: device_layer.AdbDevice, snapshot: DeviceStateSnapshot) -> list[str]:
+    def _restore_stay_on(self) -> list[str]:
+        """Put the stay-awake setting back, including removing it when it was unset."""
+        if self.stay_on is None:
+            try:
+                self.device.run_adb(["shell", "settings", "delete", "global", "stay_on_while_plugged_in"])
+            except (subprocess.SubprocessError, OSError) as error:
+                return [f"stay-awake restore failed: {device_layer.error_detail(error)}"]
+            if read_int_setting(self.device, "global", "stay_on_while_plugged_in") is not None:
+                return ["global/stay_on_while_plugged_in did not return to unset"]
+            return []
+        return self._apply(
+            "stay-awake",
+            ["shell", "settings", "put", "global", "stay_on_while_plugged_in", str(self.stay_on)],
+            "global",
+            "stay_on_while_plugged_in",
+            self.stay_on,
+        )
+
+    def _apply(self, description: str, command: list[str], namespace: str, key: str, expected: int) -> list[str]:
+        """Run one restore step and verify it, converting a failure into a reported problem."""
+        try:
+            self.device.run_adb(command)
+            time.sleep(RESTORE_SETTLE_SECONDS)
+        except (subprocess.SubprocessError, OSError) as error:
+            return [f"{description} restore failed: {device_layer.error_detail(error)}"]
+        if read_int_setting(self.device, namespace, key) != expected:
+            return [f"{namespace}/{key} did not read back as {expected}"]
+        return []
+
+    def _restore_display(self) -> list[str]:
+        """Return the display to the power state it was found in."""
+        if self.screen_on is None:
+            return ["the display state could not be read before the phase, so it cannot be restored"]
+        if self.screen_on and not self.device.wake_screen():
+            return ["the display was on before the phase and could not be woken again"]
+        if not self.screen_on and self.device.read_screen_on() is not False:
+            self.device.sleep_screen()
+            if self.device.read_screen_on() is not False:
+                return ["the display was off before the phase and could not be put back to sleep"]
+        return []
+
+
+def undo_phase_changes(
+    device: device_layer.AdbDevice, snapshot: DeviceStateSnapshot, prior_power: tuple[str, ...] | None = None
+) -> list[str]:
     """Undo a phase's device changes, isolating each step so none can skip the others."""
     problems: list[str] = []
-    for description, action in (
-        ("battery simulation reset", lambda: reset_battery_simulation(device)),
-        ("device settings restore", lambda: problems.extend(snapshot.restore())),
-    ):
-        try:
-            action()
-        except (subprocess.SubprocessError, OSError) as error:
-            problems.append(f"{description} failed: {device_layer.error_detail(error)}")
+    try:
+        reset_battery_simulation(device)
+        if prior_power is not None and not power_source_restored(device, prior_power):
+            problems.append("the reported power sources did not return to their pre-phase state")
+    except (subprocess.SubprocessError, OSError) as error:
+        problems.append(f"battery simulation reset failed: {device_layer.error_detail(error)}")
+    try:
+        problems.extend(snapshot.restore())
+    except (subprocess.SubprocessError, OSError) as error:
+        problems.append(f"device settings restore failed: {device_layer.error_detail(error)}")
     return problems
 
 
@@ -299,10 +401,20 @@ def set_airplane_mode(device: device_layer.AdbDevice, *, enabled: bool) -> None:
     device.run_adb(["shell", "cmd", "connectivity", "airplane-mode", "enable" if enabled else "disable"])
 
 
-def read_battery_override_active(device: device_layer.AdbDevice) -> bool:
-    """Report whether a `cmd battery` override is still in force."""
+def read_power_source_lines(device: device_layer.AdbDevice) -> tuple[str, ...]:
+    """Read the battery dump's power-source lines, which `cmd battery unplug` rewrites."""
     output = device.run_adb(["shell", "dumpsys", "battery"]).decode(errors="replace")
-    return not any("powered: true" in line for line in output.splitlines() if "powered:" in line)
+    return tuple(line.strip() for line in output.splitlines() if "powered:" in line)
+
+
+def power_source_restored(device: device_layer.AdbDevice, before: tuple[str, ...]) -> bool:
+    """
+    Report whether the reported power sources match what they were before the simulation.
+
+    Comparing against the pre-simulation reading is what separates "the override is gone" from
+    "this device happens to be running on its own battery", which look identical in the dump.
+    """
+    return read_power_source_lines(device) == before
 
 
 def parse_battery_output(output: str) -> tuple[int, int, int]:
@@ -373,7 +485,16 @@ def t_critical_95(degrees_of_freedom: int) -> float:
     if degrees_of_freedom < 1:
         detail = f"{degrees_of_freedom} degrees of freedom admits no interval at all"
         raise device_layer.ProbeError(detail)
-    return T_CRITICAL_95_BY_DF.get(degrees_of_freedom, NORMAL_T_CRITICAL_95)
+    tabulated = T_CRITICAL_95_BY_DF.get(degrees_of_freedom)
+    if tabulated is not None:
+        return tabulated
+    z = NORMAL_T_CRITICAL_95
+    first, second = T_TAIL_TERMS
+    return (
+        z
+        + (z**3 + z) / (first * degrees_of_freedom)
+        + (5 * z**5 + 16 * z**3 + 3 * z) / (second * degrees_of_freedom**2)
+    )
 
 
 def paired_statistics(baseline_rates: Sequence[float], treatment_rates: Sequence[float]) -> PairedStatistics:
@@ -681,12 +802,13 @@ def phase_hidden(device: device_layer.AdbDevice, minutes: float) -> Record:
     snapshot = DeviceStateSnapshot.capture(device)
     pid = device.get_wallpaper_pid()
     problems: list[str] = []
+    prior_power = read_power_source_lines(device)
     try:
         snapshot.pin()
         simulate_unplug(device)
         window, states = run_window(device, pid, minutes, screen_on=False)
     finally:
-        problems = undo_phase_changes(device, snapshot)
+        problems = undo_phase_changes(device, snapshot, prior_power)
     hidden_all = states and all(state is False for state in states)
     if not hidden_all:
         detail = f"the display was not off for the whole window: {states}"
@@ -718,19 +840,22 @@ def phase_visible(
     minutes: float,
 ) -> Record:
     """Record one B4/B5 window on the home screen after the arm guard admits it."""
-    device.wake_screen()
+    if not device.wake_screen():
+        detail = "the display could not be woken for a visible window"
+        raise device_layer.ProbeError(detail)
     verify_arm(device, arm, baseline)
     snapshot = DeviceStateSnapshot.capture(device)
     pid = device.get_wallpaper_pid() if arm is Arm.LIVE else None
     conditions = arm_conditions(device, arm, baseline)
     problems: list[str] = []
     print(f"arm guard admitted {conditions['wallpaper_component']} (median luma {conditions['median_luma']})")
+    prior_power = read_power_source_lines(device)
     try:
         snapshot.pin()
         simulate_unplug(device)
         window, states = run_window(device, pid, minutes, screen_on=True)
     finally:
-        problems = undo_phase_changes(device, snapshot)
+        problems = undo_phase_changes(device, snapshot, prior_power)
     if states and not all(state is True for state in states):
         detail = f"the display was not on for the whole visible window: {states}"
         raise device_layer.ProbeError(detail)
@@ -848,28 +973,46 @@ def numeric_values(records: Sequence[Mapping[str, object]], phase: str, key: str
     return values
 
 
-def window_rates(records: Sequence[Mapping[str, object]], arm: str) -> list[float]:
-    """Collect the discharge rates of one arm's visible windows, in record order."""
-    rates: list[float] = []
-    for record in records:
-        if record.get("phase") != "visible" or record.get("arm") != arm or record.get("pilot"):
-            continue
-        rate = record.get("discharge_rate_ua")
-        if not isinstance(rate, int | float):
-            detail = f"a visible record for arm {arm} carried no discharge rate"
-            raise device_layer.ProbeError(detail)
-        rates.append(float(rate))
-    return rates
+def alternation_pairs(
+    records: Sequence[Mapping[str, object]],
+) -> list[tuple[Mapping[str, object], Mapping[str, object]]]:
+    """
+    Pair live and baseline windows from their recorded order, refusing a malformed sequence.
+
+    Pairing the nth baseline window with the nth live window by file order would silently pair
+    windows that were not taken under the same conditions; the sequence has to be an alternation
+    before that pairing means anything. Pilot windows are excluded: they are the calibration, not
+    the comparison.
+    """
+    sequence = [record for record in records if record.get("phase") == "visible" and not record.get("pilot")]
+    if not sequence:
+        return []
+    arms = [str(record.get("arm")) for record in sequence]
+    expected = [Arm.LIVE.value, Arm.BASELINE.value] * (len(sequence) // 2)
+    if len(sequence) % 2 != 0 or arms != expected:
+        detail = f"the visible windows are not an A/B alternation: recorded arms {arms}"
+        raise device_layer.ProbeError(detail)
+    return [(sequence[index], sequence[index + 1]) for index in range(0, len(sequence), 2)]
 
 
-def window_cpu(records: Sequence[Mapping[str, object]]) -> list[float]:
-    """Collect the live-arm CPU readings from the visible windows."""
+def window_rate(record: Mapping[str, object]) -> float:
+    """Read one window's discharge rate, refusing a record that has none."""
+    rate = record.get("discharge_rate_ua")
+    if not isinstance(rate, int | float):
+        detail = "a visible window recorded no discharge rate, so no comparison can be computed"
+        raise device_layer.ProbeError(detail)
+    return float(rate)
+
+
+def live_cpu_values(pairs: Sequence[tuple[Mapping[str, object], Mapping[str, object]]]) -> list[float]:
+    """Collect the CPU readings of the live windows of each pair."""
     values: list[float] = []
-    for record in records:
-        if record.get("phase") == "visible" and record.get("arm") == Arm.LIVE.value and not record.get("pilot"):
-            value = record.get("cpu_pct")
-            if isinstance(value, int | float):
-                values.append(float(value))
+    for live, _ in pairs:
+        cpu = live.get("cpu_pct")
+        if not isinstance(cpu, int | float):
+            detail = "a live window recorded no CPU reading, so B5 has no input"
+            raise device_layer.ProbeError(detail)
+        values.append(float(cpu))
     return values
 
 
@@ -881,9 +1024,24 @@ def check_budget(label: str, value: float | None, budget: float, unit: str) -> s
     return f"{label}: {verdict} — {value:.4f}{unit} against {budget}{unit}"
 
 
+def collect_restore_problems(records: Sequence[Mapping[str, object]]) -> list[str]:
+    """Collect every restore problem the records carry, so a failed restore is never silent."""
+    problems: list[str] = []
+    for record in records:
+        found = record.get("restore_problems")
+        if isinstance(found, list):
+            problems.extend(str(problem) for problem in found)
+    return problems
+
+
 def report_lines(records: Sequence[Mapping[str, object]]) -> list[str]:
     """Build the pass/fail report against the committed thresholds."""
     lines: list[str] = []
+    problems = collect_restore_problems(records)
+    if problems:
+        lines.append(f"DEVICE RESTORE: FAIL - {len(problems)} problem(s) were recorded")
+        lines.extend(f"  - {problem}" for problem in problems)
+
     resource_lines = [line for line in records if line.get("phase") == "resources"]
     if resource_lines:
         latest = resource_lines[-1]
@@ -892,40 +1050,63 @@ def report_lines(records: Sequence[Mapping[str, object]]) -> list[str]:
         lines.append(check_budget("B2 wake locks", float(locks) if isinstance(locks, int | float) else None, 0.0, ""))
         lines.append(check_budget("B2 alarms", float(alarms) if isinstance(alarms, int | float) else None, 0.0, ""))
     else:
-        lines.append("B2 wake locks and alarms: NOT MEASURED — run the resources phase")
+        lines.append("B2 wake locks and alarms: NOT MEASURED - run the resources phase")
 
     hidden = numeric_values(records, "hidden", "cpu_pct")
     lines.append(check_budget("B3 hidden CPU", max(hidden) if hidden else None, MAX_HIDDEN_CPU_PCT, "%"))
 
-    baseline_rates = window_rates(records, Arm.BASELINE.value)
-    treatment_rates = window_rates(records, Arm.LIVE.value)
     try:
-        statistics = paired_statistics(baseline_rates, treatment_rates)
+        pairs = alternation_pairs(records)
+    except device_layer.ProbeError as error:
+        lines.append(f"B4/B5: NOT MEASURED - {error}")
+        pairs = []
+
+    baselines = sorted({str(base.get("baseline")) for _, base in pairs})
+    if not pairs:
+        lines.append("B4 relative increase: NOT MEASURED - no alternation pairs were recorded")
+    for baseline in baselines:
+        selected = [(live, base) for live, base in pairs if base.get("baseline") == baseline]
+        try:
+            statistics = paired_statistics(
+                [window_rate(base) for _, base in selected], [window_rate(live) for live, _ in selected]
+            )
+        except device_layer.ProbeError as error:
+            lines.append(f"B4 vs {baseline}: NOT MEASURED - {error} ({len(selected)} pairs recorded)")
+            continue
         lines.append(
-            f"B4 relative increase: {statistics.relative_delta_pct:.3f}% "
+            f"B4 vs {baseline} relative increase: {statistics.relative_delta_pct:.3f}% "
             f"(95% CI upper {statistics.ci_95_upper_pct:.3f}%, {statistics.sample_count} pairs, "
             f"df {statistics.degrees_of_freedom}, t {statistics.t_critical})"
         )
-        lines.append(check_budget("B4 point estimate", statistics.relative_delta_pct, FINAL_MAX_VISIBLE_DELTA_PCT, "%"))
-        lines.append(check_budget("B4 CI upper bound", statistics.ci_95_upper_pct, FINAL_MAX_VISIBLE_DELTA_PCT, "%"))
-    except device_layer.ProbeError as error:
-        # A comparison that cannot be computed is reported as not measured, with its reason. It is
-        # never a pass, and it must not stop the criteria that *were* measured from being reported.
-        lines.append(
-            f"B4 relative increase: NOT MEASURED — {error} "
-            f"({len(baseline_rates)} baseline and {len(treatment_rates)} live windows recorded)"
-        )
+        for label, value in (
+            ("point estimate", statistics.relative_delta_pct),
+            ("CI upper bound", statistics.ci_95_upper_pct),
+        ):
+            lines.append(check_budget(f"B4 vs {baseline} {label}", value, FINAL_MAX_VISIBLE_DELTA_PCT, "%"))
 
-    cpu_values = window_cpu(records)
-    lines.append(
-        check_budget("B5 visible CPU", max(cpu_values) if cpu_values else None, FINAL_MAX_VISIBLE_CPU_PCT, "%")
-    )
+    # B5 is the average visible CPU of the document's matrix, so the average is what is checked; the
+    # worst window is reported beside it as the observation it is.
+    try:
+        cpu_values = live_cpu_values(pairs)
+    except device_layer.ProbeError as error:
+        lines.append(f"B5 visible CPU: NOT MEASURED - {error}")
+        cpu_values = []
+    if cpu_values:
+        lines.append(
+            check_budget("B5 visible CPU (mean)", sum(cpu_values) / len(cpu_values), FINAL_MAX_VISIBLE_CPU_PCT, "%")
+        )
+        lines.append(f"B5 worst window observed: {max(cpu_values):.4f}% over {len(cpu_values)} windows")
+    else:
+        lines.append("B5 visible CPU: NOT MEASURED - no live window was recorded")
 
     growth_values = numeric_values(records, "memory", "pss_growth_kb")
-    growth: float | None = growth_values[-1] if growth_values else None
-    lines.append(check_budget("B6 PSS growth", growth, MAX_PSS_GROWTH_KB, " kB"))
     lines.append(
-        "B1 hidden frames: NOT MEASURED HERE — the frame counter is #125 criterion 1, "
+        check_budget(
+            "B6 PSS growth (worst run)", max(growth_values) if growth_values else None, MAX_PSS_GROWTH_KB, " kB"
+        )
+    )
+    lines.append(
+        "B1 hidden frames: NOT MEASURED HERE - the frame counter is #125 criterion 1, "
         "and a zero-frame claim needs a console that this protocol does not own"
     )
     return lines
@@ -940,6 +1121,15 @@ def phase_report(records: Sequence[Mapping[str, object]]) -> None:
     print(f"API levels: {', '.join(str(level) for level in sorted(api_levels, key=str))}")
     print(f"committed B4 threshold: {FINAL_MAX_VISIBLE_DELTA_PCT}% relative increase")
     print(f"committed B5 threshold: {FINAL_MAX_VISIBLE_CPU_PCT}% of one core")
+    floors = [record for record in records if record.get("noise_floor_rate_ua") is not None]
+    if floors:
+        latest_floor = floors[-1]
+        print(
+            f"pilot floors recorded: discharge 2 sigma {latest_floor.get('noise_floor_rate_ua')} uA, "
+            f"CPU 2 sigma {latest_floor.get('cpu_noise_floor_pct')}% of one core"
+        )
+    else:
+        print("pilot floors: none recorded, so the thresholds above are the provisional values alone")
     print()
     for line in report_lines(records):
         print(line)

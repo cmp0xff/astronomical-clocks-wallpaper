@@ -44,9 +44,11 @@ its own evidence. No single invocation, and above all no single window, blocks f
    - Screen brightness pinned at a constant level with auto-brightness off.
    - Airplane mode enabled, to take the cellular and Wi-Fi radios out of the comparison.
    - Screen timeout raised for the duration of a window.
-   - The device settings a phase changes are captured first and restored in a `finally`; the restore
-     is read back and reported, and a restore that cannot be verified is recorded as a problem
-     rather than assumed.
+   - The device state a phase changes — brightness, auto-brightness, screen timeout, airplane mode,
+     the stay-awake setting the visible windows need, and the display's own power state — is captured
+     first and restored in a `finally`. Each step is restored independently, so one failing write
+     cannot skip the others; every value is read back, and a restore that cannot be verified is
+     recorded as a problem, printed, and makes the command exit non-zero rather than passing quietly.
 3. **Dual Baselines**:
    - Primary baseline: OEM stock `ImageWallpaper`.
    - Secondary baseline: a black static wallpaper, so that a mostly dark dial on an OLED panel
@@ -68,10 +70,14 @@ its own evidence. No single invocation, and above all no single window, blocks f
    `docs/testing/reports/` records the pilot's values — **before** the final run. Nothing measured
    in `pilot` windows is aggregated into the final comparison, so committing the threshold cannot be
    tuned to the result.
-6. **Report**: the `report` subcommand aggregates the recorded windows, refuses to pair fewer than
-   the four alternations this issue mandates, uses the Student t critical value for the actual
-   degrees of freedom, and prints pass, fail, or **not measured** for every criterion. A criterion
-   that was never measured is reported as not measured, never as a pass.
+6. **Report**: the `report` subcommand aggregates the recorded windows. It refuses to pair a window
+   sequence that is not an A/B alternation, compares each baseline separately, refuses fewer than
+   the four alternations this issue mandates, and uses the Student t critical value for the actual
+   degrees of freedom — expanded above the tabulated range rather than replaced by the normal value.
+   B5 is checked against the average visible CPU its row defines, with the worst window reported
+   beside it, and B6 against the worst recorded run. Every criterion prints pass, fail, or **not
+   measured**, and any recorded restore failure is printed as a failure. A criterion that was never
+   measured is reported as not measured, never as a pass.
 
 ## Sources
 
