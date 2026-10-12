@@ -61,8 +61,13 @@ PROVISIONAL_MAX_VISIBLE_DELTA_PCT: Final = 5.0
 PROVISIONAL_MAX_VISIBLE_CPU_PCT: Final = 3.0
 MAX_PSS_GROWTH_KB: Final = 6144
 
-# Committed by the pilot before the final run, per the document's own anti-tuning rule. `report`
-# reads these two constants, so changing them is what "committing the threshold" means.
+# Committed before the final run from the pilot's observed noise floors, per the document's own
+# anti-tuning rule; `report` reads these two constants, so a change here is what "committing the
+# threshold" means. The 2026-10-12 pilot measured 0 uA (2 sigma) on the discharge channel and
+# 0.0219% of one core (2 sigma) on the CPU channel, both below the provisional values, so both
+# thresholds stay as stated. The discharge floor is a dead channel rather than a quiet device: the
+# fuel gauge reported 4500000 uAh in all four windows while the device was on USB, so no discharge
+# signal exists on that device to calibrate against.
 FINAL_MAX_VISIBLE_DELTA_PCT: Final = PROVISIONAL_MAX_VISIBLE_DELTA_PCT
 FINAL_MAX_VISIBLE_CPU_PCT: Final = PROVISIONAL_MAX_VISIBLE_CPU_PCT
 
