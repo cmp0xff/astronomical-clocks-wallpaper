@@ -42,7 +42,8 @@ and [dial geometry guide](docs/orloj.md).
   third-party telemetry SDKs are included.
 - **Offline calculations and manual setup**: Astronomy calculations, manual
   coordinates, and geographic timezone selection work on-device without internet
-  requests. Offline city selection is not currently implemented.
+  requests. An offline city catalog is intentionally omitted to avoid cartographic
+  and political entanglements (see [observing-site contract](docs/design.md)).
 - **Optional approximate location**: Current-location acquisition uses Android’s
   built-in network location provider, whose availability depends on the device
   and its services. If it is unavailable or permission is denied, use manual setup
