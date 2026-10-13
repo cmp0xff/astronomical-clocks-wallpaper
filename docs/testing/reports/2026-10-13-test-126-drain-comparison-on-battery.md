@@ -77,7 +77,7 @@ excluded from the final comparison.
 
 | Threshold | Committed value | Why |
 | --- | --- | --- |
-| `FINAL_MAX_VISIBLE_DELTA_PCT` | **12.0123%** | The greater of the provisional 5% and the measured 12.0123% floor. The floor is wider, so the budget gets harder, not easier — the document's rule working as intended |
+| `FINAL_MAX_VISIBLE_DELTA_PCT` | **12.0123%** | The greater of the provisional 5% and the measured 12.0123% floor. Raising it makes the criterion **more permissive**, not harder: a live-versus-baseline increase up to 12.0123% now passes where 5% would have failed it. What the wider floor buys is honesty rather than leniency — below it this device cannot separate a real difference from its own variation |
 | `FINAL_MAX_VISIBLE_CPU_PCT` | **3.0%** | The greater of the provisional 3% and the measured 0.0894% floor, which leaves the provisional value standing |
 | `PILOT_DISCHARGE_NOISE_FLOOR_UA` | 43997.06 uA | The discharge 2 sigma, carried beside the threshold it justifies |
 | `PILOT_CPU_NOISE_FLOOR_PCT` | 0.0894% | The CPU 2 sigma, below the provisional threshold |
@@ -144,7 +144,7 @@ its duration.
 | 2026-10-13 | B2 jobs | 0 | PASS |
 | 2026-10-13 | B3 hidden CPU | 0.0404% of one core over 10 minutes | PASS against the 0.1% budget |
 | 2026-10-13 | B6 PSS growth | +3578 kB over 30 minutes | PASS against the 6144 kB budget |
-| 2026-10-13 | B1 hidden frames | not measured by this protocol | OUT OF SCOPE — #125 criterion 1 |
+| 2026-10-13 | B1 hidden frames | not measured by this protocol | OUT OF SCOPE — #125 criterion 1, whose producer-trace evidence landed separately in [the 2026-10-12 pass](2026-10-12-test-125-hidden-frames-and-reboot.md) |
 
 `python3 scripts/battery_protocol.py --state build/reports/battery report` prints these verdicts and
 **exits 1**: the run is a failed acceptance, and the command that reports it now fails with it.

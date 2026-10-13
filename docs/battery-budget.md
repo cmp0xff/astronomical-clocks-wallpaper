@@ -25,12 +25,12 @@ resource budgets and avoid degrading battery life:
 
 | Criterion | Target Budget | Verification Methodology |
 | --- | --- | --- |
-| **B1: Hidden/Screen-Off Frames** | **0 frames** (hard requirement) | Frame counter or producer-trace window while the engine is hidden and the display is off. **Not measured by this protocol**: the frame console is #125 criterion 1, and this document does not claim it. |
-| **B2: Wake Locks & Alarms** | **0 wake locks**, 0 repeating alarms | `dumpsys power` and `dumpsys alarm`, attributed by the app's UID and package |
-| **B3: Hidden CPU Utilization** | **≤ 0.1% of one core** over 10 min | `/proc/<pid>/stat` deltas over a screen-off duration whose display state is sampled throughout |
-| **B4: Visible Screen-On Drain** | **Provisional ≤ 5% relative increase** vs baseline | A/B/A/B alternating 15-minute runs against stock `ImageWallpaper` and a black static wallpaper; the paired 95% upper bound must also stay below the threshold |
-| **B5: Visible CPU Utilization** | **Provisional ≤ 3% of one core** at 1 Hz | `/proc/<pid>/stat` process ticks during a visible home-screen window |
-| **B6: Memory Stability** | **≤ 6144 kB** total-PSS growth, the budget the existing qualification harness runs at | `dumpsys meminfo` PSS sampling across a 30-minute window |
+| **B1: Hidden/Screen-Off Frames** | **0 frames** (hard requirement) | Frame counter or producer-trace window while the engine is hidden and the display is off. **Not measured by this protocol**: the frame console is #125 criterion 1, which has since landed its own evidence — the [2026-10-12 producer-trace pass](testing/reports/2026-10-12-test-125-hidden-frames-and-reboot.md) reads 0 frames over 60 s, bracketed by visible controls that do render. This document does not claim it. |
+| **B2: Wake Locks & Alarms** | **0 wake locks**, 0 repeating alarms | `dumpsys power` and `dumpsys alarm`, attributed by the app's UID and package; each dump's own census line must be present, so an unparsable probe is an error rather than a count of zero |
+| **B3: Hidden CPU Utilization** | **≤ 0.1% of one core** over ≥ 10 min | `/proc/<pid>/stat` deltas over a screen-off duration whose display state is sampled throughout |
+| **B4: Visible Screen-On Drain** | **≤ 12.0123% relative increase** vs the stock baseline — the committed noise floor, not the 5% provisional | A/B/A/B alternating runs of ≥ 15 minutes against stock `ImageWallpaper`; the paired 95% upper bound must also stay below the threshold. A black static wallpaper is the secondary baseline, required only where the device permits setting one |
+| **B5: Visible CPU Utilization** | **≤ 3% of one core** at 1 Hz over ≥ 15 min | `/proc/<pid>/stat` process ticks during a visible home-screen window |
+| **B6: Memory Stability** | **≤ 6144 kB** total-PSS growth, the budget the existing qualification harness runs at | `dumpsys meminfo` PSS sampling across a ≥ 30-minute window |
 
 `scripts/battery_protocol.py` implements B2–B6 as separate bounded subcommands — `resources`,
 `hidden`, `visible`, `pilot`, `memory`, and `report` — each of which writes one record and prints
@@ -60,9 +60,15 @@ its own evidence. No single invocation, and above all no single window, blocks f
      cannot skip the others; every value is read back, and a restore that cannot be verified is
      recorded as a problem, printed, and makes the command exit non-zero rather than passing quietly.
 3. **Dual Baselines**:
-   - Primary baseline: OEM stock `ImageWallpaper`.
+   - Primary baseline: OEM stock `ImageWallpaper`. This is the comparison B4 is gated on.
    - Secondary baseline: a black static wallpaper, so that a mostly dark dial on an OLED panel
-     cannot flatter the result against a bright stock image.
+     cannot flatter the result against a bright stock image. It is **required only where the device
+     permits setting one**. The harness never swaps a wallpaper, and setting a static baseline
+     rewrites the home image, which on a production build without root cannot be put back — so where
+     it cannot be set, the report prints the black comparison as not measured and device-limited
+     rather than staying silent, and what stays uncalibrated on that device is the dark-image control.
+   - A state file that records only one of the two baselines is reported as exactly that: the report
+     emits one block per documented baseline, so a missing one is visible rather than absent.
 4. **Arm verification, not arm switching**: the harness never performs the wallpaper swap it
    measures. Before each window it checks that the device matches the requested arm — the live
    service component for arm A, and any static component for arm B — and refuses the window
@@ -72,14 +78,36 @@ its own evidence. No single invocation, and above all no single window, blocks f
    luminance sits at the black baseline's, so a brightness threshold would have refused valid stock
    windows while still not separating the two static baselines. Which static image a baseline
    carries is not decidable over ADB, and the report says so rather than implying it was checked.
-5. **Noise Floor Rule**: B4 and B5 are provisional on purpose. The `pilot` subcommand runs repeated
-   baseline windows of the same length as the final ones and reports their mean, sample standard
-   deviation, and the two-standard-deviation (2σ) noise floor. The final threshold is the greater of
-   the provisional value and the observed noise floor, and it is committed — that is, the constants
-   in `scripts/battery_protocol.py` are changed and committed, and a dated report under
-   `docs/testing/reports/` records the pilot's values — **before** the final run. Nothing measured
-   in `pilot` windows is aggregated into the final comparison, so committing the threshold cannot be
-   tuned to the result.
+5. **Noise Floor Rule**: B4 and B5 begin provisional because neither threshold can be stated before
+   the device's own variation is known. The `pilot` subcommand is what replaces them: it runs
+   repeated windows **on the live arm (A)**, of the same length as the final ones, and reports their
+   mean, sample standard deviation, and the two-standard-deviation (2σ) noise floor. The live arm is
+   the one whose discharge the B4 comparison is about, though arm B is accepted for a pilot that is
+   deliberately calibrating the baseline instead; whichever arm ran is recorded in every pilot window.
+
+   The floor must be read for what it is, because it is **not the statistic B4 tests**. A single
+   arm's 2σ bounds how far one window's rate can move. B4's criterion is the paired 95% upper bound
+   on the live-minus-baseline difference, and pairing removes the drift both arms share, so that
+   interval is narrower than the single-arm spread the floor is taken from. A threshold set to the
+   single-arm floor is therefore a *conservative* stand-in for the statistic actually tested, never a
+   tighter one — and it cannot by itself predict whether a run will pass, because the interval's
+   width also depends on the per-pair difference sd and on how many pairs were recorded. What that
+   leaves uncalibrated is recorded rather than glossed: each report states the σ_d it observed, so the
+   pair count a future run needs can be computed from measurement instead of guessed, and the
+   threshold is committed to a fixed n before the run rather than re-read after it.
+
+   The final threshold is the greater of the provisional value and the observed noise floor, and it is
+   committed — the constants in `scripts/battery_protocol.py` are changed and committed, and a dated
+   report under `docs/testing/reports/` records the pilot's values — **before** the final run. A pilot
+   whose discharge channel never moved emits **no floor at all** and marks that channel unmeasured:
+   a zero half-width over a zero mean is not a quiet device, it is an unread gauge, and committing it
+   would present an unmeasured channel as a perfectly quiet one. Nothing measured in `pilot` windows
+   is aggregated into the final comparison, so committing the threshold cannot be tuned to the result.
+
+   Windowing is part of the criterion, not a default. Each phase's `--minutes` refuses a window
+   shorter than its row above documents, and the report fails and discards a record whose own
+   recorded duration is below that length, so a six-second window cannot be reported as a
+   ten-minute measurement.
 6. **Report**: the `report` subcommand aggregates the recorded windows. It refuses to pair a window
    sequence that is not an A/B alternation, compares each baseline separately, refuses fewer than
    the four alternations this issue mandates, and uses the Student t critical value for the actual
