@@ -53,10 +53,12 @@ JOBSCHEDULER_CENSUS_PATTERN: Final = re.compile(r"^\s*Registered (\d+) jobs:", r
 # holds no wake locks" from "this is not a power dump", so a truncated or reshaped dump is an error
 # rather than a zero.
 POWER_WAKELOCK_CENSUS_PATTERN: Final = re.compile(r"^\s*Wake Locks: size=(\d+)\s*$", re.MULTILINE)
-# `dumpsys alarm` likewise prints the size of its pending-batch queue before listing the batches, and
-# that census is what makes an alarm count trustworthy. The batches below it carry the `Alarm{` lines
-# this protocol counts.
-ALARM_CENSUS_PATTERN: Final = re.compile(r"^\s*Pending alarm batches: (\d+)\s*$", re.MULTILINE)
+# `dumpsys alarm` likewise prints a census before listing the pending alarms, and that census is what
+# makes an alarm count trustworthy. The line is taken from the test device's own dump, which reads
+# `  152 pending alarms: ` — count first, no `Pending alarm batches:` line anywhere in it. A device
+# whose alarm dump is shaped differently fails loudly here rather than reporting a zero, which is the
+# behaviour this census exists for.
+ALARM_CENSUS_PATTERN: Final = re.compile(r"^\s*(\d+) pending alarms:\s*$", re.MULTILINE)
 POWERED_LINE_PATTERN: Final = re.compile(r"^\s*(\w+) powered:\s*(true|false)\s*$", re.MULTILINE)
 # The four power sources `dumpsys battery` reports. A reading is only complete when all four are
 # present: a dump that lost three of them must not be read as "the remaining one is false, so the

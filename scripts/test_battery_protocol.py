@@ -252,18 +252,18 @@ Power Manager Service:
 Display Power: state=ON
 """
 
-# A `dumpsys alarm` excerpt: the pending-batch census, one alarm belonging to the app under test, and
-# one belonging to another package that must not be counted.
+# A `dumpsys alarm` excerpt in the shape the test device actually prints it, taken from its own dump:
+# the census is `<n> pending alarms: ` with no `Pending alarm batches:` line anywhere in it, and each
+# entry is a `<TYPE> #<n>: Alarm{...}` line whose last token is the package.
 ALARM_DUMP = """\
-Alarm Manager State:
+Current Alarm Manager state:
   Settings:
-    mBroadcastRefCount=0
-  Pending alarm batches: 2
-    Batch{19cbbbd num=1}:
-      RTC_WAKEUP #0: Alarm{7d0e24a type 0 when 1712345678 \
+    version=2
+    min_futurity=+5s0ms
+  2 pending alarms:
+    ELAPSED #1: Alarm{eea5bdc type 3 origWhen 87399351 whenElapsed 87399351 android}
+    RTC_WAKEUP #0: Alarm{7d0e24a type 0 origWhen 1712345678 whenElapsed 1712345678 \
 io.github.godaniya.astronomicalclockswallpaper.debug}
-    Batch{19cbbbe num=1}:
-      RTC_WAKEUP #0: Alarm{7d0e24b type 0 when 1712345999 com.example.other}
 """
 
 
@@ -297,8 +297,8 @@ class WakeLockAndAlarmProbeTest(unittest.TestCase):
     def test_an_alarm_dump_without_the_census_is_an_error_not_a_zero(self) -> None:
         censusless = (
             "",
-            "Alarm Manager State:\n  Settings:\n",
-            ALARM_DUMP.split("Pending alarm batches", maxsplit=1)[0],
+            "Current Alarm Manager state:\n  Settings:\n",
+            ALARM_DUMP.split("pending alarms", maxsplit=1)[0],
         )
         for dump in censusless:
             with self.subTest(dump=dump[:30]), self.assertRaises(device_layer.ProbeError):
