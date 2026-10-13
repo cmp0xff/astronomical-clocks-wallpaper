@@ -82,3 +82,8 @@ anyway. That is a property of this device, not a substitute for the run.
 
 The rows bound one device, one build, one screen state, and one site. Nothing here transfers to
 another device without re-running the pilot's noise floor, which the budget requires anyway.
+
+**Superseded in part.** The B4 row above is superseded by [the 2026-10-13 pass with the device
+genuinely discharging](2026-10-13-test-126-drain-comparison-on-battery.md), which measured the same
+comparison where this one could not: B4 is no longer "not measured", it is a measured failure. The
+measurements in this report stand as recorded and are not amended; the verdict that changed is B4's.

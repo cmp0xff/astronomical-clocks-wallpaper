@@ -125,6 +125,11 @@ Android/API level, APK checksum and source revision, and the limits of what it m
 - [2026-10-12 A/B/A/B drain comparison](testing/reports/2026-10-12-test-126-drain-comparison.md)
   — B5 measured and **failed** at 3.4552% of one core against the 3% budget, and B4 **not measured**
   because the fuel gauge on that device reports a constant charge counter while it is on USB.
+- [2026-10-13 pilot, committed thresholds and A/B/A/B on battery](testing/reports/2026-10-13-test-126-drain-comparison-on-battery.md)
+  — the first pass with the device genuinely discharging, so B4 is measurable: the live discharge
+  channel's floor is 12.0123% of the mean, which raised the committed B4 threshold from the 5%
+  provisional to 12.0123%, and the comparison then **failed** on its 95% upper bound (+14.449%)
+  while B5 was measured and **failed** again at 3.7479% of one core.
 
 The reports are the record. A state file is working data and is reset between runs so that the
 pilot's windows cannot enter the final comparison; the floors the thresholds were committed from are
