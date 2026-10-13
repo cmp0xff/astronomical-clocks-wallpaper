@@ -8,7 +8,7 @@ import io
 import subprocess
 import tempfile
 import unittest
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -211,6 +211,8 @@ class ClkTckProbeTest(unittest.TestCase):
         device = MagicMock()
         device.read_process_cpu_clock_ticks.return_value = 250
         device.run_adb.return_value = b"36\n"
+        device.read_screen_on.return_value = True
+        device.read_keyguard_locked.return_value = False
         with (
             patch.object(subject, "DeviceStateSnapshot"),
             patch.object(subject, "read_power_source_lines", return_value=ON_BATTERY_POWER_LINES),
@@ -640,6 +642,8 @@ class VisiblePhaseGuardTest(unittest.TestCase):
         device = MagicMock()
         device.read_process_cpu_clock_ticks.return_value = 100
         device.run_adb.return_value = b"36\n"
+        device.read_screen_on.return_value = True
+        device.read_keyguard_locked.return_value = False
         return device
 
     def test_a_mismatched_arm_is_refused_before_the_window_starts(self) -> None:
@@ -763,6 +767,8 @@ class MemoryPhaseTest(unittest.TestCase):
     def test_a_display_that_came_on_fails_the_window(self) -> None:
         device = MagicMock()
         device.read_process_cpu_clock_ticks.return_value = 100
+        device.read_screen_on.return_value = True
+        device.read_keyguard_locked.return_value = False
         sample = subject.BatterySample(
             timestamp=0.0,
             charge_counter_uah=1,
@@ -825,7 +831,10 @@ class DisplaySnapshotOrderTest(unittest.TestCase):
         device = MagicMock()
         device.run_adb.return_value = b""
         device.read_screen_on.return_value = False
-        with patch.object(subject, "read_int_setting", return_value=None):
+        with (
+            patch.object(subject, "require_int_setting", return_value=128),
+            patch.object(subject, "read_int_setting", return_value=None),
+        ):
             snapshot = subject.DeviceStateSnapshot.capture(device)
         self.assertIsNotNone(snapshot.screen_on)
         self.assertFalse(snapshot.screen_on)
@@ -1086,6 +1095,24 @@ class ReportTest(unittest.TestCase):
         self.assertTrue(any(line.startswith("B4 vs stock point estimate") and "PASS" in line for line in lines))
         self.assertTrue(any(line.startswith("B4 vs stock CI upper bound") and "PASS" in line for line in lines))
         self.assertTrue(any(line.startswith("B5 visible CPU") and "PASS" in line for line in lines))
+
+    def test_the_interval_names_the_difference_sd_that_sizes_a_future_run(self) -> None:
+        # The CI margin is t * sd / sqrt(n), so the sd is the number a later run's pair count is
+        # computed from; a report that omitted it would leave n to be guessed.
+        records: list[dict[str, object]] = []
+        for live, base in ((1200.0, 1000.0), (1400.0, 1000.0), (1600.0, 1000.0), (1800.0, 1000.0)):
+            records.append(visible_record("A", live, cpu=1.0))
+            records.append(visible_record("B", base, baseline="stock"))
+        paired = subject.alternation_pairs(records)
+        statistics = subject.paired_statistics(
+            [subject.window_rate(base) for _, base in paired],
+            [subject.window_rate(live) for live, _ in paired],
+        )
+        # Per-pair differences 200, 400, 600 and 800 uA: mean 500, sample sd 258.198 uA.
+        self.assertAlmostEqual(258.199, statistics.standard_deviation, places=2)
+        line = next(verdict.line for verdict in subject.report_lines(records) if verdict.label == "B4 vs stock")
+        self.assertIn("sigma_d", line)
+        self.assertIn("of the baseline", line)
 
     def test_a_large_increase_fails_both_b4_lines(self) -> None:
         lines = self.lines(pairs(4, 1200.0, 1000.0))
@@ -1393,6 +1420,211 @@ class ParseTotalPssTest(unittest.TestCase):
 
     def test_has_no_value_without_a_total_line(self) -> None:
         self.assertIsNone(subject.parse_total_pss_kb("  Graphics   100\n"))
+
+
+def _counter_window(start_uah: int, end_uah: int) -> subject.Window:
+    """Build one window whose charge counter moved from `start_uah` to `end_uah` over 900 s."""
+
+    def sample(seconds: float, uah: int) -> subject.BatterySample:
+        return subject.BatterySample(
+            timestamp=seconds,
+            charge_counter_uah=uah,
+            level_pct=90,
+            voltage_mv=4000,
+            process_cpu_seconds=None,
+            total_pss_kb=45_000,
+        )
+
+    return subject.Window(
+        start_sample=sample(0.0, start_uah), end_sample=sample(900.0, end_uah), duration_seconds=900.0
+    )
+
+
+class NegativeDischargeTest(unittest.TestCase):
+    """Finding 1: a pack that gained charge across a window is not a discharge measurement."""
+
+    def test_a_rising_charge_counter_is_refused(self) -> None:
+        window = _counter_window(3_339_000, 3_501_000)
+        with self.assertRaises(device_layer.ProbeError) as raised:
+            _ = window.discharge_rate_ua
+        self.assertIn("gained charge", str(raised.exception))
+
+    def test_a_falling_charge_counter_is_still_a_measurement(self) -> None:
+        self.assertGreater(_counter_window(3_501_000, 3_339_000).discharge_rate_ua, 0.0)
+
+    def test_a_state_file_carrying_a_negative_rate_is_not_a_comparison(self) -> None:
+        records = [visible_record("A", -1000.0, cpu=1.0), visible_record("B", 1000.0, baseline="stock")] * 4
+        lines = [verdict.line for verdict in subject.report_lines(records)]
+        self.assertTrue(any(line.startswith("B4 vs stock") and "NOT MEASURED" in line for line in lines))
+        self.assertFalse(any(line.startswith("B4 vs stock point estimate") for line in lines))
+
+
+class VisibleHomeStateTest(unittest.TestCase):
+    """Finding 2: a visible window is the home screen, not merely a lit display."""
+
+    def device(self) -> MagicMock:
+        """Return a device that is awake, unlocked and on the launcher."""
+        device = MagicMock()
+        device.wake_screen.return_value = True
+        device.read_screen_on.return_value = True
+        device.read_keyguard_locked.return_value = False
+        return device
+
+    def test_the_keyguard_is_dismissed_and_home_is_shown_before_measuring(self) -> None:
+        calls: list[str] = []
+        device = self.device()
+        device.wake_screen.side_effect = lambda: calls.append("wake") or True
+        device.dismiss_keyguard.side_effect = lambda: calls.append("dismiss")
+        device.show_home.side_effect = lambda: calls.append("home")
+        subject.ensure_visible_home(device)
+        self.assertEqual(["wake", "dismiss", "home"], calls)
+
+    def test_a_still_locked_device_is_refused(self) -> None:
+        device = self.device()
+        device.read_keyguard_locked.return_value = True
+        with self.assertRaises(device_layer.ProbeError) as raised:
+            subject.ensure_visible_home(device)
+        self.assertIn("still locked", str(raised.exception))
+
+    def test_a_display_that_did_not_read_back_on_is_refused(self) -> None:
+        device = self.device()
+        device.read_screen_on.return_value = False
+        with self.assertRaises(device_layer.ProbeError):
+            subject.ensure_visible_home(device)
+
+    def test_a_display_that_could_not_be_woken_is_refused(self) -> None:
+        device = self.device()
+        device.wake_screen.return_value = False
+        with self.assertRaises(device_layer.ProbeError):
+            subject.ensure_visible_home(device)
+
+
+def _all_set_except(missing: str) -> Callable[[object, str, str], int | None]:
+    """Return a settings reader that answers every key but `missing`, which it cannot read."""
+
+    def read(_device: object, _namespace: str, key: str) -> int | None:
+        return None if key == missing else 1
+
+    return read
+
+
+class RequiredCaptureTest(unittest.TestCase):
+    """Finding 3: a setting that cannot be read cannot be restored, so it must not be pinned."""
+
+    def test_an_unreadable_pinned_setting_stops_the_phase(self) -> None:
+        device = MagicMock()
+        device.run_adb.return_value = b""
+        device.read_screen_on.return_value = True
+        with (
+            patch.object(subject, "read_int_setting", return_value=None),
+            self.assertRaises(device_layer.ProbeError) as raised,
+        ):
+            subject.DeviceStateSnapshot.capture(device)
+        self.assertIn("could not be read before the phase", str(raised.exception))
+
+    def test_each_pinned_setting_is_required_not_just_the_first(self) -> None:
+        required = ("screen_brightness", "screen_brightness_mode", "screen_off_timeout", "airplane_mode_on")
+        for missing in required:
+            device = MagicMock()
+            device.run_adb.return_value = b""
+            device.read_screen_on.return_value = True
+            with (
+                self.subTest(missing=missing),
+                patch.object(subject, "read_int_setting", side_effect=_all_set_except(missing)),
+                self.assertRaises(device_layer.ProbeError),
+            ):
+                subject.DeviceStateSnapshot.capture(device)
+
+    def test_the_stay_awake_setting_may_still_be_unset(self) -> None:
+        # It is legitimately unset on a device that never had it, and an unset value is captured as
+        # None and restored by deleting the key rather than by writing one back.
+        device = MagicMock()
+        device.run_adb.return_value = b""
+        device.read_screen_on.return_value = True
+        with patch.object(subject, "read_int_setting", side_effect=_all_set_except("stay_on_while_plugged_in")):
+            snapshot = subject.DeviceStateSnapshot.capture(device)
+        self.assertEqual(1, snapshot.brightness)
+        self.assertIsNone(snapshot.stay_on)
+
+
+class MonotonicTimestampTest(unittest.TestCase):
+    """Finding 4: a window's duration comes from a clock that cannot be stepped."""
+
+    def test_a_measurement_timestamp_is_not_taken_from_the_wall_clock(self) -> None:
+        device = MagicMock()
+        device.run_adb.return_value = REALISTIC_BATTERY_DUMP.encode()
+        with patch.object(subject.time, "time", side_effect=AssertionError("the wall clock was used")):
+            sample = subject.take_battery_sample(device, None, 100)
+        self.assertIsInstance(sample.timestamp, float)
+
+    def test_two_samples_are_ordered_on_the_monotonic_clock(self) -> None:
+        device = MagicMock()
+        device.run_adb.return_value = REALISTIC_BATTERY_DUMP.encode()
+        first = subject.take_battery_sample(device, None, 100)
+        second = subject.take_battery_sample(device, None, 100)
+        self.assertLessEqual(first.timestamp, second.timestamp)
+
+
+class WakeLockUidMatchTest(unittest.TestCase):
+    """Finding 5: one uid must not be matched by a prefix of another."""
+
+    def test_a_shorter_uid_is_not_matched_inside_a_longer_one(self) -> None:
+        # This dump holds a lock for uid 10026, whose text also contains `uid=1002`. Counting by
+        # substring would attribute that lock to an app whose uid is 1002 and report a B2 failure
+        # the wallpaper did not cause.
+        self.assertEqual(0, subject.parse_wakelock_count(POWER_DUMP, 1002))
+        self.assertEqual(0, subject.parse_wakelock_count(POWER_DUMP, 101))
+
+    def test_the_exact_uid_is_still_counted(self) -> None:
+        self.assertEqual(1, subject.parse_wakelock_count(POWER_DUMP, 10026))
+        self.assertEqual(1, subject.parse_wakelock_count(POWER_DUMP, 1013))
+
+
+class AlarmBudgetWordingTest(unittest.TestCase):
+    """Finding 6: the matrix and the probe must describe the same budget."""
+
+    def test_the_matrix_budget_matches_what_the_probe_counts(self) -> None:
+        # The probe counts every pending alarm the package holds, because the pending list does not
+        # say whether an alarm repeats. A matrix row promising a narrower budget than the probe can
+        # check would describe a criterion nothing measures.
+        budget = Path(__file__).resolve().parent.parent / "docs" / "battery-budget.md"
+        row = next(line for line in budget.read_text(encoding="utf-8").splitlines() if line.startswith("| **B2:"))
+        self.assertIn("0 pending alarms of any kind", row)
+        self.assertNotIn("repeating alarms", row)
+
+
+class LiveComponentIdentityTest(unittest.TestCase):
+    """Finding 7: the live arm is the whole component, not a substring of one."""
+
+    def test_the_wrapper_is_unwrapped_to_package_slash_class(self) -> None:
+        self.assertEqual(device_layer.SERVICE_NAME, subject.component_name(SERVICE_COMPONENT))
+        self.assertEqual(device_layer.SERVICE_NAME, subject.component_name(device_layer.SERVICE_NAME))
+
+    def test_a_look_alike_service_from_another_package_is_not_arm_a(self) -> None:
+        look_alike = "ComponentInfo{com.example.other/com.example.AstronomicalClocksWallpaperService}"
+        device = MagicMock()
+        device.serial = "serial"
+        with (
+            patch.object(device_layer, "read_wallpaper_component", return_value=look_alike),
+            self.assertRaises(device_layer.ProbeError) as raised,
+        ):
+            subject.verify_arm(device, subject.Arm.LIVE, None)
+        self.assertIn("com.example.other", str(raised.exception))
+
+    def test_the_exact_service_is_arm_a(self) -> None:
+        device = MagicMock()
+        device.serial = "serial"
+        with patch.object(device_layer, "read_wallpaper_component", return_value=SERVICE_COMPONENT):
+            self.assertEqual(SERVICE_COMPONENT, subject.verify_arm(device, subject.Arm.LIVE, None))
+
+    def test_arm_b_refuses_a_look_alike_service_too(self) -> None:
+        device = MagicMock()
+        device.serial = "serial"
+        with patch.object(device_layer, "read_wallpaper_component", return_value=STOCK_COMPONENT):
+            self.assertEqual(
+                STOCK_COMPONENT,
+                subject.verify_arm(device, subject.Arm.BASELINE, subject.Baseline.STOCK),
+            )
 
 
 if __name__ == "__main__":

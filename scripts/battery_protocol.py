@@ -175,10 +175,14 @@ NORMAL_T_CRITICAL_95: Final = 1.960
 T_TAIL_TERMS: Final = (4.0, 96.0)
 MIN_PAIRED_SAMPLES: Final = 4
 
-# The arm guard's two provable facts. The live component is a deterministic read; which static image
-# a baseline carries is not, so the baseline's identity is bounded by the median luminance of the
-# home screen, which refuses rather than guesses when it lands between the two.
-LIVE_COMPONENT_MARKER: Final = "AstronomicalClocksWallpaperService"
+# The arm guard's two provable facts. The live component is a deterministic read — the home slot
+# names it in full — while which static image a baseline carries is not, so the baseline's identity is
+# bounded by the median luminance of the home screen, which refuses rather than guesses when it lands
+# between the two. The live arm is compared as a whole component rather than by a substring of its
+# text: another package shipping a service with the same class name would otherwise be admitted as the
+# wallpaper under test, and every CPU and drain figure this protocol records would be attributed to
+# the wrong process.
+COMPONENT_INFO_PATTERN: Final = re.compile(r"^ComponentInfo\{(.*)\}$")
 LUMA_STRIDE: Final = 8
 LUMA_WEIGHTS: Final = (0.2126, 0.7152, 0.0722)
 LUMA_MAX: Final = 255.0
@@ -286,9 +290,23 @@ class Window:
 
     @property
     def discharge_rate_ua(self) -> float:
-        """Average current draw over the window, in microamperes."""
+        """
+        Average current draw over the window, in microamperes.
+
+        The counter must have fallen. A gauge that reports the pack gaining charge across a window is
+        not measuring a discharge at all — the device was charging, or the gauge recalibrated — and
+        returning the negative draw would let that window enter the comparison as a live arm that
+        looked cheaper, so it is refused at the source rather than judged downstream.
+        """
         if self.duration_seconds <= 0:
             detail = "a window with no elapsed time has no discharge rate"
+            raise device_layer.ProbeError(detail)
+        if self.discharge_uah < 0:
+            detail = (
+                f"the charge counter rose by {-self.discharge_uah} uAh across the window "
+                f"({self.start_sample.charge_counter_uah} to {self.end_sample.charge_counter_uah} uAh), "
+                "so the pack gained charge and this is not a discharge measurement"
+            )
             raise device_layer.ProbeError(detail)
         return (self.discharge_uah / self.duration_seconds) * 3600.0
 
@@ -319,6 +337,10 @@ class PairedStatistics:
     mean_treatment: float
     relative_delta_pct: float
     ci_95_upper_pct: float
+    # The sd of the per-pair differences, in the same unit as the means. The interval's width is
+    # `t * sd / sqrt(n)`, so this is the one number that says how many pairs a future run needs —
+    # a report that carries it lets the next run's n be computed instead of guessed.
+    standard_deviation: float
 
 
 @dataclass(frozen=True)
@@ -364,13 +386,21 @@ class DeviceStateSnapshot:
 
     @classmethod
     def capture(cls, device: device_layer.AdbDevice) -> DeviceStateSnapshot:
-        """Read the state a measurement phase pins, including the display's own power state."""
+        """
+        Read the state a measurement phase pins, including the display's own power state.
+
+        The four settings `pin()` writes are required rather than best-effort: a value that could not
+        be read is a value the restore cannot put back, and skipping it would leave the shared device
+        changed by a phase that reported success. The stay-awake setting is the one exception — it is
+        legitimately unset on a device that never had it, and an unset value *is* captured, as `None`,
+        and restored by deleting the key.
+        """
         return cls(
             device,
-            brightness=read_int_setting(device, "system", "screen_brightness"),
-            brightness_mode=read_int_setting(device, "system", "screen_brightness_mode"),
-            screen_timeout=read_int_setting(device, "system", "screen_off_timeout"),
-            airplane_mode=read_int_setting(device, "global", "airplane_mode_on"),
+            brightness=require_int_setting(device, "system", "screen_brightness"),
+            brightness_mode=require_int_setting(device, "system", "screen_brightness_mode"),
+            screen_timeout=require_int_setting(device, "system", "screen_off_timeout"),
+            airplane_mode=require_int_setting(device, "global", "airplane_mode_on"),
             stay_on=read_int_setting(device, "global", "stay_on_while_plugged_in"),
             screen_on=device.read_screen_on(),
         )
@@ -529,6 +559,24 @@ def read_int_setting(device: device_layer.AdbDevice, namespace: str, key: str) -
     """Read one integer device setting, or None when it is unset or not an integer."""
     raw = device.run_adb(["shell", "settings", "get", namespace, key]).decode(errors="replace").strip()
     return int(raw) if raw.lstrip("-").isdigit() else None
+
+
+def require_int_setting(device: device_layer.AdbDevice, namespace: str, key: str) -> int:
+    """
+    Read one device setting the pre-phase capture cannot do without.
+
+    `pin()` overwrites every one of these, and the restore can only put back a value that was
+    captured. A phase that pinned a setting it could not read would leave the shared device changed
+    and still report success, so an unreadable value stops the phase before it touches anything.
+    """
+    value = read_int_setting(device, namespace, key)
+    if value is None:
+        detail = (
+            f"{namespace}/{key} could not be read before the phase, so whatever value it had could not "
+            "be restored; refusing to pin a setting whose original value is unknown"
+        )
+        raise device_layer.ProbeError(detail)
+    return value
 
 
 def set_airplane_mode(device: device_layer.AdbDevice, *, enabled: bool) -> None:
@@ -729,6 +777,7 @@ def paired_statistics(baseline_rates: Sequence[float], treatment_rates: Sequence
         mean_treatment=mean_treatment,
         relative_delta_pct=relative_delta_pct,
         ci_95_upper_pct=relative_delta_pct + margin_pct,
+        standard_deviation=math.sqrt(variance),
     )
 
 
@@ -780,7 +829,10 @@ def take_battery_sample(device: device_layer.AdbDevice, pid: int | None, clk_tck
 
     mem_output = device.run_adb(["shell", "dumpsys", "meminfo", device_layer.PACKAGE_NAME]).decode(errors="replace")
     return BatterySample(
-        timestamp=time.time(),
+        # Monotonic, not wall time: the window's duration and every rate derived from it come from the
+        # difference of two of these, and a clock correction during a fifteen-minute window would
+        # otherwise rescale the current or make the window negative. Wall time is for `recorded_at`.
+        timestamp=time.monotonic(),
         charge_counter_uah=charge_uah,
         level_pct=level_pct,
         voltage_mv=voltage_mv,
@@ -804,7 +856,11 @@ def parse_wakelock_count(dump: str, app_uid: int) -> int:
             "count; refusing to report a zero"
         )
         raise device_layer.ProbeError(detail)
-    return sum(1 for line in dump.splitlines() if "PARTIAL_WAKE_LOCK" in line and f"uid={app_uid}" in line)
+    # The uid is matched as a whole token, not as a prefix of one: a lock line for uid 10026 contains
+    # the text `uid=1002`, so a prefix test would attribute another process's wake lock to an app
+    # whose own uid happens to be a prefix of it, and report a B2 failure the app did not cause.
+    uid_field = re.compile(rf"\buid={app_uid}\b")
+    return sum(1 for line in dump.splitlines() if "PARTIAL_WAKE_LOCK" in line and uid_field.search(line))
 
 
 def parse_alarm_count(dump: str, package: str = device_layer.PACKAGE_NAME) -> int:
@@ -1035,6 +1091,26 @@ def median_luma(device: device_layer.AdbDevice) -> float:
     return luma[middle] if len(luma) % 2 else (luma[middle - 1] + luma[middle]) / 2.0
 
 
+def component_name(component: str) -> str:
+    """Return the `package/class` inside a `ComponentInfo{...}` wrapper, or the text unchanged."""
+    stripped = component.strip()
+    match = COMPONENT_INFO_PATTERN.match(stripped)
+    # `captured_text` is the shared helper for this: a match group is `Any`, and returning it
+    # unchanged would let a non-string through a function the arm guard depends on.
+    return device_layer.captured_text(match, 1) if match else stripped
+
+
+def component_is_live(component: str) -> bool:
+    """
+    Report whether a home-wallpaper component is exactly this app's live service.
+
+    The comparison is on the whole `package/class`, not on whether the text contains the service's
+    class name: `ComponentInfo{other.pkg/…AstronomicalClocksWallpaperService}` is a different
+    wallpaper, and admitting it as arm A would attribute its CPU and drain to this app.
+    """
+    return component_name(component) == device_layer.SERVICE_NAME
+
+
 def verify_arm(device: device_layer.AdbDevice, arm: Arm, baseline: Baseline | None) -> str:
     """
     Refuse a window whose device does not match the arm it is about to be recorded against.
@@ -1048,15 +1124,18 @@ def verify_arm(device: device_layer.AdbDevice, arm: Arm, baseline: Baseline | No
     """
     component = device_layer.read_wallpaper_component(device.serial)
     if arm is Arm.LIVE:
-        if LIVE_COMPONENT_MARKER not in component:
-            detail = f"arm A was requested but the home wallpaper is {component}, not the live service"
+        if not component_is_live(component):
+            detail = (
+                f"arm A was requested but the home wallpaper is {component_name(component)}, not "
+                f"{device_layer.SERVICE_NAME}"
+            )
             raise device_layer.ProbeError(detail)
         return component
     if baseline is None:
         detail = "arm B needs --baseline stock or --baseline black to say which static wallpaper is bound"
         raise device_layer.ProbeError(detail)
-    if LIVE_COMPONENT_MARKER in component:
-        detail = f"arm B was requested but the live service is still bound as {component}"
+    if component_is_live(component):
+        detail = f"arm B was requested but the live service is still bound as {component_name(component)}"
         raise device_layer.ProbeError(detail)
     return component
 
@@ -1099,6 +1178,29 @@ def power_source_problem(on_battery: Sequence[bool]) -> str | None:
     if not all(on_battery):
         return f"the device reported a charger connected inside the window: {list(on_battery)}"
     return None
+
+
+def ensure_visible_home(device: device_layer.AdbDevice) -> None:
+    """
+    Put the device on the home screen with the display on, or refuse the window.
+
+    A visible window means the home screen with the wallpaper showing. `wake_screen()` only confirms
+    the display is lit — it does not dismiss a keyguard or bring the launcher forward — so a device
+    that started locked, or with another app in front, would have its lock screen or that app measured
+    while the bound component still matched the requested arm. The qualification harness establishes
+    this state explicitly before its own screen-on phases, and this one now does too.
+    """
+    if not device.wake_screen():
+        detail = "the display could not be woken for a visible window"
+        raise device_layer.ProbeError(detail)
+    device.dismiss_keyguard()
+    device.show_home()
+    if device.read_screen_on() is not True:
+        detail = "the display did not read back as on while the home screen was being established"
+        raise device_layer.ProbeError(detail)
+    if device.read_keyguard_locked() is True:
+        detail = "the device is still locked after dismissing the keyguard, so the home screen is not displayed"
+        raise device_layer.ProbeError(detail)
 
 
 def run_window(
@@ -1233,9 +1335,7 @@ def phase_visible(
         try:
             # The wake and the arm guard sit inside the try with the window, so a refusal after the
             # display has already been woken still runs the restore below.
-            if not device.wake_screen():
-                detail = "the display could not be woken for a visible window"
-                raise device_layer.ProbeError(detail)
+            ensure_visible_home(device)
             verify_arm(device, arm, baseline)
             pid = device.get_wallpaper_pid() if arm is Arm.LIVE else None
             conditions = arm_conditions(device, arm, baseline)
@@ -1296,9 +1396,7 @@ def phase_memory(device: device_layer.AdbDevice, minutes: float, *, recorder: Re
     # handled and the problems it collected are in hand when the record is written.
     try:
         try:
-            if not device.wake_screen():
-                detail = "the display could not be woken for a memory window"
-                raise device_layer.ProbeError(detail)
+            ensure_visible_home(device)
             verify_arm(device, Arm.LIVE, None)
             pid = device.get_wallpaper_pid()
             snapshot.pin()
@@ -1445,10 +1543,16 @@ def alternation_pairs(
 
 
 def window_rate(record: Mapping[str, object]) -> float:
-    """Read one window's discharge rate, refusing a record that has none."""
+    """Read one window's discharge rate, refusing a record that has none or a negative one."""
     rate = record.get("discharge_rate_ua")
     if not isinstance(rate, int | float):
         detail = "a visible window recorded no discharge rate, so no comparison can be computed"
+        raise device_layer.ProbeError(detail)
+    if rate < 0:
+        detail = (
+            f"a visible window recorded a negative discharge rate ({rate:.0f} uA), which means the pack "
+            "gained charge across it; a state file carrying one is not a discharge comparison"
+        )
         raise device_layer.ProbeError(detail)
     return float(rate)
 
@@ -1595,7 +1699,9 @@ def b4_baseline_verdicts(
                 VerdictStatus.INFO,
                 f"B4 vs {baseline} relative increase: {statistics.relative_delta_pct:.3f}% "
                 f"(95% CI upper {statistics.ci_95_upper_pct:.3f}%, {statistics.sample_count} pairs, "
-                f"df {statistics.degrees_of_freedom}, t {statistics.t_critical})",
+                f"df {statistics.degrees_of_freedom}, t {statistics.t_critical}, "
+                f"sigma_d {statistics.standard_deviation:.0f} uA = "
+                f"{statistics.standard_deviation / statistics.mean_baseline * 100:.3f}% of the baseline)",
             )
         )
         for label, value in (

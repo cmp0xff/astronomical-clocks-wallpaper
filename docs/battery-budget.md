@@ -12,7 +12,11 @@ resource budgets and avoid degrading battery life:
 - **Android Vitals excessive wake locks**: Android vitals reports partial wake lock use as
   *excessive* when all partial wake locks, added together, run for 2 or more hours in a 24-hour
   period. Because a wallpaper has no legitimate background processing requirement, this project
-  enforces a **strict zero-tolerance** standard: zero partial wake locks and zero repeating alarms.
+  enforces a **strict zero-tolerance** standard: zero partial wake locks and zero pending alarms.
+  The alarm budget counts *every* pending alarm the package holds, not only repeating ones. A
+  wallpaper has no scheduled work of any kind to justify one, and the pending list `dumpsys alarm`
+  prints does not say whether an alarm repeats, so a budget written as "repeating alarms" could not
+  be checked against it at all.
 - **Rendering lifecycle contract**: the platform's own guidance for a wallpaper engine is that it
   "only use CPU while it is visible". Zero frames may be rendered while hidden or screen-off.
 - **Hardware charge counter**: software battery estimates (for example the per-app attribution in
@@ -26,7 +30,7 @@ resource budgets and avoid degrading battery life:
 | Criterion | Target Budget | Verification Methodology |
 | --- | --- | --- |
 | **B1: Hidden/Screen-Off Frames** | **0 frames** (hard requirement) | Frame counter or producer-trace window while the engine is hidden and the display is off. **Not measured by this protocol**: the frame console is #125 criterion 1, which has since landed its own evidence — the [2026-10-12 producer-trace pass](testing/reports/2026-10-12-test-125-hidden-frames-and-reboot.md) reads 0 frames over 60 s, bracketed by visible controls that do render. This document does not claim it. |
-| **B2: Wake Locks & Alarms** | **0 wake locks**, 0 repeating alarms | `dumpsys power` and `dumpsys alarm`, attributed by the app's UID and package; each dump's own census line must be present, so an unparsable probe is an error rather than a count of zero |
+| **B2: Wake Locks & Alarms** | **0 wake locks**, 0 pending alarms of any kind | `dumpsys power` and `dumpsys alarm`, attributed by the app's UID — matched as a whole token, so one uid cannot be matched by a prefix of another — and by package; each dump's own census line must be present, so an unparsable probe is an error rather than a count of zero |
 | **B3: Hidden CPU Utilization** | **≤ 0.1% of one core** over ≥ 10 min | `/proc/<pid>/stat` deltas over a screen-off duration whose display state is sampled throughout |
 | **B4: Visible Screen-On Drain** | **≤ 12.0123% relative increase** vs the stock baseline — the committed noise floor, not the 5% provisional | A/B/A/B alternating runs of ≥ 15 minutes against stock `ImageWallpaper`; the paired 95% upper bound must also stay below the threshold. A black static wallpaper is the secondary baseline, required only where the device permits setting one |
 | **B5: Visible CPU Utilization** | **≤ 3% of one core** at 1 Hz over ≥ 15 min | `/proc/<pid>/stat` process ticks during a visible home-screen window |
