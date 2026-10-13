@@ -75,19 +75,22 @@ MAX_PSS_GROWTH_KB: Final = 6144
 
 # Committed before the final run from the pilot's observed noise floors, per the document's own
 # anti-tuning rule; `report` reads these two constants, so a change here is what "committing the
-# threshold" means. The 2026-10-12 pilot measured 0 uA (2 sigma) on the discharge channel and
-# 0.0219% of one core (2 sigma) on the CPU channel, both below the provisional values, so both
-# thresholds stay as stated. The discharge floor is a dead channel rather than a quiet device: the
-# fuel gauge reported 4500000 uAh in all four windows while the device was on USB, so no discharge
-# signal exists on that device to calibrate against.
-FINAL_MAX_VISIBLE_DELTA_PCT: Final = PROVISIONAL_MAX_VISIBLE_DELTA_PCT
-FINAL_MAX_VISIBLE_CPU_PCT: Final = PROVISIONAL_MAX_VISIBLE_CPU_PCT
+# threshold" means. The 2026-10-13 pilot measured the live discharge channel on a device that was
+# genuinely discharging: four 15-minute arm-A windows gave a mean of 366265 uA with a 2 sigma of
+# 43997 uA, which is 12.0123% of the mean. That floor is wider than the provisional 5%, so the B4
+# threshold rises to it — the document's rule working as intended, and it makes the budget harder
+# rather than easier. The floor is a property of this device's gauge and load rather than evidence
+# about the wallpaper: a worn cell and a gauge that reports in 1000 uAh steps both widen it, and it
+# has to be re-measured per device. The CPU channel's floor is 0.0894% of one core, below the
+# provisional 3%, so the B5 threshold stays as stated.
+FINAL_MAX_VISIBLE_DELTA_PCT: Final = 12.0123  # greater of the provisional 5% and the measured floor
+FINAL_MAX_VISIBLE_CPU_PCT: Final = PROVISIONAL_MAX_VISIBLE_CPU_PCT  # the floor is below the provisional
 # The pilot's floors are part of the commitment, not of the working state: a state file is reset
 # between the pilot and the final run precisely so the calibration cannot enter the result, so the
 # floors are carried here where the thresholds they justify are.
-PILOT_DISCHARGE_NOISE_FLOOR_UA: Final = 0.0
-PILOT_CPU_NOISE_FLOOR_PCT: Final = 0.0219
-PILOT_REPORT: Final = "docs/testing/reports/2026-10-12-test-126-battery-pilot-noise-floor.md"
+PILOT_DISCHARGE_NOISE_FLOOR_UA: Final = 43997.06
+PILOT_CPU_NOISE_FLOOR_PCT: Final = 0.0894
+PILOT_REPORT: Final = "docs/testing/reports/2026-10-13-test-126-drain-comparison-on-battery.md"
 
 # Two-sided 95% Student t critical values by degrees of freedom, from the table in NIST/SEMATECH
 # e-Handbook of Statistical Methods, section 1.3.6.7.3 (retrieved 2026-10-12), which is the free
