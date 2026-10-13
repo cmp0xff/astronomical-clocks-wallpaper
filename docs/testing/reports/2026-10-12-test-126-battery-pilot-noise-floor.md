@@ -56,6 +56,22 @@ each value back. Every one of the four records carries an empty `restore_problem
 | 2026-10-12 | committed B5 threshold | The greater of the provisional 3% of one core and the observed 2 sigma floor of 0.0219% leaves the threshold at **3%**. Committed as `FINAL_MAX_VISIBLE_CPU_PCT` |
 | 2026-10-12 | what B5 already implies | The pilot's own CPU readings sit at 3.29%, **above** the committed 3% threshold. The pilot is not the qualification, so this is not the B5 verdict; it is the reason to expect one, and the drain report states the measured result |
 
+## Correction to the claims made before this pilot
+
+The branch's first commit reported a pilot pass performed on this device. That run's own output does
+not support what was claimed of it, and this report replaces those claims rather than repeating them:
+
+| Claim in the opening commit | What the run and this pilot show |
+| --- | --- |
+| 0 wake locks, 0 alarms | Both counts were read once, on the home screen, before a five-second sample. A single-instant census is what the probe reads; it is not a duration, and Android vitals' own 2-hour-in-24 measurement is what bounds a duration |
+| "CPU < 1.5 s" | That figure is a lifetime cumulative `batterystats` total and not a rate, and it was quoted in place of the per-sample figure the same run printed: 0.270 s and 0.320 s of CPU in 5 s, which is 5.40% and 6.40% of one core. Against the document's own budgets — B5 at 3% and B3 at 0.1% — those are failures |
+| "delta=0 uAh", "voltage=0 mV" | The zero voltage came from the unanchored pattern matching `Max charging voltage: 0`. The zero delta is real but means the charge counter is frozen, not that the device drew nothing; this pilot reproduces it across four fifteen-minute windows, and the drain report records it as the dead channel that leaves B4 unmeasurable |
+| "137 tests passing" | 137 was the whole `scripts` suite. The battery protocol's own file held 12 tests then and holds 54 now |
+
+The opening commit's message was rewritten in this branch for one reason only — it named the device's
+OEM model and serial, which the repository's privacy policy keeps out of Git — and the unsupported
+claims in it are corrected here and in the pull request body rather than by rewriting it further.
+
 ## What this does not establish
 
 The discharge noise floor is not a floor. Zero microampere-hours in all four windows is what a
