@@ -70,6 +70,12 @@ MAX_PSS_GROWTH_KB: Final = 6144
 # signal exists on that device to calibrate against.
 FINAL_MAX_VISIBLE_DELTA_PCT: Final = PROVISIONAL_MAX_VISIBLE_DELTA_PCT
 FINAL_MAX_VISIBLE_CPU_PCT: Final = PROVISIONAL_MAX_VISIBLE_CPU_PCT
+# The pilot's floors are part of the commitment, not of the working state: a state file is reset
+# between the pilot and the final run precisely so the calibration cannot enter the result, so the
+# floors are carried here where the thresholds they justify are.
+PILOT_DISCHARGE_NOISE_FLOOR_UA: Final = 0.0
+PILOT_CPU_NOISE_FLOOR_PCT: Final = 0.0219
+PILOT_REPORT: Final = "docs/testing/reports/2026-10-12-test-126-battery-pilot-noise-floor.md"
 
 # Two-sided 95% Student t critical values by degrees of freedom, from the table in NIST/SEMATECH
 # e-Handbook of Statistical Methods, section 1.3.6.7.3 (retrieved 2026-10-12), which is the free
@@ -1125,11 +1131,14 @@ def phase_report(records: Sequence[Mapping[str, object]]) -> None:
     if floors:
         latest_floor = floors[-1]
         print(
-            f"pilot floors recorded: discharge 2 sigma {latest_floor.get('noise_floor_rate_ua')} uA, "
+            f"pilot floors in this state file: discharge 2 sigma {latest_floor.get('noise_floor_rate_ua')} uA, "
             f"CPU 2 sigma {latest_floor.get('cpu_noise_floor_pct')}% of one core"
         )
     else:
-        print("pilot floors: none recorded, so the thresholds above are the provisional values alone")
+        print(
+            f"pilot floors committed with the thresholds: discharge 2 sigma {PILOT_DISCHARGE_NOISE_FLOOR_UA} uA, "
+            f"CPU 2 sigma {PILOT_CPU_NOISE_FLOOR_PCT}% of one core ({PILOT_REPORT})"
+        )
     print()
     for line in report_lines(records):
         print(line)

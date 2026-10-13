@@ -102,3 +102,20 @@ Retrieved 2026-10-12. Both anchors are quoted from primary documentation rather 
   come from the table in the NIST/SEMATECH e-Handbook of Statistical Methods, section 1.3.6.7.3
   ([`1.3.6.7.3`](https://www.itl.nist.gov/div898/handbook/eda/section3/eda3672.htm)); beyond 30
   degrees of freedom the normal value 1.960 is used, where the two agree to three decimals.
+
+## Recorded runs
+
+Each run is a dated report under [`testing/reports/`](testing/reports/), carrying its device's
+Android/API level, APK checksum and source revision, and the limits of what it measured:
+
+- [2026-10-12 pilot and committed thresholds](testing/reports/2026-10-12-test-126-battery-pilot-noise-floor.md)
+  — four 15-minute windows on one device, the floors they give, and the thresholds committed from them.
+- [2026-10-12 B2, B3 and B6](testing/reports/2026-10-12-test-126-hidden-resources-memory.md)
+  — 0 wake locks, 0 alarms, 0.0397% hidden CPU over 10 minutes, and +1633 kB PSS growth over 30 minutes.
+- [2026-10-12 A/B/A/B drain comparison](testing/reports/2026-10-12-test-126-drain-comparison.md)
+  — B5 measured and **failed** at 3.4552% of one core against the 3% budget, and B4 **not measured**
+  because the fuel gauge on that device reports a constant charge counter while it is on USB.
+
+The reports are the record. A state file is working data and is reset between runs so that the
+pilot's windows cannot enter the final comparison; the floors the thresholds were committed from are
+carried in `scripts/battery_protocol.py` beside them.
