@@ -25,7 +25,7 @@ class LocationProviderLifecycleTest {
     private val application = RuntimeEnvironment.getApplication()
     private val locationManager = application.getSystemService(Context.LOCATION_SERVICE) as LocationManager
     private val provider = LocationProvider(application)
-    private val results = mutableListOf<CoordinateFix?>()
+    private val results = mutableListOf<LocationResult>()
 
     @Before
     fun prepareProvider() {
@@ -55,7 +55,7 @@ class LocationProviderLifecycleTest {
         assertEquals(1, shadowOf(locationManager).networkListeners().size)
         secondListener.onLocationChanged(location())
         shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(10))
-        assertEquals(listOf(EXPECTED_LOCATION), results)
+        assertEquals(listOf(LocationResult.Success(EXPECTED_LOCATION)), results)
     }
 
     @Test
@@ -64,7 +64,7 @@ class LocationProviderLifecycleTest {
         listener.onLocationChanged(location())
         listener.onLocationChanged(location())
         shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(10))
-        assertEquals(listOf(EXPECTED_LOCATION), results)
+        assertEquals(listOf(LocationResult.Success(EXPECTED_LOCATION)), results)
         assertTrue(shadowOf(locationManager).networkListeners().isEmpty())
     }
 
@@ -76,7 +76,7 @@ class LocationProviderLifecycleTest {
         shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(1))
         listener.onLocationChanged(location())
         shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(10))
-        assertEquals(listOf<CoordinateFix?>(null), results)
+        assertEquals(listOf(LocationResult.Failure(LocationFailureReason.TIMEOUT)), results)
         assertTrue(shadowOf(locationManager).networkListeners().isEmpty())
     }
 
@@ -86,7 +86,7 @@ class LocationProviderLifecycleTest {
         listener.onProviderDisabled(LocationManager.NETWORK_PROVIDER)
         listener.onLocationChanged(location())
         shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(10))
-        assertEquals(listOf<CoordinateFix?>(null), results)
+        assertEquals(listOf(LocationResult.Failure(LocationFailureReason.PROVIDER_DISABLED)), results)
         assertTrue(shadowOf(locationManager).networkListeners().isEmpty())
     }
 
@@ -99,7 +99,7 @@ class LocationProviderLifecycleTest {
         listener.onLocationChanged(invalid)
         listener.onLocationChanged(location())
         shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(10))
-        assertEquals(listOf<CoordinateFix?>(null), results)
+        assertEquals(listOf(LocationResult.Failure(LocationFailureReason.FETCH_FAILED)), results)
         assertTrue(shadowOf(locationManager).networkListeners().isEmpty())
     }
 
@@ -113,9 +113,15 @@ class LocationProviderLifecycleTest {
         firstListener.onLocationChanged(location())
         val secondListener = shadowOf(locationManager).networkListeners().single()
         firstListener.onLocationChanged(location())
-        assertEquals(listOf(EXPECTED_LOCATION), results)
+        assertEquals(listOf(LocationResult.Success(EXPECTED_LOCATION)), results)
         secondListener.onLocationChanged(location())
-        assertEquals(listOf(EXPECTED_LOCATION, EXPECTED_LOCATION), results)
+        assertEquals(
+            listOf(
+                LocationResult.Success(EXPECTED_LOCATION),
+                LocationResult.Success(EXPECTED_LOCATION),
+            ),
+            results,
+        )
         assertTrue(shadowOf(locationManager).networkListeners().isEmpty())
     }
 

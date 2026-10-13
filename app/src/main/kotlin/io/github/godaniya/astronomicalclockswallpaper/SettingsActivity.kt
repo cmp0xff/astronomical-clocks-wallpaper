@@ -161,25 +161,37 @@ class SettingsActivity : Activity() {
     }
 
     private fun fetchCurrentLocation(forceFresh: Boolean) {
-        locationProvider.fetch(forceFresh = forceFresh) { fix ->
-            if (fix != null) {
-                // An acquired fix has no explicit choice behind it, so its zone is always an
-                // estimate from the lookup and goes through the confirmation dialog.
-                val estimate = TimeZoneLookup.lookup(latitude = fix.latitude, longitude = fix.longitude)
-                confirmEstimatedZone(estimated = estimate) { zoneId ->
-                    val location =
-                        ObservingLocation(
-                            latitude = fix.latitude,
-                            longitude = fix.longitude,
-                            source = ObservingLocation.Source.CURRENT_COARSE,
-                            zoneId = zoneId,
-                        )
-                    locationStore.save(location)
-                    displayLocation(location, seedInputs = true)
+        locationProvider.fetch(forceFresh = forceFresh) { result ->
+            when (result) {
+                is LocationResult.Success -> {
+                    val fix = result.fix
+                    // An acquired fix has no explicit choice behind it, so its zone is always an
+                    // estimate from the lookup and goes through the confirmation dialog.
+                    val estimate = TimeZoneLookup.lookup(latitude = fix.latitude, longitude = fix.longitude)
+                    confirmEstimatedZone(estimated = estimate) { zoneId ->
+                        val location =
+                            ObservingLocation(
+                                latitude = fix.latitude,
+                                longitude = fix.longitude,
+                                source = ObservingLocation.Source.CURRENT_COARSE,
+                                zoneId = zoneId,
+                            )
+                        locationStore.save(location)
+                        displayLocation(location, seedInputs = true)
+                    }
                 }
-            } else {
-                // Preserve the previous selection; prompt for manual entry.
-                Toast.makeText(this, R.string.location_fetch_failed, Toast.LENGTH_LONG).show()
+
+                is LocationResult.Failure -> {
+                    val messageRes =
+                        when (result.reason) {
+                            LocationFailureReason.PROVIDER_UNAVAILABLE -> R.string.location_provider_unavailable
+                            LocationFailureReason.PROVIDER_DISABLED -> R.string.location_provider_disabled
+                            LocationFailureReason.TIMEOUT -> R.string.location_timeout
+                            LocationFailureReason.PERMISSION_DENIED -> R.string.location_permission_denied
+                            LocationFailureReason.FETCH_FAILED -> R.string.location_fetch_failed
+                        }
+                    Toast.makeText(this, messageRes, Toast.LENGTH_LONG).show()
+                }
             }
         }
     }

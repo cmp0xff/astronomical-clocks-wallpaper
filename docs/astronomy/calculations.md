@@ -47,15 +47,27 @@ selected observing site. Projection mathematics belong in the [Orloj guide](../o
 
 ### Current integration limits
 
-The wallpaper on `main` still reads the phone's civil time and does not render these
-astronomy results. [PR #29](https://github.com/godaniya/astronomical-clocks-wallpaper/pull/29)
-adds saved-timezone infrastructure, but current-location and raw-coordinate saves
-capture the phone zone; migration also tags legacy coordinates with the phone zone.
-That does not establish the site's geographic timezone.
-[Issue #24](https://github.com/godaniya/astronomical-clocks-wallpaper/issues/24) owns the remaining
-gap across current location, raw coordinates, city selection, and correction of
-previously phone-tagged records. The offline city chooser is
-[issue #21](https://github.com/godaniya/astronomical-clocks-wallpaper/issues/21).
+The wallpaper computes the saved site's civil time — the phone zone supplies it only when no site
+is saved — and draws that site's Sun and Moon markers
+([service](../../app/src/main/kotlin/io/github/godaniya/astronomicalclockswallpaper/AstronomicalClocksWallpaperService.kt),
+[Orloj dial foundation](../orloj.md)). The rest of what `AstronomyCalculator` returns — the
+planets, the bundled star catalogue, and the rise, set, and twilight events — is not drawn.
+
+[PR #29](https://github.com/godaniya/astronomical-clocks-wallpaper/pull/29) added the
+saved-timezone infrastructure; at that point current-location and raw-coordinate saves captured
+the phone zone, and migration tagged legacy coordinates with the phone zone.
+[Issue #24](https://github.com/godaniya/astronomical-clocks-wallpaper/issues/24) resolved that
+from coordinate anchors (#83):
+[`SettingsActivity`](../../app/src/main/kotlin/io/github/godaniya/astronomicalclockswallpaper/SettingsActivity.kt)
+stores the `TimeZoneLookup` estimate behind a current-location fix, and for a raw-coordinate save
+the explicitly chosen zone when there is one and the lookup otherwise. Only legacy migration
+(`LocationStore.loadLegacy`) still tags the phone zone, and
+[`LocationStore.resolveZone`](../../app/src/main/kotlin/io/github/godaniya/astronomicalclockswallpaper/LocationStore.kt)
+falls back to the phone zone for a stored record whose zone is absent or unusable, which
+`LocationStore.migrateAndRepair` repairs at application start.
+
+The offline city chooser (#21) was withdrawn as not planned in favour of raw coordinate
+entry with offline timezone inference.
 
 ## Coordinate frames
 

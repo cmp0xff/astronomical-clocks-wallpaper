@@ -21,17 +21,18 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import org.robolectric.shadow.api.Shadow
 import org.robolectric.shadows.ShadowAlertDialog
 import org.robolectric.shadows.ShadowToast
 import java.time.Duration
 
 /** Checks that a completed manual choice or destroyed activity cannot receive an old acquisition. */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [26, 36])
+@Config(sdk = [26, 36], shadows = [FailingLocationManagerShadow::class])
 class SettingsActivityAcquisitionTest {
     private val application = RuntimeEnvironment.getApplication()
     private val locationManager = application.getSystemService(Context.LOCATION_SERVICE) as LocationManager
-    private val locationShadow = shadowOf(locationManager)
+    private val locationShadow = Shadow.extract<FailingLocationManagerShadow>(locationManager)
 
     @Before
     fun enableLocation() {
@@ -133,6 +134,84 @@ class SettingsActivityAcquisitionTest {
 
             assertNull(LocationStore(application).load())
             assertEquals(0, ShadowToast.shownToastCount())
+        }
+    }
+
+    @Test
+    fun unavailableProviderShowsToast() {
+        locationShadow.removeProvider(LocationManager.NETWORK_PROVIDER)
+        Robolectric.buildActivity(SettingsActivity::class.java).use { controller ->
+            val activity = controller.setup().get()
+            activity.findViewById<Button>(R.id.use_current_location).performClick()
+            assertEquals(1, ShadowToast.shownToastCount())
+            assertEquals(
+                activity.getString(R.string.location_provider_unavailable),
+                ShadowToast.getTextOfLatestToast(),
+            )
+        }
+    }
+
+    @Test
+    fun disabledProviderShowsToast() {
+        locationShadow.setProviderEnabled(LocationManager.NETWORK_PROVIDER, false)
+        Robolectric.buildActivity(SettingsActivity::class.java).use { controller ->
+            val activity = controller.setup().get()
+            activity.findViewById<Button>(R.id.use_current_location).performClick()
+            assertEquals(1, ShadowToast.shownToastCount())
+            assertEquals(
+                activity.getString(R.string.location_provider_disabled),
+                ShadowToast.getTextOfLatestToast(),
+            )
+        }
+    }
+
+    // A fix the provider hands over but that carries no usable coordinate. Suppressed because the
+    // out-of-range literal is the input that has to reach the listener.
+    @Test
+    @SuppressLint("Range")
+    fun malformedFixShowsFetchToast() {
+        Robolectric.buildActivity(SettingsActivity::class.java).use { controller ->
+            val activity = controller.setup().get()
+            activity.findViewById<Button>(R.id.refresh_location).performClick()
+            val listener = locationShadow.networkListeners().single()
+            val invalid = location()
+            invalid.latitude = Double.NaN
+            listener.onLocationChanged(invalid)
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(10))
+            assertEquals(1, ShadowToast.shownToastCount())
+            assertEquals(
+                activity.getString(R.string.location_fetch_failed),
+                ShadowToast.getTextOfLatestToast(),
+            )
+        }
+    }
+
+    @Test
+    fun providerDeniedShowsDeniedToast() {
+        locationShadow.requestFailure = SecurityException("request denied in test")
+        Robolectric.buildActivity(SettingsActivity::class.java).use { controller ->
+            val activity = controller.setup().get()
+            activity.findViewById<Button>(R.id.refresh_location).performClick()
+            assertEquals(1, ShadowToast.shownToastCount())
+            assertEquals(
+                activity.getString(R.string.location_permission_denied),
+                ShadowToast.getTextOfLatestToast(),
+            )
+        }
+    }
+
+    @Test
+    fun timeoutShowsTimeoutToast() {
+        Robolectric.buildActivity(SettingsActivity::class.java).use { controller ->
+            val activity = controller.setup().get()
+            activity.findViewById<Button>(R.id.refresh_location).performClick()
+            assertEquals(0, ShadowToast.shownToastCount())
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(10))
+            assertEquals(1, ShadowToast.shownToastCount())
+            assertEquals(
+                activity.getString(R.string.location_timeout),
+                ShadowToast.getTextOfLatestToast(),
+            )
         }
     }
 

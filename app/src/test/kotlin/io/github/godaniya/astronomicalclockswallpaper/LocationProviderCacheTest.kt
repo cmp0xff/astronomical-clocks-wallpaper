@@ -23,7 +23,7 @@ import java.time.Duration
 class LocationProviderCacheTest {
     private val application = RuntimeEnvironment.getApplication()
     private val locationManager = application.getSystemService(Context.LOCATION_SERVICE) as LocationManager
-    private val results = mutableListOf<CoordinateFix?>()
+    private val results = mutableListOf<LocationResult>()
 
     @Before
     fun prepareClockAndProvider() {
@@ -37,14 +37,14 @@ class LocationProviderCacheTest {
         shadowOf(locationManager).setProviderEnabled(LocationManager.NETWORK_PROVIDER, false)
         seedCache(SystemClock.elapsedRealtimeNanos())
         LocationProvider(application).fetch { results.add(it) }
-        assertEquals(listOf(CACHED_LOCATION), results)
+        assertEquals(listOf(LocationResult.Success(CACHED_LOCATION)), results)
     }
 
     @Test
     fun acceptsBoundaryWithOldWallTime() {
         seedCache(SystemClock.elapsedRealtimeNanos() - MAX_AGE_NANOS)
         LocationProvider(application).fetch { results.add(it) }
-        assertEquals(listOf(CACHED_LOCATION), results)
+        assertEquals(listOf(LocationResult.Success(CACHED_LOCATION)), results)
     }
 
     @Test
@@ -99,7 +99,7 @@ class LocationProviderCacheTest {
         shadowOf(Looper.getMainLooper()).idle()
         assertEquals(
             listOf(
-                CoordinateFix(latitude = 10.0, longitude = 20.0),
+                LocationResult.Success(CoordinateFix(latitude = 10.0, longitude = 20.0)),
             ),
             results,
         )

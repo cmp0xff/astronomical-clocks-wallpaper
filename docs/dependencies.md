@@ -2,7 +2,7 @@
 
 All application source and the placeholder Canvas/vector dial are original project work under
 [Apache-2.0](../LICENSE). No political city catalog, location library, or external artwork is bundled. The
-astronomy engine and the star catalogue arrived with #4, and the IANA tzdb anchor coordinates arrived with #21,
+astronomy engine and the star catalogue arrived with #4, and the IANA tzdb anchor coordinates arrived with #83 (#24),
 as recorded below.
 
 Declared Gradle dependency and plugin pins are maintained in

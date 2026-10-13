@@ -65,19 +65,27 @@ mathematics belong in the maintained [Orloj geometry guide](orloj.md).
 
 ## Location selection and offline operation
 
-The intended contract accepts approximate current location and keeps offline city
-selection and coordinate entry available after denial, disabled location, failure,
-or timeout. Manual selection must also be directly available, with explicit refresh
-or a different site in settings. Persist the selection without continuous background
-location tracking.
+The observing-site contract accepts approximate current location and provides offline
+manual coordinate entry as the fallback after denial, disabled location, failure, or
+timeout. Manual selection must also be directly available, with explicit refresh or a
+different site in settings. Persist the selection without continuous background location
+tracking.
 
-Currently, settings provide approximate acquisition through Android’s built-in
-network location provider and offline manual coordinate entry with a geographic
-timezone selector; a city chooser is not implemented. Provider availability depends
-on Android’s services and device configuration, while manual setup works offline.
-A timezone selector alone supplies no coordinates. The current nearest-IANA-reference
-lookup estimates a timezone rather than checking geographic boundaries, and can be
-wrong near borders; review the estimate and choose the correct zone when needed.
+An offline city chooser is intentionally not bundled (see #21). The app requires only
+an observing site's coordinates and its geographic IANA timezone. Bundling a curated city
+dataset introduces political, cartographic, and regulatory complications (disputed borders,
+territorial naming, and regional app-store compliance such as #70). Instead, the app uses
+raw latitude and longitude entry coupled with offline timezone inference from the 418
+public-domain IANA `zone.tab` anchors (#83), with a manual timezone selector for user
+correction. Whether manual coordinate entry poses usability friction for newcomers remains
+an open question for user testing (#99).
+
+Currently, settings provide approximate acquisition through Android’s built-in network
+location provider and offline manual coordinate entry with a geographic timezone selector.
+Provider availability depends on Android’s services and device configuration, while manual
+setup works offline. A timezone selector alone supplies no coordinates. The current
+nearest-IANA-reference lookup estimates a timezone rather than checking geographic boundaries,
+and can be wrong near borders; review the estimate and choose the correct zone when needed.
 
 Every input method must establish the site's geographic timezone. Capturing the
 phone timezone alone is insufficient; use a geographic IANA timezone with its
