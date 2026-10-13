@@ -1068,6 +1068,75 @@ class SharedDeviceLayerTest(unittest.TestCase):
                     self.assertFalse(hasattr(harness, name), f"{harness.__name__} shadows {name}")
 
 
+class WallpaperComponentParsingTest(unittest.TestCase):
+    """The arm-critical `dumpsys wallpaper` read, parsed directly rather than through a mock."""
+
+    LIVE = (
+        "ComponentInfo{io.github.godaniya.astronomicalclockswallpaper.debug/"
+        "io.github.godaniya.astronomicalclockswallpaper.AstronomicalClocksWallpaperService}"
+    )
+    LOCK = "ComponentInfo{com.example.lock/com.example.LockWallpaper}"
+    STATIC = "ComponentInfo{com.android.systemui/com.android.systemui.wallpapers.ImageWallpaper}"
+
+    def read(self, output: str) -> str:
+        """Parse a wallpaper dump through the real parser."""
+        with patch.object(device_layer, "run_adb", return_value=output.encode()):
+            return device_layer.read_wallpaper_component("device")
+
+    def test_the_live_home_component_is_returned(self) -> None:
+        dump = (
+            "System wallpaper state:\n"
+            "  mLastWallpaper state:\n"
+            "    mName=null\n"
+            "    mWallpaperId=57\n"
+            f"    mInfo.component={self.LIVE}\n"
+            "  mLastLockWallpaper state:\n"
+            f"    mInfo.component={self.LOCK}\n"
+        )
+        self.assertEqual(self.LIVE, self.read(dump))
+
+    def test_the_lock_section_is_not_read_through(self) -> None:
+        # The lock slot reports the same `mInfo.component=` field a few lines below the home one. A
+        # parser that read past the boundary would report the lock wallpaper as the home component,
+        # which would admit a window against an arm the device is not in.
+        dump = (
+            "System wallpaper state:\n"
+            "  mLastWallpaper state:\n"
+            "    mName=ImageWallpaper\n"
+            "    mWallpaperId=57\n"
+            "  mLastLockWallpaper state:\n"
+            f"    mInfo.component={self.LOCK}\n"
+            "Wallpaper per-file components:\n"
+            "  Wallpaper #0:\n"
+            f"    mWallpaperComponent={self.STATIC}\n"
+        )
+        self.assertEqual(self.STATIC, self.read(dump))
+
+    def test_the_static_fallback_reports_the_first_per_file_component(self) -> None:
+        # With nothing live bound the home section carries no component, and the per-file list is what
+        # names the static wallpaper a baseline arm is recorded against.
+        dump = (
+            "System wallpaper state:\n"
+            "  mLastWallpaper state:\n"
+            "    mName=ImageWallpaper\n"
+            "Wallpaper per-file components:\n"
+            "  Wallpaper #0:\n"
+            f"    mWallpaperComponent={self.STATIC}\n"
+            "  Wallpaper #1:\n"
+            f"    mWallpaperComponent={self.LOCK}\n"
+        )
+        self.assertEqual(self.STATIC, self.read(dump))
+
+    def test_a_dump_naming_no_component_is_refused(self) -> None:
+        for dump in (
+            "",
+            "System wallpaper state:\n  mLastWallpaper state:\n    mName=null\n",
+            "Wallpaper per-file components:\n  Wallpaper #0:\n    mWallpaperId=57\n",
+        ):
+            with self.subTest(dump=dump[:30]), self.assertRaises(device_layer.ProbeError):
+                self.read(dump)
+
+
 class HandDetectionTest(unittest.TestCase):
     """The hand-ink predicates and the angle estimate they feed."""
 

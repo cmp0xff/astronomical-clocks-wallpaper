@@ -2,11 +2,14 @@
 # SPDX-License-Identifier: Apache-2.0
 """Unit tests for the battery protocol's parsing, statistics, arm guard, and report."""
 
+import argparse
 import contextlib
 import io
 import subprocess
+import tempfile
 import unittest
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import battery_protocol as subject
@@ -81,13 +84,14 @@ def _window(*, cpu: float | None) -> subject.Window:
     return subject.Window(start_sample=start, end_sample=end, duration_seconds=600.0)
 
 
-def visible_record(
+def visible_record(  # noqa: PLR0913 - the arm, its readings, and the window shape are all its inputs
     arm: str,
     rate: float,
     *,
     cpu: float | None = None,
     pilot: bool = False,
     baseline: str | None = None,
+    duration: float = 900.0,
 ) -> dict[str, object]:
     """Build one visible-window record as the state file would carry it."""
     return {
@@ -97,6 +101,7 @@ def visible_record(
         "discharge_rate_ua": rate,
         "cpu_pct": cpu,
         "pilot": pilot,
+        "duration_seconds": duration,
         "revision": "rev",
         "api_level": 36,
     }
@@ -109,6 +114,22 @@ def pairs(count: int, live_rate: float, base_rate: float, *, cpu: float = 1.0) -
         records.append(visible_record("A", live_rate, cpu=cpu))
         records.append(visible_record("B", base_rate, baseline="stock"))
     return records
+
+
+# The four `powered:` fields `dumpsys battery` prints, all false: the device is on its own battery.
+# Every source is required, so a phase's power read is stubbed with the whole reading rather than one
+# line of it.
+ON_BATTERY_POWER_LINES = (
+    "AC powered: false",
+    "USB powered: false",
+    "Wireless powered: false",
+    "Dock powered: false",
+)
+
+
+def recorder() -> subject.Recorder:
+    """Return a recorder bound to a throwaway state directory, for the phases that persist to one."""
+    return subject.Recorder(Path(tempfile.mkdtemp()))
 
 
 class ParseBatteryOutputTest(unittest.TestCase):
@@ -192,13 +213,16 @@ class ClkTckProbeTest(unittest.TestCase):
         device.run_adb.return_value = b"36\n"
         with (
             patch.object(subject, "DeviceStateSnapshot"),
+            patch.object(subject, "read_power_source_lines", return_value=ON_BATTERY_POWER_LINES),
             patch.object(subject, "verify_arm"),
             patch.object(subject, "arm_conditions", return_value={"wallpaper_component": "c", "median_luma": 0.0}),
             patch.object(subject, "run_window", return_value=(_window(cpu=1.0), (True,), (True,))),
             patch.object(subject, "undo_phase_changes", return_value=[]),
             patch.object(subject, "apply_power_mode", return_value=subject.POWER_SOURCE_DEVICE),
         ):
-            record = subject.phase_visible(device, arm=subject.Arm.LIVE, baseline=None, minutes=1.0)
+            record = subject.phase_visible(
+                device, arm=subject.Arm.LIVE, baseline=None, minutes=1.0, recorder=recorder()
+            )
         self.assertEqual(250, record.values["clk_tck"])
         self.assertEqual(subject.POWER_SOURCE_DEVICE, record.values["power_source"])
 
@@ -209,9 +233,105 @@ class ClkTckProbeTest(unittest.TestCase):
             patch.object(subject, "run_window") as window,
             self.assertRaises(device_layer.ProbeError),
         ):
-            subject.phase_visible(device, arm=subject.Arm.LIVE, baseline=None, minutes=1.0)
+            subject.phase_visible(device, arm=subject.Arm.LIVE, baseline=None, minutes=1.0, recorder=recorder())
         window.assert_not_called()
         device.wake_screen.assert_not_called()
+
+
+# A `dumpsys power` excerpt in the shape the device prints it: the wake-lock census, one lock held by
+# the app under test, and one held by another UID that must not be counted.
+POWER_DUMP = """\
+POWER MANAGER (dumpsys power)
+
+Power Manager Service:
+  mWakefulness=Awake
+  Wake Locks: size=2
+    PARTIAL_WAKE_LOCK              'AudioMix' ACQ=-1s234ms (uid=1013, pid=1234, ws=WorkSource{1013})
+    PARTIAL_WAKE_LOCK              'WallpaperLock' ACQ=-2s345ms (uid=10026, pid=20859, ws=WorkSource{10026})
+  Suspend Blockers: size=1
+Display Power: state=ON
+"""
+
+# A `dumpsys alarm` excerpt: the pending-batch census, one alarm belonging to the app under test, and
+# one belonging to another package that must not be counted.
+ALARM_DUMP = """\
+Alarm Manager State:
+  Settings:
+    mBroadcastRefCount=0
+  Pending alarm batches: 2
+    Batch{19cbbbd num=1}:
+      RTC_WAKEUP #0: Alarm{7d0e24a type 0 when 1712345678 \
+io.github.godaniya.astronomicalclockswallpaper.debug}
+    Batch{19cbbbe num=1}:
+      RTC_WAKEUP #0: Alarm{7d0e24b type 0 when 1712345999 com.example.other}
+"""
+
+
+class WakeLockAndAlarmProbeTest(unittest.TestCase):
+    """Finding 1: an unparsable power or alarm dump is an error, not a zero-lock B2 pass."""
+
+    def test_counts_only_the_locks_held_by_the_app_s_uid(self) -> None:
+        self.assertEqual(1, subject.parse_wakelock_count(POWER_DUMP, 10026))
+        self.assertEqual(1, subject.parse_wakelock_count(POWER_DUMP, 1013))
+
+    def test_a_census_with_no_matching_lock_is_a_real_zero(self) -> None:
+        self.assertEqual(0, subject.parse_wakelock_count(POWER_DUMP, 99999))
+
+    def test_a_dump_without_the_census_is_an_error_not_a_zero(self) -> None:
+        # What a truncated or reshaped `dumpsys power` leaves behind: output that names no census and
+        # therefore says nothing about wake locks at all.
+        for dump in ("", "Power Manager Service:\n  mWakefulness=Awake\n", POWER_DUMP.split("Wake Locks")[0]):
+            with self.subTest(dump=dump[:30]), self.assertRaises(device_layer.ProbeError):
+                subject.parse_wakelock_count(dump, 10026)
+
+    def test_counts_only_the_alarms_that_name_the_package(self) -> None:
+        self.assertEqual(1, subject.parse_alarm_count(ALARM_DUMP))
+        other_package = ALARM_DUMP.replace("io.github.godaniya.astronomicalclockswallpaper.debug", "com.other.pkg")
+        self.assertEqual(0, subject.parse_alarm_count(other_package))
+
+    def test_an_alarm_dump_without_the_census_is_an_error_not_a_zero(self) -> None:
+        for dump in ("", "Alarm Manager State:\n  Settings:\n", ALARM_DUMP.split("Pending alarm batches")[0]):
+            with self.subTest(dump=dump[:30]), self.assertRaises(device_layer.ProbeError):
+                subject.parse_alarm_count(dump)
+
+    def test_an_unresolved_uid_is_refused_before_the_probe_runs(self) -> None:
+        device = MagicMock()
+        with patch.object(device, "run_adb") as probe, self.assertRaises(device_layer.ProbeError):
+            subject.count_held_wakelocks(device, None)
+        probe.assert_not_called()
+
+
+class LoadRecordsTest(unittest.TestCase):
+    """Finding 3: a truncated state file is a named error, not a traceback."""
+
+    def state(self, *lines: str) -> Path:
+        """Write the given lines to a fresh state file and return its directory."""
+        directory = Path(tempfile.mkdtemp())
+        (directory / subject.RECORD_FILE_NAME).write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return directory
+
+    def test_valid_records_load(self) -> None:
+        directory = self.state('{"phase": "hidden"}', '{"phase": "visible"}')
+        self.assertEqual([{"phase": "hidden"}, {"phase": "visible"}], subject.load_records(directory))
+
+    def test_a_truncated_line_is_a_named_error_not_a_traceback(self) -> None:
+        directory = self.state('{"phase": "hidden"}', '{"phase": "visible"')
+        with self.assertRaises(device_layer.ProbeError) as raised:
+            subject.load_records(directory)
+        detail = str(raised.exception)
+        self.assertIn(f"{subject.RECORD_FILE_NAME}:2", detail)
+        self.assertIn("not valid JSON", detail)
+
+    def test_a_line_that_is_not_an_object_is_named_too(self) -> None:
+        directory = self.state('{"phase": "hidden"}', "[1, 2, 3]")
+        with self.assertRaises(device_layer.ProbeError) as raised:
+            subject.load_records(directory)
+        self.assertIn(f"{subject.RECORD_FILE_NAME}:2 is not a JSON object", str(raised.exception))
+
+    def test_a_missing_state_file_names_the_path(self) -> None:
+        with self.assertRaises(device_layer.ProbeError) as raised:
+            subject.load_records(Path(tempfile.mkdtemp()))
+        self.assertIn(subject.RECORD_FILE_NAME, str(raised.exception))
 
 
 class JobProbeTest(unittest.TestCase):
@@ -238,15 +358,34 @@ class PowerSourceProbeTest(unittest.TestCase):
         self.assertTrue(subject.power_lines_show_battery(lines))
 
     def test_any_true_means_a_charger_is_connected(self) -> None:
-        self.assertFalse(subject.power_lines_show_battery(["AC powered: false", "USB powered: true"]))
+        lines = ["AC powered: false", "USB powered: true", "Wireless powered: false", "Dock powered: false"]
+        self.assertFalse(subject.power_lines_show_battery(lines))
 
     def test_no_powered_line_is_an_error_not_a_guess(self) -> None:
         with self.assertRaises(device_layer.ProbeError):
             subject.power_lines_show_battery(["Settings:"])
 
-    def test_a_device_on_its_own_battery_is_not_put_under_the_override(self) -> None:
+    def test_a_reading_missing_a_source_is_incomplete_not_on_battery(self) -> None:
+        # A dump that lost three of its four `powered:` fields must not be read as "the one that
+        # remains is false, so this device is discharging": the reading is incomplete, and the arm the
+        # window is recorded against depends on it.
+        complete = ["AC powered: false", "USB powered: false", "Wireless powered: false", "Dock powered: false"]
+        for dropped in range(len(complete)):
+            partial = [line for index, line in enumerate(complete) if index != dropped]
+            with self.subTest(dropped=complete[dropped]), self.assertRaises(device_layer.ProbeError):
+                subject.power_lines_show_battery(partial)
+
+    def test_a_truncated_battery_dump_is_refused_before_the_mode_is_chosen(self) -> None:
         device = MagicMock()
         device.run_adb.return_value = b"  AC powered: false\n  USB powered: false\n"
+        with self.assertRaises(device_layer.ProbeError):
+            subject.apply_power_mode(device)
+
+    def test_a_device_on_its_own_battery_is_not_put_under_the_override(self) -> None:
+        device = MagicMock()
+        device.run_adb.return_value = (
+            b"  AC powered: false\n  USB powered: false\n  Wireless powered: false\n  Dock powered: false\n"
+        )
         with patch.object(subject, "simulate_unplug") as unplug:
             mode = subject.apply_power_mode(device)
         self.assertEqual(subject.POWER_SOURCE_DEVICE, mode)
@@ -254,7 +393,9 @@ class PowerSourceProbeTest(unittest.TestCase):
 
     def test_a_charging_device_is_simulated(self) -> None:
         device = MagicMock()
-        device.run_adb.return_value = b"  AC powered: false\n  USB powered: true\n"
+        device.run_adb.return_value = (
+            b"  AC powered: false\n  USB powered: true\n  Wireless powered: false\n  Dock powered: false\n"
+        )
         with patch.object(subject, "simulate_unplug") as unplug:
             mode = subject.apply_power_mode(device)
         self.assertEqual(subject.POWER_SOURCE_SIMULATED, mode)
@@ -266,6 +407,7 @@ class PowerSourceProbeTest(unittest.TestCase):
         device.run_adb.return_value = b"36\n"
         with (
             patch.object(subject, "DeviceStateSnapshot"),
+            patch.object(subject, "read_power_source_lines", return_value=ON_BATTERY_POWER_LINES),
             patch.object(subject, "verify_arm"),
             patch.object(subject, "arm_conditions", return_value={"wallpaper_component": "c", "median_luma": 0.0}),
             patch.object(subject, "run_window", return_value=(_window(cpu=1.0), (True,), (True, False))),
@@ -273,7 +415,7 @@ class PowerSourceProbeTest(unittest.TestCase):
             patch.object(subject, "apply_power_mode", return_value=subject.POWER_SOURCE_DEVICE),
             self.assertRaises(device_layer.ProbeError),
         ):
-            subject.phase_visible(device, arm=subject.Arm.LIVE, baseline=None, minutes=1.0)
+            subject.phase_visible(device, arm=subject.Arm.LIVE, baseline=None, minutes=1.0, recorder=recorder())
 
     def test_a_window_with_no_power_sample_is_refused(self) -> None:
         self.assertIsNotNone(subject.power_source_problem([]))
@@ -285,13 +427,15 @@ class PowerSourceProbeTest(unittest.TestCase):
         sample = subject.BatterySample(0.0, 1, 100, 4000, 1.0, 1000)
         with (
             patch.object(subject, "DeviceStateSnapshot"),
+            patch.object(subject, "verify_arm"),
+            patch.object(subject, "read_power_source_lines", return_value=ON_BATTERY_POWER_LINES),
             patch.object(subject, "take_battery_sample", side_effect=[sample, sample]),
             patch.object(subject, "run_window", return_value=(_window(cpu=1.0), (False, False), (False, True))),
             patch.object(subject, "undo_phase_changes", return_value=[]),
             patch.object(subject, "apply_power_mode", return_value=subject.POWER_SOURCE_DEVICE),
             self.assertRaises(device_layer.ProbeError),
         ):
-            subject.phase_hidden(device, minutes=1.0)
+            subject.phase_hidden(device, minutes=1.0, recorder=recorder())
 
     def test_a_memory_window_that_saw_a_charger_is_refused(self) -> None:
         device = MagicMock()
@@ -299,6 +443,7 @@ class PowerSourceProbeTest(unittest.TestCase):
         sample = subject.BatterySample(0.0, 1, 100, 4000, 1.0, 1000)
         with (
             patch.object(subject, "DeviceStateSnapshot"),
+            patch.object(subject, "read_power_source_lines", return_value=ON_BATTERY_POWER_LINES),
             patch.object(subject, "verify_arm"),
             patch.object(subject, "take_battery_sample", side_effect=[sample, sample]),
             patch.object(subject, "sample_window_states", return_value=([True, True], [True, False])),
@@ -306,7 +451,7 @@ class PowerSourceProbeTest(unittest.TestCase):
             patch.object(subject, "apply_power_mode", return_value=subject.POWER_SOURCE_DEVICE),
             self.assertRaises(device_layer.ProbeError),
         ):
-            subject.phase_memory(device, minutes=1.0)
+            subject.phase_memory(device, minutes=1.0, recorder=recorder())
 
 
 class TCriticalTest(unittest.TestCase):
@@ -491,12 +636,13 @@ class VisiblePhaseGuardTest(unittest.TestCase):
         device = self.device()
         with (
             patch.object(subject, "DeviceStateSnapshot"),
+            patch.object(subject, "read_power_source_lines", return_value=ON_BATTERY_POWER_LINES),
             patch.object(subject, "undo_phase_changes", return_value=[]),
             patch.object(subject, "verify_arm", side_effect=device_layer.ProbeError("arm A was requested")) as guard,
             patch.object(subject, "run_window") as window,
             self.assertRaises(device_layer.ProbeError),
         ):
-            subject.phase_visible(device, arm=subject.Arm.LIVE, baseline=None, minutes=1.0)
+            subject.phase_visible(device, arm=subject.Arm.LIVE, baseline=None, minutes=1.0, recorder=recorder())
         guard.assert_called_once()
         window.assert_not_called()
 
@@ -505,14 +651,100 @@ class VisiblePhaseGuardTest(unittest.TestCase):
         with (
             patch.object(subject, "verify_arm") as guard,
             patch.object(subject, "DeviceStateSnapshot"),
+            patch.object(subject, "read_power_source_lines", return_value=ON_BATTERY_POWER_LINES),
             patch.object(subject, "arm_conditions", return_value={"wallpaper_component": "static", "median_luma": 0.0}),
             patch.object(subject, "run_window", return_value=(_window(cpu=1.0), (True,), (True,))),
             patch.object(subject, "undo_phase_changes", return_value=[]),
             patch.object(subject, "apply_power_mode", return_value=subject.POWER_SOURCE_DEVICE),
         ):
-            subject.phase_visible(device, arm=subject.Arm.BASELINE, baseline=subject.Baseline.STOCK, minutes=1.0)
+            subject.phase_visible(
+                device, arm=subject.Arm.BASELINE, baseline=subject.Baseline.STOCK, minutes=1.0, recorder=recorder()
+            )
         guard.assert_called_once()
         self.assertIs(subject.Arm.BASELINE, guard.call_args.args[1])
+
+
+class HiddenPhaseArmGuardTest(unittest.TestCase):
+    """Finding 5: B3 is the live engine's CPU, so a static wallpaper must refuse the window."""
+
+    def test_the_hidden_phase_verifies_the_live_arm_before_the_window(self) -> None:
+        device = MagicMock()
+        device.read_process_cpu_clock_ticks.return_value = 100
+        with (
+            patch.object(subject, "DeviceStateSnapshot"),
+            patch.object(subject, "read_power_source_lines", return_value=ON_BATTERY_POWER_LINES),
+            patch.object(subject, "verify_arm", side_effect=device_layer.ProbeError("arm A was requested")) as guard,
+            patch.object(subject, "run_window") as window,
+            patch.object(subject, "undo_phase_changes", return_value=[]),
+            self.assertRaises(device_layer.ProbeError),
+        ):
+            subject.phase_hidden(device, minutes=10.0, recorder=recorder())
+        guard.assert_called_once()
+        self.assertIs(subject.Arm.LIVE, guard.call_args.args[1])
+        window.assert_not_called()
+
+    def test_the_hidden_phase_does_not_pin_the_device_before_the_guard_admits_it(self) -> None:
+        snapshot = MagicMock()
+        device = MagicMock()
+        device.read_process_cpu_clock_ticks.return_value = 100
+        with (
+            patch.object(subject, "DeviceStateSnapshot") as captured,
+            patch.object(subject, "read_power_source_lines", return_value=ON_BATTERY_POWER_LINES),
+            patch.object(subject, "verify_arm", side_effect=device_layer.ProbeError("arm A was requested")),
+            patch.object(subject, "undo_phase_changes", return_value=[]),
+            self.assertRaises(device_layer.ProbeError),
+        ):
+            captured.capture.return_value = snapshot
+            subject.phase_hidden(device, minutes=10.0, recorder=recorder())
+        snapshot.pin.assert_not_called()
+
+
+class AbortedRestoreTest(unittest.TestCase):
+    """Finding 8: a phase that aborts after changing the device still records its restore problems."""
+
+    def test_an_aborted_phase_persists_the_restore_it_could_not_verify(self) -> None:
+        device = MagicMock()
+        device.read_process_cpu_clock_ticks.return_value = 100
+        device.run_adb.return_value = b"36\n"
+        state_dir = Path(tempfile.mkdtemp())
+        sink = subject.Recorder(state_dir)
+        with (
+            patch.object(subject, "DeviceStateSnapshot"),
+            patch.object(subject, "read_power_source_lines", return_value=ON_BATTERY_POWER_LINES),
+            patch.object(subject, "verify_arm"),
+            patch.object(subject, "apply_power_mode", return_value=subject.POWER_SOURCE_DEVICE),
+            patch.object(subject, "run_window", side_effect=device_layer.ProbeError("the window died")),
+            patch.object(subject, "undo_phase_changes", return_value=["airplane_mode_on did not read back as 0"]),
+            contextlib.redirect_stdout(io.StringIO()),
+            self.assertRaises(device_layer.ProbeError),
+        ):
+            subject.phase_hidden(device, minutes=10.0, recorder=sink)
+        # The original failure still propagates, but the restore it took with it is now on disk where
+        # `report` can see it instead of only in a variable that went out of scope.
+        recorded = subject.load_records(state_dir)
+        self.assertEqual(["hidden_aborted"], [record["phase"] for record in recorded])
+        self.assertEqual(["airplane_mode_on did not read back as 0"], recorded[0]["restore_problems"])
+        lines = [verdict.line for verdict in subject.report_lines(recorded)]
+        self.assertTrue(any(line.startswith("DEVICE RESTORE: FAIL") for line in lines))
+        self.assertEqual(1, subject.report_exit_code(subject.report_lines(recorded)))
+
+    def test_a_clean_abort_writes_nothing(self) -> None:
+        # An abort whose restore succeeded has no problems to carry, and an empty aborted record would
+        # read as a phase that ran.
+        device = MagicMock()
+        device.read_process_cpu_clock_ticks.return_value = 100
+        state_dir = Path(tempfile.mkdtemp())
+        with (
+            patch.object(subject, "DeviceStateSnapshot"),
+            patch.object(subject, "read_power_source_lines", return_value=ON_BATTERY_POWER_LINES),
+            patch.object(subject, "verify_arm"),
+            patch.object(subject, "apply_power_mode", return_value=subject.POWER_SOURCE_DEVICE),
+            patch.object(subject, "run_window", side_effect=device_layer.ProbeError("the window died")),
+            patch.object(subject, "undo_phase_changes", return_value=[]),
+            self.assertRaises(device_layer.ProbeError),
+        ):
+            subject.phase_hidden(device, minutes=10.0, recorder=subject.Recorder(state_dir))
+        self.assertFalse((state_dir / subject.RECORD_FILE_NAME).exists())
 
 
 class MemoryPhaseTest(unittest.TestCase):
@@ -532,13 +764,14 @@ class MemoryPhaseTest(unittest.TestCase):
         with (
             patch.object(subject, "verify_arm") as guard,
             patch.object(subject, "DeviceStateSnapshot"),
+            patch.object(subject, "read_power_source_lines", return_value=ON_BATTERY_POWER_LINES),
             patch.object(subject, "take_battery_sample", side_effect=[sample, sample]),
             patch.object(subject, "sample_window_states", return_value=([True, False], [True, True])),
             patch.object(subject, "undo_phase_changes", return_value=[]),
             patch.object(subject, "apply_power_mode", return_value=subject.POWER_SOURCE_DEVICE),
             self.assertRaises(device_layer.ProbeError),
         ):
-            subject.phase_memory(device, minutes=1.0)
+            subject.phase_memory(device, minutes=1.0, recorder=recorder())
         guard.assert_called_once()
 
 
@@ -568,11 +801,12 @@ class DisplaySnapshotOrderTest(unittest.TestCase):
         device.wake_screen.side_effect = wake
         with (
             patch.object(subject.DeviceStateSnapshot, "capture", side_effect=capture),
+            patch.object(subject, "read_power_source_lines", return_value=ON_BATTERY_POWER_LINES),
             patch.object(subject, "verify_arm", side_effect=device_layer.ProbeError("arm refused")),
             patch.object(subject, "undo_phase_changes", side_effect=restore),
             self.assertRaises(device_layer.ProbeError),
         ):
-            subject.phase_visible(device, arm=subject.Arm.LIVE, baseline=None, minutes=1.0)
+            subject.phase_visible(device, arm=subject.Arm.LIVE, baseline=None, minutes=1.0, recorder=recorder())
         # The capture precedes the wake, and the restore still runs even though the arm was refused
         # after the display had already been woken.
         self.assertEqual(["capture", "wake", "restore"], events)
@@ -762,8 +996,8 @@ def full_pass_records() -> list[dict[str, object]]:
     """Build a record set in which every criterion is measured and passes."""
     records: list[dict[str, object]] = [
         {"phase": "resources", "wake_locks": 0, "alarms": 0, "jobs": 0, "revision": "rev", "api_level": 36},
-        {"phase": "hidden", "cpu_pct": 0.05, "revision": "rev", "api_level": 36},
-        {"phase": "memory", "pss_growth_kb": 992, "revision": "rev", "api_level": 36},
+        {"phase": "hidden", "cpu_pct": 0.05, "duration_seconds": 604.0, "revision": "rev", "api_level": 36},
+        {"phase": "memory", "pss_growth_kb": 992, "duration_seconds": 1800.0, "revision": "rev", "api_level": 36},
     ]
     records.extend(pairs(4, 1000.0, 1000.0))
     return records
@@ -783,7 +1017,8 @@ class ReportTest(unittest.TestCase):
             "B2 alarms",
             "B2 jobs",
             "B3 hidden CPU",
-            "B4 relative increase",
+            "B4 vs stock",
+            "B4 vs black",
             "B5 visible CPU",
             "B6 PSS growth",
         ):
@@ -827,8 +1062,8 @@ class ReportTest(unittest.TestCase):
         self.assertTrue(any(line.startswith("B2 jobs") and "FAIL" in line for line in lines))
 
     def test_hidden_cpu_is_checked_against_its_budget(self) -> None:
-        under = [{"phase": "hidden", "cpu_pct": 0.05, "revision": "rev", "api_level": 36}]
-        over = [{"phase": "hidden", "cpu_pct": 5.4, "revision": "rev", "api_level": 36}]
+        under = [{"phase": "hidden", "cpu_pct": 0.05, "duration_seconds": 604.0, "revision": "rev", "api_level": 36}]
+        over = [{"phase": "hidden", "cpu_pct": 5.4, "duration_seconds": 604.0, "revision": "rev", "api_level": 36}]
         self.assertTrue(any("PASS" in line for line in self.lines(under)))
         self.assertTrue(any("FAIL" in line for line in self.lines(over)))
 
@@ -871,8 +1106,56 @@ class ReportTest(unittest.TestCase):
         self.assertTrue(any(line.startswith("B4 vs stock") and "NOT MEASURED" in line for line in lines))
 
     def test_pss_growth_is_checked_against_its_budget(self) -> None:
-        records = [{"phase": "memory", "pss_growth_kb": 992, "revision": "rev", "api_level": 36}]
+        records = [
+            {"phase": "memory", "pss_growth_kb": 992, "duration_seconds": 1800.0, "revision": "rev", "api_level": 36}
+        ]
         self.assertTrue(any(line.startswith("B6 PSS growth") and "PASS" in line for line in self.lines(records)))
+
+    def test_a_six_second_window_fails_and_does_not_qualify(self) -> None:
+        # The CLI refuses `--minutes 0.1`, but the report reads a state file it did not write: a window
+        # that ran for six seconds is not the fifteen minutes B4 is defined over, so it is named and
+        # dropped rather than averaged in beside real ones.
+        records = [
+            visible_record("A", 1000.0, cpu=1.0, duration=6.0),
+            visible_record("B", 1000.0, baseline="stock", duration=6.0),
+        ] * 4
+        lines = self.lines(records)
+        self.assertTrue(any(line.startswith("WINDOW DURATIONS: FAIL") for line in lines))
+        self.assertTrue(any(line.startswith("B4 vs stock") and "NOT MEASURED" in line for line in lines))
+        self.assertFalse(any(line.startswith("B4 vs stock point estimate") for line in lines))
+
+    def test_a_record_without_a_recorded_duration_is_not_measurable_either(self) -> None:
+        records = [{"phase": "hidden", "cpu_pct": 0.05, "revision": "rev", "api_level": 36}]
+        lines = self.lines(records)
+        self.assertTrue(any(line.startswith("WINDOW DURATIONS: FAIL") for line in lines))
+        self.assertTrue(any(line.startswith("B3 hidden CPU") and "NOT MEASURED" in line for line in lines))
+
+    def test_a_window_inside_the_length_tolerance_still_qualifies(self) -> None:
+        # A 15-minute window records a few seconds either side of 900s; that jitter is not a short
+        # window, and refusing it would fail every real run.
+        records = [
+            visible_record("A", 1000.0, cpu=1.0, duration=902.0),
+            visible_record("B", 1000.0, baseline="stock", duration=898.0),
+        ] * 4
+        lines = self.lines(records)
+        self.assertFalse(any(line.startswith("WINDOW DURATIONS") for line in lines))
+        self.assertTrue(any(line.startswith("B4 vs stock point estimate") and "PASS" in line for line in lines))
+
+    def test_a_stock_only_run_still_reports_the_black_arm_as_not_measured(self) -> None:
+        # One block per documented baseline, not one per baseline the state file happens to carry: a
+        # stock-only set used to read as a complete verdict with the secondary baseline simply absent.
+        lines = self.lines(full_pass_records())
+        self.assertTrue(any(line.startswith("B4 vs black") and "NOT MEASURED" in line for line in lines))
+        self.assertTrue(any(line.startswith("B4 vs stock CI upper bound") and "PASS" in line for line in lines))
+
+    def test_a_black_only_run_leaves_the_gated_comparison_unmeasured(self) -> None:
+        records = [
+            visible_record("A", 1000.0, cpu=1.0),
+            visible_record("B", 1000.0, baseline="black"),
+        ] * 4
+        lines = self.lines(records)
+        self.assertTrue(any(line.startswith("B4 vs stock") and "NOT MEASURED" in line for line in lines))
+        self.assertTrue(any(line.startswith("B4 vs black CI upper bound") for line in lines))
 
 
 class ReportExitCodeTest(unittest.TestCase):
@@ -892,6 +1175,29 @@ class ReportExitCodeTest(unittest.TestCase):
     def test_a_lone_out_of_scope_criterion_is_not_a_failure(self) -> None:
         verdicts = [subject.Verdict("B1 hidden frames", subject.VerdictStatus.OUT_OF_SCOPE, "B1: not measured here")]
         self.assertEqual(0, subject.report_exit_code(verdicts))
+
+    def test_a_device_limited_criterion_is_recorded_but_does_not_gate(self) -> None:
+        # The black baseline is required only where the device permits setting one, so its absence is
+        # printed and carried by the verdict list without turning every run on this device into a
+        # failure. It is emphatically not reported as a pass, which is what a silent omission did.
+        verdicts = [
+            subject.Verdict("B4 vs black", subject.VerdictStatus.DEVICE_LIMITED, "B4 vs black: NOT MEASURED"),
+            subject.Verdict("B4 vs stock", subject.VerdictStatus.PASS, "B4 vs stock: PASS"),
+        ]
+        self.assertEqual(0, subject.report_exit_code(verdicts))
+        self.assertFalse(verdicts[0].is_failure)
+        self.assertIsNot(subject.VerdictStatus.PASS, verdicts[0].status)
+        self.assertIsNot(subject.VerdictStatus.NOT_MEASURED, verdicts[0].status)
+
+    def test_a_stock_only_full_pass_exits_zero_with_the_black_line_present(self) -> None:
+        verdicts = subject.report_lines(full_pass_records())
+        self.assertEqual(0, subject.report_exit_code(verdicts))
+        self.assertTrue(
+            any(
+                verdict.label == "B4 vs black" and verdict.status is subject.VerdictStatus.DEVICE_LIMITED
+                for verdict in verdicts
+            )
+        )
 
     def test_phase_report_returns_the_derived_status(self) -> None:
         with contextlib.redirect_stdout(io.StringIO()):
@@ -976,6 +1282,24 @@ class PilotPersistenceTest(unittest.TestCase):
         self.assertEqual(["pilot_floor"], [record.phase for record in returned])
         self.assertIsNotNone(returned[0].values["noise_floor_rate_ua"])
 
+    def test_a_dead_discharge_channel_emits_no_floor_and_is_marked_unmeasured(self) -> None:
+        # The target device's gauge reports a constant charge counter, so every window's rate is zero.
+        # A 2-sigma half-width of zero divided by a zero mean is not a quiet channel, it is no reading
+        # at all, and emitting it as a 0% floor would let a later report calibrate a threshold from a
+        # counter that never moved.
+        device = MagicMock()
+        device.run_adb.return_value = b"36\n"
+        recorder = MagicMock()
+        windows = [self.record(0.0) for _ in range(4)]
+        with patch.object(subject, "phase_visible", side_effect=windows):
+            returned = subject.phase_pilot(
+                device, arm=subject.Arm.LIVE, baseline=None, runs=4, minutes=15.0, recorder=recorder
+            )
+        floor = returned[0]
+        self.assertFalse(floor.values["discharge_channel_measured"])
+        self.assertNotIn("noise_floor_rate_ua", floor.values)
+        self.assertNotIn("noise_floor_pct", floor.values)
+
     def test_an_interrupted_pilot_keeps_the_windows_it_completed(self) -> None:
         device = MagicMock()
         recorder = MagicMock()
@@ -986,6 +1310,56 @@ class PilotPersistenceTest(unittest.TestCase):
         ):
             subject.phase_pilot(device, arm=subject.Arm.LIVE, baseline=None, runs=3, minutes=1.0, recorder=recorder)
         self.assertEqual(2, recorder.emit.call_count)
+
+
+class DurationArgumentTest(unittest.TestCase):
+    """Finding 4: an unusable duration is refused at the command line, not discovered mid-window."""
+
+    def parse(self, *argv: str) -> argparse.Namespace:
+        """Parse a command line, swallowing the usage message argparse prints before it exits."""
+        with contextlib.redirect_stderr(io.StringIO()):
+            return subject.build_argument_parser().parse_args(list(argv))
+
+    def parse_refusing(self, *argv: str) -> None:
+        """Assert that a command line is refused by argparse."""
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            subject.build_argument_parser().parse_args(list(argv))
+
+    def test_a_non_finite_duration_is_refused(self) -> None:
+        # `inf` is not a long window: `sample_window_states` subtracts its interval from it forever,
+        # so a phase meant to be bounded would never return. `nan` slips past a `<= 0` test entirely.
+        for raw in ("inf", "-inf", "nan", "Infinity"):
+            with self.subTest(raw=raw), self.assertRaises(argparse.ArgumentTypeError):
+                subject.positive_float(raw)
+
+    def test_a_finite_positive_duration_is_accepted(self) -> None:
+        # `--minutes` is in minutes, so the value that comes back is the one that went in.
+        self.assertEqual(15.0, subject.build_argument_parser().parse_args(["hidden", "--minutes", "15"]).minutes)
+
+    def test_each_windowed_phase_refuses_a_window_below_its_documented_length(self) -> None:
+        cases = (
+            (("hidden", "--minutes", "9"), ("hidden", "--minutes", "10"), 10.0),
+            (("visible", "--arm", "A", "--minutes", "14"), ("visible", "--arm", "A", "--minutes", "15"), 15.0),
+            (("pilot", "--arm", "A", "--minutes", "14"), ("pilot", "--arm", "A", "--minutes", "15"), 15.0),
+            (("memory", "--minutes", "29"), ("memory", "--minutes", "30"), 30.0),
+        )
+        for refused, accepted, minimum in cases:
+            with self.subTest(phase=refused[0]):
+                self.parse_refusing(*refused)
+                self.assertEqual(minimum, self.parse(*accepted).minutes)
+
+    def test_the_default_is_the_documented_minimum(self) -> None:
+        for argv, minimum in (
+            (("hidden",), 10),
+            (("visible", "--arm", "A"), 15),
+            (("memory",), 30),
+        ):
+            with self.subTest(argv=argv):
+                self.assertEqual(minimum, self.parse(*argv).minutes)
+
+    def test_a_longer_window_is_still_offered(self) -> None:
+        # The minimum is a floor, not a fixed length: a longer window is a legitimate measurement.
+        self.assertEqual(45.0, self.parse("memory", "--minutes", "45").minutes)
 
 
 class ParseApiLevelTest(unittest.TestCase):
