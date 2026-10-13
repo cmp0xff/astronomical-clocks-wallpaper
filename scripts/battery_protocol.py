@@ -40,6 +40,15 @@ BATTERY_LEVEL_PATTERN: Final = re.compile(r"^[ \t]*level:[ \t]*(\d+)[ \t]*$", re
 BATTERY_VOLTAGE_PATTERN: Final = re.compile(r"^[ \t]*voltage:[ \t]*(\d+)[ \t]*$", re.MULTILINE)
 TOTAL_PSS_PATTERN: Final = re.compile(r"^\s*TOTAL\s+(\d+)", re.MULTILINE)
 SDK_PATTERN: Final = re.compile(r"^(\d+)$")
+# `dumpsys jobscheduler` lists each scheduled job as `JOB #<uid>/<id>: <hash> <pkg>/<service>`; the
+# fields after the colon are the job's deferred/source hash and the component. Group 3 is the package
+# the job belongs to, which is what attributes it to the app.
+JOB_LINE_PATTERN: Final = re.compile(r"^\s*JOB #(\d+)/(\d+):\s+\S+\s+([\w.]+)/", re.MULTILINE)
+# A `dumpsys jobscheduler` dump that has been read at all prints a `Registered <n> jobs:` census line
+# before the job list; requiring it is what separates "the app has no jobs" from "this is not a
+# jobscheduler dump", so an unparsable probe is an error rather than a zero.
+JOBSCHEDULER_CENSUS_PATTERN: Final = re.compile(r"^\s*Registered (\d+) jobs:", re.MULTILINE)
+POWERED_LINE_PATTERN: Final = re.compile(r"^\s*\w+ powered:\s*(true|false)\s*$", re.MULTILINE)
 
 DEFAULT_STATE_DIR: Final = Path("build/reports/battery")
 RECORD_FILE_NAME: Final = "records.jsonl"
@@ -53,7 +62,10 @@ COMMAND_TIMEOUT_SECONDS: Final = 60
 PROC_STAT_UTIME_INDEX: Final = 11
 PROC_STAT_INDEX_STIME: Final = 12
 MIN_PROC_STAT_FIELDS: Final = 13
-CPU_TICKS_PER_SECOND: Final = 100
+# `/proc/<pid>/stat` counts CPU in kernel clock ticks, and the ticks per second is a kernel constant
+# (`getconf CLK_TCK`) that is not 100 on every device. It is probed per run through
+# `device_layer.AdbDevice.read_process_cpu_clock_ticks` and the run fails when the probe cannot
+# answer, because scaling a CPU percentage by an assumed rate misreports every CPU criterion.
 
 # Budgets from docs/battery-budget.md. B1 is #125 criterion 1 and is deliberately not measured here.
 MAX_HIDDEN_CPU_PCT: Final = 0.1
@@ -138,6 +150,18 @@ STAY_ON_ALWAYS: Final = 7
 LONG_SCREEN_TIMEOUT_MS: Final = 3_600_000
 RESTORE_SETTLE_SECONDS: Final = 2.0
 
+# The discharge window's power source. A device that is genuinely on its own battery has a live fuel
+# gauge and its counter moves; a device held on USB only reports battery when `cmd battery unplug`
+# overrides the power source, and on some devices that freezes the gauge. Which one a window was
+# measured under is part of the measurement's identity, so it is recorded and checked.
+POWER_SOURCE_DEVICE: Final = "device"
+POWER_SOURCE_SIMULATED: Final = "simulated"
+# The fields that say a record was taken from the same build, device configuration, and channel, so
+# aggregating a set that mixes them would combine measurements that are not comparable. `revision`
+# is deliberately not one of them: a harness revision that changes only documentation or the report's
+# own aggregation does not change how a window was measured, and the reports say when that happened.
+IDENTITY_FIELDS: Final = ("apk_sha256", "api_level", "power_source", "clk_tck")
+
 
 class Arm(StrEnum):
     """Which wallpaper a window is recorded against."""
@@ -151,6 +175,38 @@ class Baseline(StrEnum):
 
     STOCK = "stock"
     BLACK = "black"
+
+
+class VerdictStatus(StrEnum):
+    """How one criterion, or one observation, came out."""
+
+    PASS = "PASS"  # noqa: S105 — a verdict label, not a credential
+    FAIL = "FAIL"
+    NOT_MEASURED = "NOT MEASURED"
+    # A criterion that belongs to another issue and is deliberately not measured here, so its absence
+    # is not a failure of this run. B1 is #125's frame counter.
+    OUT_OF_SCOPE = "OUT OF SCOPE"
+    # A line the report prints beside the verdicts but that is not itself a pass/fail criterion.
+    INFO = "INFO"
+
+
+@dataclass(frozen=True)
+class Verdict:
+    """
+    One line of the report, as data rather than as text.
+
+    The report's exit status is derived from these, so a FAIL can never be printed and still leave
+    the command exiting zero: automation reads the status, not the printed string.
+    """
+
+    label: str
+    status: VerdictStatus
+    line: str
+
+    @property
+    def is_failure(self) -> bool:
+        """Whether this verdict should make the report exit non-zero."""
+        return self.status is VerdictStatus.FAIL
 
 
 @dataclass(frozen=True)
@@ -343,7 +399,13 @@ class DeviceStateSnapshot:
                 self.device.run_adb(["shell", "settings", "delete", "global", "stay_on_while_plugged_in"])
             except (subprocess.SubprocessError, OSError) as error:
                 return [f"stay-awake restore failed: {device_layer.error_detail(error)}"]
-            if read_int_setting(self.device, "global", "stay_on_while_plugged_in") is not None:
+            # The readback is inside its own guard: a transport failure here used to escape the whole
+            # restore and skip the display step that follows it.
+            try:
+                remaining = read_int_setting(self.device, "global", "stay_on_while_plugged_in")
+            except (subprocess.SubprocessError, OSError) as error:
+                return [f"stay-awake restore could not be verified: {device_layer.error_detail(error)}"]
+            if remaining is not None:
                 return ["global/stay_on_while_plugged_in did not return to unset"]
             return []
         return self._apply(
@@ -361,7 +423,13 @@ class DeviceStateSnapshot:
             time.sleep(RESTORE_SETTLE_SECONDS)
         except (subprocess.SubprocessError, OSError) as error:
             return [f"{description} restore failed: {device_layer.error_detail(error)}"]
-        if read_int_setting(self.device, namespace, key) != expected:
+        # The readback is guarded too: an uncaught transport failure here used to escape the whole
+        # restore and skip the display restoration.
+        try:
+            actual = read_int_setting(self.device, namespace, key)
+        except (subprocess.SubprocessError, OSError) as error:
+            return [f"{description} restore could not be verified: {device_layer.error_detail(error)}"]
+        if actual != expected:
             return [f"{namespace}/{key} did not read back as {expected}"]
         return []
 
@@ -379,16 +447,27 @@ class DeviceStateSnapshot:
 
 
 def undo_phase_changes(
-    device: device_layer.AdbDevice, snapshot: DeviceStateSnapshot, prior_power: tuple[str, ...] | None = None
+    device: device_layer.AdbDevice,
+    snapshot: DeviceStateSnapshot,
+    prior_power: tuple[str, ...] | None = None,
+    *,
+    simulated: bool = False,
 ) -> list[str]:
-    """Undo a phase's device changes, isolating each step so none can skip the others."""
+    """
+    Undo a phase's device changes, isolating each step so none can skip the others.
+
+    The `cmd battery` reset runs only when this phase applied the override. A device that was already
+    on its own battery is never put under the override, so there is nothing to clear, and clearing it
+    would be a write to a device whose state is already correct.
+    """
     problems: list[str] = []
-    try:
-        reset_battery_simulation(device)
-        if prior_power is not None and not power_source_restored(device, prior_power):
-            problems.append("the reported power sources did not return to their pre-phase state")
-    except (subprocess.SubprocessError, OSError) as error:
-        problems.append(f"battery simulation reset failed: {device_layer.error_detail(error)}")
+    if simulated:
+        try:
+            reset_battery_simulation(device)
+            if prior_power is not None and not power_source_restored(device, prior_power):
+                problems.append("the reported power sources did not return to their pre-phase state")
+        except (subprocess.SubprocessError, OSError) as error:
+            problems.append(f"battery simulation reset failed: {device_layer.error_detail(error)}")
     try:
         problems.extend(snapshot.restore())
     except (subprocess.SubprocessError, OSError) as error:
@@ -423,6 +502,41 @@ def power_source_restored(device: device_layer.AdbDevice, before: tuple[str, ...
     return read_power_source_lines(device) == before
 
 
+def power_lines_show_battery(lines: Sequence[str]) -> bool:
+    """
+    Report whether a battery dump's `powered:` fields all read false, i.e. the device is on battery.
+
+    Every field is required. A dump with no `powered:` line at all is raised rather than read as
+    "no charger is connected", because a battery probe that stopped reporting would otherwise look
+    like a device that is discharging.
+    """
+    values = POWERED_LINE_PATTERN.findall("\n".join(lines))
+    if not values:
+        detail = "the battery dump carried no `powered:` field, so the power source is unknown"
+        raise device_layer.ProbeError(detail)
+    return all(value == "false" for value in values)
+
+
+def device_on_own_battery(device: device_layer.AdbDevice) -> bool:
+    """Report whether the device is already discharging on its own battery rather than on a charger."""
+    return power_lines_show_battery(read_power_source_lines(device))
+
+
+def apply_power_mode(device: device_layer.AdbDevice) -> str:
+    """
+    Put the device in the discharge state a window needs, and name the mode it is in.
+
+    A device that is genuinely discharging already has the live fuel gauge this measurement wants,
+    and `cmd battery unplug` would replace that with a frozen override — the very artefact the
+    simulation was invented to work around. The override is therefore applied only when the device
+    is on a charger, and the mode it chose is recorded in the window as part of its identity.
+    """
+    if device_on_own_battery(device):
+        return POWER_SOURCE_DEVICE
+    simulate_unplug(device)
+    return POWER_SOURCE_SIMULATED
+
+
 def parse_battery_output(output: str) -> tuple[int, int, int]:
     """
     Extract charge counter (uAh), level (%), and voltage (mV) from `dumpsys battery`.
@@ -444,8 +558,16 @@ def parse_battery_output(output: str) -> tuple[int, int, int]:
     return values[0], values[1], values[2]
 
 
-def parse_proc_stat_cpu_seconds(stat_content: str, clk_tck: int = CPU_TICKS_PER_SECOND) -> float | None:
-    """Parse utime + stime from a `/proc/<pid>/stat` line and return total CPU seconds."""
+def parse_proc_stat_cpu_seconds(stat_content: str, clk_tck: int) -> float | None:
+    """
+    Parse utime + stime from a `/proc/<pid>/stat` line and return total CPU seconds.
+
+    `clk_tck` is required rather than defaulted: the tick rate is a kernel constant that is not 100 on
+    every device, and scaling by a guess would misreport every CPU percentage the budget is judged on.
+    """
+    if clk_tck <= 0:
+        detail = f"a CPU-tick rate of {clk_tck} cannot scale a tick count"
+        raise device_layer.ProbeError(detail)
     close = stat_content.rfind(")")
     if close == -1:
         return None
@@ -562,7 +684,24 @@ def read_process_uid(device: device_layer.AdbDevice, pid: int | None) -> int | N
     return int(output) if output.isdigit() else None
 
 
-def take_battery_sample(device: device_layer.AdbDevice, pid: int | None) -> BatterySample:
+def require_clk_tck(device: device_layer.AdbDevice) -> int:
+    """
+    Probe the device's kernel clock-tick rate, refusing to run without a real one.
+
+    `device_layer.read_process_cpu_clock_ticks` reads `getconf CLK_TCK`. When it cannot answer, the
+    CPU criteria cannot be scaled correctly, so the run fails loudly instead of assuming 100.
+    """
+    clk_tck = device.read_process_cpu_clock_ticks()
+    if clk_tck is None or clk_tck <= 0:
+        detail = (
+            "the device did not report its CLK_TCK rate, so process CPU ticks cannot be converted to "
+            "seconds; refusing to scale every CPU criterion by an assumed rate"
+        )
+        raise device_layer.ProbeError(detail)
+    return clk_tck
+
+
+def take_battery_sample(device: device_layer.AdbDevice, pid: int | None, clk_tck: int) -> BatterySample:
     """Read the battery fuel gauge plus the process CPU and PSS counters."""
     battery_output = device.run_adb(["shell", "dumpsys", "battery"]).decode(errors="replace")
     charge_uah, level_pct, voltage_mv = parse_battery_output(battery_output)
@@ -570,7 +709,7 @@ def take_battery_sample(device: device_layer.AdbDevice, pid: int | None) -> Batt
     cpu_seconds: float | None = None
     if pid is not None and pid > 0:
         stat_output = device.run_adb(["shell", "cat", f"/proc/{pid}/stat"]).decode(errors="replace")
-        cpu_seconds = parse_proc_stat_cpu_seconds(stat_output)
+        cpu_seconds = parse_proc_stat_cpu_seconds(stat_output, clk_tck)
 
     mem_output = device.run_adb(["shell", "dumpsys", "meminfo", device_layer.PACKAGE_NAME]).decode(errors="replace")
     return BatterySample(
@@ -596,6 +735,29 @@ def count_alarms(device: device_layer.AdbDevice) -> int:
     """Count the pending alarms `dumpsys alarm` attributes to the wallpaper package."""
     output = device.run_adb(["shell", "dumpsys", "alarm"]).decode(errors="replace")
     return sum(1 for line in output.splitlines() if device_layer.PACKAGE_NAME in line and "Alarm{" in line)
+
+
+def parse_job_count(dump: str, package: str = device_layer.PACKAGE_NAME) -> int:
+    """
+    Count the JobScheduler jobs a package holds in a `dumpsys jobscheduler` dump.
+
+    The dump's own `Registered <n> jobs:` census is required: a dump without it is not a jobscheduler
+    dump, and reading it as a zero would report "the app holds no jobs" from output that says nothing
+    about jobs at all. A dump that carries the census and no job for the package is a real zero.
+    """
+    if JOBSCHEDULER_CENSUS_PATTERN.search(dump) is None:
+        detail = (
+            "the jobscheduler dump carried no `Registered <n> jobs:` census, so it cannot be read as a "
+            "job count; refusing to report a zero"
+        )
+        raise device_layer.ProbeError(detail)
+    return sum(1 for match in JOB_LINE_PATTERN.finditer(dump) if match.group(3) == package)
+
+
+def count_jobs(device: device_layer.AdbDevice) -> int:
+    """Count the JobScheduler jobs `dumpsys jobscheduler` attributes to the wallpaper package."""
+    output = device.run_adb(["shell", "dumpsys", "jobscheduler"]).decode(errors="replace")
+    return parse_job_count(output)
 
 
 def read_batterystats_summary(device: device_layer.AdbDevice) -> str | None:
@@ -672,6 +834,28 @@ def load_records(state_dir: Path) -> list[dict[str, object]]:
     return records
 
 
+class Recorder:
+    """
+    Writes each record to the state file as it is produced, and keeps them for the caller.
+
+    Persisting per record is what makes the phases resumable: a phase interrupted part-way leaves the
+    records it completed on disk rather than holding them in a list until a `main` that may never
+    reach its append loop.
+    """
+
+    def __init__(self, state_dir: Path) -> None:
+        """Bind the recorder to the state directory its records accumulate in."""
+        self.state_dir = state_dir
+        self.records: list[Record] = []
+
+    def emit(self, record: Record) -> Record:
+        """Append one record, print where it went, and return it for the caller to keep using."""
+        path = append_record(self.state_dir, record)
+        self.records.append(record)
+        print(f"recorded {record.phase} -> {path}")
+        return record
+
+
 def build_record(device: device_layer.AdbDevice, phase: str, duration_seconds: float, **values: object) -> Record:
     """Assemble one record, stamping the build identity every report row has to carry."""
     api_level = parse_api_level(device.run_adb(["shell", "getprop", "ro.build.version.sdk"]).decode(errors="replace"))
@@ -743,17 +927,33 @@ def arm_conditions(device: device_layer.AdbDevice, arm: Arm, baseline: Baseline 
     }
 
 
-def sample_display_states(device: device_layer.AdbDevice, seconds: float) -> list[bool | None]:
-    """Sample the display state across a window and return every reading."""
+def sample_window_states(device: device_layer.AdbDevice, seconds: float) -> tuple[list[bool | None], list[bool]]:
+    """Sample the display state and the power source across a window and return every reading."""
     states: list[bool | None] = []
+    on_battery: list[bool] = []
     remaining = seconds
     while remaining > 0:
         interval = min(SAMPLE_INTERVAL_SECONDS, remaining)
         time.sleep(interval)
         remaining -= interval
         states.append(device.read_screen_on())
-        print(f"  {seconds - remaining:6.0f}s: screen_on={states[-1]}", flush=True)
-    return states
+        on_battery.append(device_on_own_battery(device))
+        print(f"  {seconds - remaining:6.0f}s: screen_on={states[-1]} on_battery={on_battery[-1]}", flush=True)
+    return states, on_battery
+
+
+def power_source_problem(on_battery: Sequence[bool]) -> str | None:
+    """
+    Return why a window is not a discharge measurement, or None when every sample was on battery.
+
+    The same shape as the arm guard: a window whose device ended up on a charger is not a measurement
+    of discharge, and recording it as one would be a fabricated result.
+    """
+    if not on_battery:
+        return "the window took no power-source sample, so it is not known to have run on battery"
+    if not all(on_battery):
+        return f"the device reported a charger connected inside the window: {list(on_battery)}"
+    return None
 
 
 def run_window(
@@ -762,20 +962,22 @@ def run_window(
     minutes: float,
     *,
     screen_on: bool,
-) -> tuple[Window, list[bool | None]]:
+    clk_tck: int,
+) -> tuple[Window, list[bool | None], list[bool]]:
     """Sample a bounded window, holding the requested display state for its whole duration."""
     if not screen_on:
         device.run_adb(["shell", "input", "keyevent", "KEYCODE_SLEEP"])
         time.sleep(2.0)
-    start = take_battery_sample(device, pid)
+    start = take_battery_sample(device, pid, clk_tck)
     seconds = minutes * 60.0
-    states = sample_display_states(device, seconds)
-    end = take_battery_sample(device, pid)
-    return Window(start_sample=start, end_sample=end, duration_seconds=end.timestamp - start.timestamp), states
+    states, on_battery = sample_window_states(device, seconds)
+    end = take_battery_sample(device, pid, clk_tck)
+    window = Window(start_sample=start, end_sample=end, duration_seconds=end.timestamp - start.timestamp)
+    return window, states, on_battery
 
 
 def phase_resources(device: device_layer.AdbDevice) -> Record:
-    """Record B2: the partial wake locks and pending alarms the app holds, with their commands."""
+    """Record B2: the partial wake locks, alarms, and jobs the app holds, with their commands."""
     pid = device.get_wallpaper_pid()
     uid = read_process_uid(device, pid)
     print(f"$ adb -s {device.serial} shell pidof {device_layer.PACKAGE_NAME} -> {pid}")
@@ -785,8 +987,10 @@ def phase_resources(device: device_layer.AdbDevice) -> Record:
         raise device_layer.ProbeError(detail)
     wake_locks = count_held_wakelocks(device, uid)
     alarms = count_alarms(device)
+    jobs = count_jobs(device)
     print(f"$ adb -s {device.serial} shell dumpsys power   (PARTIAL_WAKE_LOCK uid={uid}) -> {wake_locks}")
     print(f"$ adb -s {device.serial} shell dumpsys alarm   ({device_layer.PACKAGE_NAME}) -> {alarms}")
+    print(f"$ adb -s {device.serial} shell dumpsys jobscheduler   ({device_layer.PACKAGE_NAME}) -> {jobs}")
     summary = read_batterystats_summary(device)
     print(f"  batterystats corroboration: {summary or 'no matching lines'}")
     record = build_record(
@@ -795,29 +999,38 @@ def phase_resources(device: device_layer.AdbDevice) -> Record:
         0.0,
         wake_locks=wake_locks,
         alarms=alarms,
+        jobs=jobs,
         wallpaper_pid=pid,
         wallpaper_uid=uid,
         batterystats_summary=summary,
     )
-    print(f"wake locks={wake_locks} (budget 0), alarms={alarms} (budget 0)")
+    print(f"wake locks={wake_locks} (budget 0), alarms={alarms} (budget 0), jobs={jobs} (budget 0)")
     return record
 
 
 def phase_hidden(device: device_layer.AdbDevice, minutes: float) -> Record:
     """Record B3: hidden-state CPU over a screen-off window, with the visibility sampled."""
+    clk_tck = require_clk_tck(device)
     snapshot = DeviceStateSnapshot.capture(device)
     pid = device.get_wallpaper_pid()
     problems: list[str] = []
     prior_power = read_power_source_lines(device)
+    power_source = POWER_SOURCE_DEVICE
+    simulated = False
     try:
         snapshot.pin()
-        simulate_unplug(device)
-        window, states = run_window(device, pid, minutes, screen_on=False)
+        power_source = apply_power_mode(device)
+        simulated = power_source == POWER_SOURCE_SIMULATED
+        window, states, on_battery = run_window(device, pid, minutes, screen_on=False, clk_tck=clk_tck)
     finally:
-        problems = undo_phase_changes(device, snapshot, prior_power)
+        problems = undo_phase_changes(device, snapshot, prior_power, simulated=simulated)
     hidden_all = states and all(state is False for state in states)
     if not hidden_all:
         detail = f"the display was not off for the whole window: {states}"
+        raise device_layer.ProbeError(detail)
+    charging = power_source_problem(on_battery)
+    if charging is not None:
+        detail = f"this window is not a valid measurement: {charging}"
         raise device_layer.ProbeError(detail)
     cpu_pct = window.cpu_pct
     if cpu_pct is None:
@@ -832,7 +1045,10 @@ def phase_hidden(device: device_layer.AdbDevice, minutes: float) -> Record:
         window_minutes=minutes,
         cpu_pct=cpu_pct,
         hidden_cpu_budget_pct=MAX_HIDDEN_CPU_PCT,
+        clk_tck=clk_tck,
+        power_source=power_source,
         screen_on_samples=states,
+        on_battery_samples=on_battery,
         wall_clock_seconds=round(window.duration_seconds, 1),
         restore_problems=problems,
     )
@@ -846,24 +1062,36 @@ def phase_visible(
     minutes: float,
 ) -> Record:
     """Record one B4/B5 window on the home screen after the arm guard admits it."""
-    if not device.wake_screen():
-        detail = "the display could not be woken for a visible window"
-        raise device_layer.ProbeError(detail)
-    verify_arm(device, arm, baseline)
+    clk_tck = require_clk_tck(device)
+    # The snapshot is taken before the display is woken: a phase that starts with the display off has
+    # to record that state, so its restore can put the device back to sleep instead of leaving it on.
     snapshot = DeviceStateSnapshot.capture(device)
-    pid = device.get_wallpaper_pid() if arm is Arm.LIVE else None
-    conditions = arm_conditions(device, arm, baseline)
-    problems: list[str] = []
-    print(f"arm guard admitted {conditions['wallpaper_component']} (median luma {conditions['median_luma']})")
     prior_power = read_power_source_lines(device)
+    problems: list[str] = []
+    power_source = POWER_SOURCE_DEVICE
+    simulated = False
     try:
+        # The wake and the arm guard sit inside the try with the window, so a refusal after the
+        # display has already been woken still runs the restore below.
+        if not device.wake_screen():
+            detail = "the display could not be woken for a visible window"
+            raise device_layer.ProbeError(detail)
+        verify_arm(device, arm, baseline)
+        pid = device.get_wallpaper_pid() if arm is Arm.LIVE else None
+        conditions = arm_conditions(device, arm, baseline)
+        print(f"arm guard admitted {conditions['wallpaper_component']} (median luma {conditions['median_luma']})")
         snapshot.pin()
-        simulate_unplug(device)
-        window, states = run_window(device, pid, minutes, screen_on=True)
+        power_source = apply_power_mode(device)
+        simulated = power_source == POWER_SOURCE_SIMULATED
+        window, states, on_battery = run_window(device, pid, minutes, screen_on=True, clk_tck=clk_tck)
     finally:
-        problems = undo_phase_changes(device, snapshot, prior_power)
+        problems = undo_phase_changes(device, snapshot, prior_power, simulated=simulated)
     if states and not all(state is True for state in states):
         detail = f"the display was not on for the whole visible window: {states}"
+        raise device_layer.ProbeError(detail)
+    charging = power_source_problem(on_battery)
+    if charging is not None:
+        detail = f"this is not a discharge measurement: {charging}"
         raise device_layer.ProbeError(detail)
     if arm is Arm.LIVE and window.cpu_pct is None:
         detail = "the live wallpaper's CPU counters could not be read over a visible window"
@@ -880,7 +1108,10 @@ def phase_visible(
         cpu_pct=window.cpu_pct,
         charge_counter_start_uah=window.start_sample.charge_counter_uah,
         charge_counter_end_uah=window.end_sample.charge_counter_uah,
+        clk_tck=clk_tck,
+        power_source=power_source,
         screen_on_samples=states,
+        on_battery_samples=on_battery,
         restore_problems=problems,
         **conditions,
     )
@@ -888,22 +1119,37 @@ def phase_visible(
 
 def phase_memory(device: device_layer.AdbDevice, minutes: float) -> Record:
     """Record B6: the total-PSS growth over a long window on the live wallpaper."""
-    device.wake_screen()
-    verify_arm(device, Arm.LIVE, None)
+    clk_tck = require_clk_tck(device)
+    # Captured before the wake, like the visible phase: a phase that found the display off records it
+    # so its restore can put the device back the way it was.
     snapshot = DeviceStateSnapshot.capture(device)
-    pid = device.get_wallpaper_pid()
+    prior_power = read_power_source_lines(device)
     problems: list[str] = []
     states: list[bool | None] = []
+    on_battery: list[bool] = []
+    power_source = POWER_SOURCE_DEVICE
+    simulated = False
     try:
+        if not device.wake_screen():
+            detail = "the display could not be woken for a memory window"
+            raise device_layer.ProbeError(detail)
+        verify_arm(device, Arm.LIVE, None)
+        pid = device.get_wallpaper_pid()
         snapshot.pin()
-        before = take_battery_sample(device, pid)
+        power_source = apply_power_mode(device)
+        simulated = power_source == POWER_SOURCE_SIMULATED
+        before = take_battery_sample(device, pid, clk_tck)
         seconds = minutes * 60.0
-        states = sample_display_states(device, seconds)
-        after = take_battery_sample(device, pid)
+        states, on_battery = sample_window_states(device, seconds)
+        after = take_battery_sample(device, pid, clk_tck)
     finally:
-        problems = undo_phase_changes(device, snapshot)
+        problems = undo_phase_changes(device, snapshot, prior_power, simulated=simulated)
     if states and not all(state is True for state in states):
         detail = f"the display was not on for the whole memory window: {states}"
+        raise device_layer.ProbeError(detail)
+    charging = power_source_problem(on_battery)
+    if charging is not None:
+        detail = f"this window is not a valid measurement: {charging}"
         raise device_layer.ProbeError(detail)
     if before.total_pss_kb is None or after.total_pss_kb is None:
         detail = "a total-PSS sample could not be parsed, so growth has no value"
@@ -920,21 +1166,31 @@ def phase_memory(device: device_layer.AdbDevice, minutes: float) -> Record:
         pss_end_kb=after.total_pss_kb,
         pss_growth_kb=growth_kb,
         pss_budget_kb=MAX_PSS_GROWTH_KB,
+        clk_tck=clk_tck,
+        power_source=power_source,
         screen_on_samples=states,
+        on_battery_samples=on_battery,
         restore_problems=problems,
     )
 
 
-def phase_pilot(
+def phase_pilot(  # noqa: PLR0913 — the arms, the window shape, and the sink are all its inputs
     device: device_layer.AdbDevice,
     *,
     arm: Arm,
     baseline: Baseline | None,
     runs: int,
     minutes: float,
+    recorder: Recorder,
 ) -> list[Record]:
-    """Record the repeated windows whose spread is the device's noise floor."""
-    records: list[Record] = []
+    """
+    Record the repeated windows whose spread is the device's noise floor.
+
+    Each window is persisted as soon as it completes, and the floor is emitted as its own record
+    rather than merged into the first window's. Persisting per window is what makes the phase
+    resumable: a pilot interrupted at window three keeps the windows it completed, instead of
+    returning them to a `main` that never got to append them.
+    """
     rates: list[float] = []
     cpu_values: list[float] = []
     for run in range(1, runs + 1):
@@ -943,7 +1199,7 @@ def phase_pilot(
         record.values["run"] = run
         record.values["pilot"] = True
         record.values["runs"] = runs
-        records.append(record)
+        recorder.emit(record)
         rate = record.values.get("discharge_rate_ua")
         if not isinstance(rate, int | float):
             detail = "a visible window recorded no discharge rate, so the noise floor has no input"
@@ -956,15 +1212,20 @@ def phase_pilot(
     floor_pct = (half_width / mean) * 100.0 if mean > 0 else 0.0
     print(f"\nbaseline discharge rate: mean {mean:.0f} uA, sigma {deviation:.0f} uA, 2 sigma {half_width:.0f} uA")
     print(f"noise floor as a share of the mean: {floor_pct:.2f}%")
-    records[0].values["noise_floor_pct"] = floor_pct
-    records[0].values["noise_floor_rate_ua"] = half_width
-    records[0].values["baseline_mean_rate_ua"] = mean
+    values: dict[str, object] = {
+        "run": 0,
+        "pilot": True,
+        "runs": runs,
+        "noise_floor_pct": floor_pct,
+        "noise_floor_rate_ua": half_width,
+        "baseline_mean_rate_ua": mean,
+    }
     if cpu_values:
         cpu_mean, cpu_deviation, cpu_half_width = two_sigma_noise_floor(cpu_values)
-        records[0].values["cpu_mean_pct"] = cpu_mean
-        records[0].values["cpu_noise_floor_pct"] = cpu_half_width
+        values["cpu_mean_pct"] = cpu_mean
+        values["cpu_noise_floor_pct"] = cpu_half_width
         print(f"CPU: mean {cpu_mean:.4f}%, sigma {cpu_deviation:.4f}, 2 sigma {cpu_half_width:.4f}")
-    return records
+    return [build_record(device, "pilot_floor", 0.0, **values)]
 
 
 def numeric_values(records: Sequence[Mapping[str, object]], phase: str, key: str) -> list[float]:
@@ -1022,12 +1283,39 @@ def live_cpu_values(pairs: Sequence[tuple[Mapping[str, object], Mapping[str, obj
     return values
 
 
-def check_budget(label: str, value: float | None, budget: float, unit: str) -> str:
-    """Render one pass/fail line, refusing to pass a budget that was never measured."""
+def check_measurement_identity(records: Sequence[Mapping[str, object]]) -> None:
+    """
+    Refuse a record set that mixes builds, API levels, power modes, or tick rates.
+
+    Every record names the identity it was measured under. Aggregating records that disagree on any of
+    it would combine measurements that are not comparable, so the report refuses and names the
+    distinct values instead of producing one verdict from two builds. A field a record does not carry
+    at all is not a disagreement: an older phase record that never recorded the field simply does not
+    bound it. A field the record *does* carry with a null value is a value, not an absence — a record
+    written before the APK was built carries `"apk_sha256": null`, meaning "unknown build", and that
+    must not aggregate with a named one.
+    """
+    for identity_field in IDENTITY_FIELDS:
+        values = {record.get(identity_field) for record in records if identity_field in record}
+        if len(values) > 1:
+            named = ", ".join("unknown" if value is None else str(value) for value in sorted(values, key=str))
+            detail = (
+                f"the record set mixes {identity_field} values ({named}), so it combines measurements "
+                "from different measurement identities; re-run the phases against one build and configuration"
+            )
+            raise device_layer.ProbeError(detail)
+
+
+def check_budget(label: str, value: float | None, budget: float, unit: str) -> Verdict:
+    """Build one pass/fail verdict, refusing to pass a budget that was never measured."""
     if value is None:
-        return f"{label}: NOT MEASURED — no value was recorded, so the budget is neither passed nor failed"
-    verdict = "PASS" if value <= budget else "FAIL"
-    return f"{label}: {verdict} — {value:.4f}{unit} against {budget}{unit}"
+        return Verdict(
+            label,
+            VerdictStatus.NOT_MEASURED,
+            f"{label}: NOT MEASURED — no value was recorded, so the budget is neither passed nor failed",
+        )
+    status = VerdictStatus.PASS if value <= budget else VerdictStatus.FAIL
+    return Verdict(label, status, f"{label}: {status.value} — {value:.4f}{unit} against {budget}{unit}")
 
 
 def collect_restore_problems(records: Sequence[Mapping[str, object]]) -> list[str]:
@@ -1040,36 +1328,44 @@ def collect_restore_problems(records: Sequence[Mapping[str, object]]) -> list[st
     return problems
 
 
-def report_lines(records: Sequence[Mapping[str, object]]) -> list[str]:
-    """Build the pass/fail report against the committed thresholds."""
-    lines: list[str] = []
+def report_lines(records: Sequence[Mapping[str, object]]) -> list[Verdict]:
+    """Build the pass/fail verdicts against the committed thresholds."""
+    verdicts: list[Verdict] = []
     problems = collect_restore_problems(records)
     if problems:
-        lines.append(f"DEVICE RESTORE: FAIL - {len(problems)} problem(s) were recorded")
-        lines.extend(f"  - {problem}" for problem in problems)
+        verdicts.append(
+            Verdict(
+                "device restore",
+                VerdictStatus.FAIL,
+                f"DEVICE RESTORE: FAIL - {len(problems)} problem(s) were recorded",
+            )
+        )
+        verdicts.extend(Verdict("device restore detail", VerdictStatus.INFO, f"  - {p}") for p in problems)
 
-    resource_lines = [line for line in records if line.get("phase") == "resources"]
-    if resource_lines:
-        latest = resource_lines[-1]
-        locks = latest.get("wake_locks")
-        alarms = latest.get("alarms")
-        lines.append(check_budget("B2 wake locks", float(locks) if isinstance(locks, int | float) else None, 0.0, ""))
-        lines.append(check_budget("B2 alarms", float(alarms) if isinstance(alarms, int | float) else None, 0.0, ""))
-    else:
-        lines.append("B2 wake locks and alarms: NOT MEASURED - run the resources phase")
+    # B2 is a maximum across every resources record, not the last one: the state file is append-only,
+    # so a rerun after a nonzero census must not hide the earlier failure behind a later clean run.
+    for label, key in (("B2 wake locks", "wake_locks"), ("B2 alarms", "alarms"), ("B2 jobs", "jobs")):
+        values = numeric_values(records, "resources", key)
+        verdicts.append(check_budget(label, max(values) if values else None, 0.0, ""))
 
     hidden = numeric_values(records, "hidden", "cpu_pct")
-    lines.append(check_budget("B3 hidden CPU", max(hidden) if hidden else None, MAX_HIDDEN_CPU_PCT, "%"))
+    verdicts.append(check_budget("B3 hidden CPU", max(hidden) if hidden else None, MAX_HIDDEN_CPU_PCT, "%"))
 
     try:
         pairs = alternation_pairs(records)
     except device_layer.ProbeError as error:
-        lines.append(f"B4/B5: NOT MEASURED - {error}")
+        verdicts.append(Verdict("B4/B5", VerdictStatus.NOT_MEASURED, f"B4/B5: NOT MEASURED - {error}"))
         pairs = []
 
     baselines = sorted({str(base.get("baseline")) for _, base in pairs})
     if not pairs:
-        lines.append("B4 relative increase: NOT MEASURED - no alternation pairs were recorded")
+        verdicts.append(
+            Verdict(
+                "B4 relative increase",
+                VerdictStatus.NOT_MEASURED,
+                "B4 relative increase: NOT MEASURED - no alternation pairs were recorded",
+            )
+        )
     for baseline in baselines:
         selected = [(live, base) for live, base in pairs if base.get("baseline") == baseline]
         try:
@@ -1077,57 +1373,109 @@ def report_lines(records: Sequence[Mapping[str, object]]) -> list[str]:
                 [window_rate(base) for _, base in selected], [window_rate(live) for live, _ in selected]
             )
         except device_layer.ProbeError as error:
-            lines.append(f"B4 vs {baseline}: NOT MEASURED - {error} ({len(selected)} pairs recorded)")
+            verdicts.append(
+                Verdict(
+                    f"B4 vs {baseline}",
+                    VerdictStatus.NOT_MEASURED,
+                    f"B4 vs {baseline}: NOT MEASURED - {error} ({len(selected)} pairs recorded)",
+                )
+            )
             continue
-        lines.append(
-            f"B4 vs {baseline} relative increase: {statistics.relative_delta_pct:.3f}% "
-            f"(95% CI upper {statistics.ci_95_upper_pct:.3f}%, {statistics.sample_count} pairs, "
-            f"df {statistics.degrees_of_freedom}, t {statistics.t_critical})"
+        verdicts.append(
+            Verdict(
+                f"B4 vs {baseline}",
+                VerdictStatus.INFO,
+                f"B4 vs {baseline} relative increase: {statistics.relative_delta_pct:.3f}% "
+                f"(95% CI upper {statistics.ci_95_upper_pct:.3f}%, {statistics.sample_count} pairs, "
+                f"df {statistics.degrees_of_freedom}, t {statistics.t_critical})",
+            )
         )
         for label, value in (
             ("point estimate", statistics.relative_delta_pct),
             ("CI upper bound", statistics.ci_95_upper_pct),
         ):
-            lines.append(check_budget(f"B4 vs {baseline} {label}", value, FINAL_MAX_VISIBLE_DELTA_PCT, "%"))
+            verdicts.append(check_budget(f"B4 vs {baseline} {label}", value, FINAL_MAX_VISIBLE_DELTA_PCT, "%"))
 
     # B5 is the average visible CPU of the document's matrix, so the average is what is checked; the
     # worst window is reported beside it as the observation it is.
     try:
         cpu_values = live_cpu_values(pairs)
     except device_layer.ProbeError as error:
-        lines.append(f"B5 visible CPU: NOT MEASURED - {error}")
+        verdicts.append(
+            Verdict("B5 visible CPU", VerdictStatus.NOT_MEASURED, f"B5 visible CPU: NOT MEASURED - {error}")
+        )
         cpu_values = []
     if cpu_values:
-        lines.append(
+        verdicts.append(
             check_budget("B5 visible CPU (mean)", sum(cpu_values) / len(cpu_values), FINAL_MAX_VISIBLE_CPU_PCT, "%")
         )
-        lines.append(f"B5 worst window observed: {max(cpu_values):.4f}% over {len(cpu_values)} windows")
+        verdicts.append(
+            Verdict(
+                "B5 worst window",
+                VerdictStatus.INFO,
+                f"B5 worst window observed: {max(cpu_values):.4f}% over {len(cpu_values)} windows",
+            )
+        )
     else:
-        lines.append("B5 visible CPU: NOT MEASURED - no live window was recorded")
+        verdicts.append(
+            Verdict(
+                "B5 visible CPU",
+                VerdictStatus.NOT_MEASURED,
+                "B5 visible CPU: NOT MEASURED - no live window was recorded",
+            )
+        )
 
     growth_values = numeric_values(records, "memory", "pss_growth_kb")
-    lines.append(
+    verdicts.append(
         check_budget(
             "B6 PSS growth (worst run)", max(growth_values) if growth_values else None, MAX_PSS_GROWTH_KB, " kB"
         )
     )
-    lines.append(
-        "B1 hidden frames: NOT MEASURED HERE - the frame counter is #125 criterion 1, "
-        "and a zero-frame claim needs a console that this protocol does not own"
+    verdicts.append(
+        Verdict(
+            "B1 hidden frames",
+            VerdictStatus.OUT_OF_SCOPE,
+            "B1 hidden frames: NOT MEASURED HERE - the frame counter is #125 criterion 1, "
+            "and a zero-frame claim needs a console that this protocol does not own",
+        )
     )
-    return lines
+    return verdicts
 
 
-def phase_report(records: Sequence[Mapping[str, object]]) -> None:
-    """Print the aggregate report and every unrun check it can see."""
+def report_exit_code(verdicts: Sequence[Verdict]) -> int:
+    """
+    Derive the report's exit status from its verdicts rather than from its text.
+
+    Any FAIL is non-zero. A criterion that was never measured is non-zero too, because an acceptance
+    run that skipped a criterion has not established the acceptance; the exception is a criterion
+    explicitly out of scope for this run (B1, which is #125's), whose absence is not a failure here.
+    """
+    if any(verdict.status is VerdictStatus.FAIL for verdict in verdicts):
+        return 1
+    if any(verdict.status is VerdictStatus.NOT_MEASURED for verdict in verdicts):
+        return 1
+    return 0
+
+
+def phase_report(records: Sequence[Mapping[str, object]]) -> int:
+    """Print the aggregate report and every unrun check it can see, returning its exit status."""
+    check_measurement_identity(records)
     revisions = {str(record.get("revision")) for record in records}
     api_levels = {record.get("api_level") for record in records}
     print(f"records: {len(records)}")
     print(f"source revisions: {', '.join(sorted(revisions))}")
     print(f"API levels: {', '.join(str(level) for level in sorted(api_levels, key=str))}")
+    for identity_field in IDENTITY_FIELDS:
+        if identity_field == "api_level":
+            continue
+        values = sorted(
+            {record.get(identity_field) for record in records if record.get(identity_field) is not None}, key=str
+        )
+        if values:
+            print(f"{identity_field}: {', '.join(str(value) for value in values)}")
     print(f"committed B4 threshold: {FINAL_MAX_VISIBLE_DELTA_PCT}% relative increase")
     print(f"committed B5 threshold: {FINAL_MAX_VISIBLE_CPU_PCT}% of one core")
-    floors = [record for record in records if record.get("noise_floor_rate_ua") is not None]
+    floors = [record for record in records if record.get("phase") == "pilot_floor"]
     if floors:
         latest_floor = floors[-1]
         print(
@@ -1140,8 +1488,10 @@ def phase_report(records: Sequence[Mapping[str, object]]) -> None:
             f"CPU 2 sigma {PILOT_CPU_NOISE_FLOOR_PCT}% of one core ({PILOT_REPORT})"
         )
     print()
-    for line in report_lines(records):
-        print(line)
+    verdicts = report_lines(records)
+    for verdict in verdicts:
+        print(verdict.line)
+    return report_exit_code(verdicts)
 
 
 def add_window_arguments(parser: argparse.ArgumentParser, default_minutes: float) -> None:
@@ -1215,18 +1565,31 @@ def build_argument_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def dispatch(args: argparse.Namespace, device: device_layer.AdbDevice) -> list[Record]:
-    """Run the requested phase and return the records it produced."""
+def dispatch(args: argparse.Namespace, device: device_layer.AdbDevice, recorder: Recorder) -> list[Record]:
+    """Run the requested phase, writing each record to the state file as it is produced."""
     if args.command == "resources":
-        return [phase_resources(device)]
+        return [recorder.emit(phase_resources(device))]
     if args.command == "hidden":
-        return [phase_hidden(device, args.minutes)]
+        return [recorder.emit(phase_hidden(device, args.minutes))]
     if args.command == "visible":
-        return [phase_visible(device, arm=Arm(args.arm), baseline=baseline_of(args), minutes=args.minutes)]
+        return [
+            recorder.emit(phase_visible(device, arm=Arm(args.arm), baseline=baseline_of(args), minutes=args.minutes))
+        ]
     if args.command == "pilot":
-        return phase_pilot(device, arm=Arm(args.arm), baseline=baseline_of(args), runs=args.runs, minutes=args.minutes)
+        # `phase_pilot` emits its windows itself as each completes and returns only the floor record.
+        return [
+            recorder.emit(record)
+            for record in phase_pilot(
+                device,
+                arm=Arm(args.arm),
+                baseline=baseline_of(args),
+                runs=args.runs,
+                minutes=args.minutes,
+                recorder=recorder,
+            )
+        ]
     if args.command == "memory":
-        return [phase_memory(device, args.minutes)]
+        return [recorder.emit(phase_memory(device, args.minutes))]
     return []
 
 
@@ -1245,25 +1608,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         except device_layer.ProbeError as error:
             print(f"ERROR: {device_layer.error_detail(error)}", file=sys.stderr)
             return 1
-        phase_report(records)
-        return 0
+        try:
+            return phase_report(records)
+        except device_layer.ProbeError as error:
+            print(f"ERROR: {device_layer.error_detail(error)}", file=sys.stderr)
+            return 1
     serial = device_layer.select_target_serial(args.serial)
     device = device_layer.AdbDevice(serial)
+    recorder = Recorder(state_dir)
     try:
         sdk = device.run_adb(["shell", "getprop", "ro.build.version.sdk"]).decode(errors="replace")
         print(f"$ adb -s {serial}  (API {parse_api_level(sdk)})")
-        records = dispatch(args, device)
+        dispatch(args, device, recorder)
     except (subprocess.SubprocessError, OSError, device_layer.ProbeError) as error:
         print(f"ERROR: {device_layer.error_detail(error)}", file=sys.stderr)
         return 1
-    for record in records:
-        path = append_record(state_dir, record)
-        print(f"recorded {record.phase} -> {path}")
-    restore_failures: list[str] = []
-    for record in records:
-        problems = record.values.get("restore_problems")
-        if isinstance(problems, list):
-            restore_failures.extend(str(problem) for problem in problems)
+    restore_failures = collect_restore_problems([record.values for record in recorder.records])
     if restore_failures:
         print("DEVICE RESTORE FAILURES:", file=sys.stderr)
         for failure in restore_failures:

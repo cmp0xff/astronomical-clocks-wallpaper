@@ -17,8 +17,9 @@ resource budgets and avoid degrading battery life:
   "only use CPU while it is visible". Zero frames may be rendered while hidden or screen-off.
 - **Hardware charge counter**: software battery estimates (for example the per-app attribution in
   `dumpsys batterystats`) are model-driven approximations with known noise. This protocol uses the
-  fuel-gauge hardware charge counter (`dumpsys battery` `Charge counter`) under simulated unplugged
-  conditions (`cmd battery unplug`) as the primary ground truth.
+  fuel-gauge hardware charge counter (`dumpsys battery` `Charge counter`) as the primary ground
+  truth, read with the device on its own battery when it is discharging and under simulated unplugged
+  conditions (`cmd battery unplug`) otherwise.
 
 ## Acceptance Criteria Matrix
 
@@ -37,9 +38,18 @@ its own evidence. No single invocation, and above all no single window, blocks f
 
 ## Methodology and Noise Floor Policy
 
-1. **Simulated Discharge**: `cmd battery unplug` makes the device report itself as running on
-   battery while it stays on USB for telemetry, and `cmd battery reset` clears the override. Both
-   commands are documented by the device's own `adb shell cmd battery -h`.
+1. **Discharge mode**: a window is measured on the device's own battery when the device is genuinely
+   discharging, and under a simulated unplug otherwise. On a device already on battery the harness
+   leaves the live fuel gauge alone, because `cmd battery unplug` "force[s] battery unplugged,
+   **freezing battery state**" (the device's own `adb shell cmd battery -h`) — applying it to a
+   discharging device would re-create the frozen gauge the simulation exists to work around. When the
+   device is on a charger, `cmd battery unplug` makes it report itself as running on battery while it
+   stays on USB for telemetry, and `cmd battery reset` clears the override. The mode a window ran
+   under is recorded as its `power_source` (`device` or `simulated`) and is part of the measurement
+   identity the report checks, so a run cannot silently mix a live gauge with a frozen one; the
+   override is cleared only when it was applied. The power source is re-sampled inside the window,
+   and a window that saw a charger appear is refused as not a discharge measurement rather than
+   recorded as one.
 2. **Environmental Controls**:
    - Screen brightness pinned at a constant level with auto-brightness off.
    - Airplane mode enabled, to take the cellular and Wi-Fi radios out of the comparison.
