@@ -280,7 +280,12 @@ class WakeLockAndAlarmProbeTest(unittest.TestCase):
     def test_a_dump_without_the_census_is_an_error_not_a_zero(self) -> None:
         # What a truncated or reshaped `dumpsys power` leaves behind: output that names no census and
         # therefore says nothing about wake locks at all.
-        for dump in ("", "Power Manager Service:\n  mWakefulness=Awake\n", POWER_DUMP.split("Wake Locks")[0]):
+        censusless = (
+            "",
+            "Power Manager Service:\n  mWakefulness=Awake\n",
+            POWER_DUMP.split("Wake Locks", maxsplit=1)[0],
+        )
+        for dump in censusless:
             with self.subTest(dump=dump[:30]), self.assertRaises(device_layer.ProbeError):
                 subject.parse_wakelock_count(dump, 10026)
 
@@ -290,7 +295,12 @@ class WakeLockAndAlarmProbeTest(unittest.TestCase):
         self.assertEqual(0, subject.parse_alarm_count(other_package))
 
     def test_an_alarm_dump_without_the_census_is_an_error_not_a_zero(self) -> None:
-        for dump in ("", "Alarm Manager State:\n  Settings:\n", ALARM_DUMP.split("Pending alarm batches")[0]):
+        censusless = (
+            "",
+            "Alarm Manager State:\n  Settings:\n",
+            ALARM_DUMP.split("Pending alarm batches", maxsplit=1)[0],
+        )
+        for dump in censusless:
             with self.subTest(dump=dump[:30]), self.assertRaises(device_layer.ProbeError):
                 subject.parse_alarm_count(dump)
 
