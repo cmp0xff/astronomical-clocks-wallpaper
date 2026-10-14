@@ -119,7 +119,7 @@ MAX_PSS_GROWTH_KB: Final = 6144
 # honesty rather than leniency: below it this device cannot tell a real difference from its own
 # variation, so the alternative to a permissive threshold is a criterion that reports a difference it
 # has not resolved. The floor is a property of this device's gauge and load rather than evidence
-# about the wallpaper: a worn cell and a gauge that reports in 1000 uAh steps both widen it, and it
+# about the wallpaper: a worn cell and a gauge whose own step is 4.5 mAh both widen it, and it
 # has to be re-measured per device. The CPU channel's floor is 0.0894% of one core, below the
 # provisional 3%, so the B5 threshold stays as stated.
 FINAL_MAX_VISIBLE_DELTA_PCT: Final = 12.0123  # greater of the provisional 5% and the measured floor
@@ -133,8 +133,8 @@ PILOT_REPORT: Final = "docs/testing/reports/2026-10-13-test-126-drain-comparison
 
 # Two-sided 95% Student t critical values by degrees of freedom, from the table in NIST/SEMATECH
 # e-Handbook of Statistical Methods, section 1.3.6.7.3 (retrieved 2026-10-12), which is the free
-# redistillation of the standard tables. Beyond 30 degrees of freedom the normal value 1.960 is used,
-# where the two agree to three decimals.
+# redistillation of the standard tables. Past 30 degrees of freedom the table stops and the expansion
+# at `T_TAIL_TERMS` takes over; the normal value is deliberately *not* used there.
 T_CRITICAL_95_BY_DF: Final = {
     1: 12.706,
     2: 4.303,
@@ -202,11 +202,17 @@ RESTORE_SETTLE_SECONDS: Final = 2.0
 # measured under is part of the measurement's identity, so it is recorded and checked.
 POWER_SOURCE_DEVICE: Final = "device"
 POWER_SOURCE_SIMULATED: Final = "simulated"
-# The fields that say a record was taken from the same build, device configuration, and channel, so
-# aggregating a set that mixes them would combine measurements that are not comparable. `revision`
-# is deliberately not one of them: a harness revision that changes only documentation or the report's
+# The fields that say a record was taken from the same device, build, configuration, and channel, so
+# aggregating a set that mixes them would combine measurements that are not comparable. Both the
+# threshold and the noise floor behind it are per device, so the device itself is part of the
+# identity: two devices at the same build and API level are still two measurements. `revision` is
+# deliberately not one of them: a harness revision that changes only documentation or the report's
 # own aggregation does not change how a window was measured, and the reports say when that happened.
-IDENTITY_FIELDS: Final = ("apk_sha256", "api_level", "power_source", "clk_tck")
+IDENTITY_FIELDS: Final = ("device_id", "apk_sha256", "api_level", "power_source", "clk_tck")
+# How the device's identity is recorded. The digest is salted so that it is meaningful only inside
+# this project's own state files, and truncated because it is only ever compared for equality.
+DEVICE_ID_SALT: Final = "godaniya-126 device|"
+DEVICE_ID_CHARS: Final = 12
 
 
 class Arm(StrEnum):
@@ -238,10 +244,26 @@ class VerdictStatus(StrEnum):
     # there is no way to put the stock image back — so the document requires that secondary baseline
     # only where the device permits setting one, and its absence is not a failure of the run while the
     # comparison the criterion is gated on stays the stock one. The report has to say so out loud,
-    # which is what this status is for: silence here would read as a complete verdict.
+    # which is what this status is for: silence here would read as a complete verdict. It is granted
+    # only on the run's own declaration — `report --black-unavailable <reason>` — never inferred from
+    # the windows being absent, because a run that simply skipped that arm leaves the same state file
+    # as one on a device that cannot set a static wallpaper.
     DEVICE_LIMITED = "NOT MEASURED (DEVICE-LIMITED)"
     # A line the report prints beside the verdicts but that is not itself a pass/fail criterion.
     INFO = "INFO"
+
+
+# The statuses a report may still exit zero on. This is an allowlist rather than a list of the ones
+# that gate: a member added later describes something this protocol has not established, and the safe
+# default for an unestablished criterion is to gate until it is deliberately listed here.
+NON_GATING_STATUSES: Final = frozenset(
+    {
+        VerdictStatus.PASS,
+        VerdictStatus.INFO,
+        VerdictStatus.OUT_OF_SCOPE,
+        VerdictStatus.DEVICE_LIMITED,
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -260,7 +282,7 @@ class Verdict:
     @property
     def is_failure(self) -> bool:
         """Whether this verdict should make the report exit non-zero."""
-        return self.status is VerdictStatus.FAIL
+        return self.status not in NON_GATING_STATUSES
 
 
 @dataclass(frozen=True)
@@ -389,11 +411,11 @@ class DeviceStateSnapshot:
         """
         Read the state a measurement phase pins, including the display's own power state.
 
-        The four settings `pin()` writes are required rather than best-effort: a value that could not
-        be read is a value the restore cannot put back, and skipping it would leave the shared device
-        changed by a phase that reported success. The stay-awake setting is the one exception — it is
-        legitimately unset on a device that never had it, and an unset value *is* captured, as `None`,
-        and restored by deleting the key.
+        Four of the settings `pin()` writes are required rather than best-effort: a value that could
+        not be read is a value the restore cannot put back, and skipping it would leave the shared
+        device changed by a phase that reported success. The stay-awake setting is the one exception —
+        it is legitimately unset on a device that never had it, and an unset value *is* captured, as
+        `None`, and restored by deleting the key.
         """
         return cls(
             device,
@@ -719,9 +741,10 @@ def t_critical_95(degrees_of_freedom: int) -> float:
     """
     Return the two-sided 95% Student t critical value for `degrees_of_freedom`.
 
-    The table is tabulated to 30 degrees of freedom; beyond that the normal value is used, where
-    the two agree to three decimals. Every tabulated value is returned as tabulated, so a caller
-    with two or three pairs reads 4.303 or 3.182 rather than the four-pair 3.182 the previous
+    The table is tabulated to 30 degrees of freedom. Past it the value is *not* the normal 1.960, which
+    would understate the interval: the Cornish-Fisher expansion of the t quantile in powers of 1/nu is
+    used instead, as the terms above it describe. Every tabulated value is returned as tabulated, so a
+    caller with two or three pairs reads 4.303 or 3.182 rather than the four-pair 3.182 the previous
     two-branch lookup collapsed them to. How many pairs a comparison needs is enforced by
     `paired_statistics`, which is where the sample count is known.
     """
@@ -867,16 +890,21 @@ def parse_alarm_count(dump: str, package: str = device_layer.PACKAGE_NAME) -> in
     """
     Count the pending alarms a `dumpsys alarm` dump attributes to one package.
 
-    As with the power and jobscheduler probes, the dump's own `Pending alarm batches: <n>` census is
-    required so that a truncated or reshaped dump is an error rather than a zero.
+    As with the power and jobscheduler probes, the dump's own `<n> pending alarms:` census is required
+    so that a truncated or reshaped dump is an error rather than a zero.
     """
     if ALARM_CENSUS_PATTERN.search(dump) is None:
         detail = (
-            "the alarm dump carried no `Pending alarm batches:` census, so it cannot be read as an "
+            "the alarm dump carried no `pending alarms:` census, so it cannot be read as an "
             "alarm count; refusing to report a zero"
         )
         raise device_layer.ProbeError(detail)
-    return sum(1 for line in dump.splitlines() if package in line and "Alarm{" in line)
+    # The package is matched as a whole token, not as a substring, for the reason the uid is: an alarm
+    # owned by a package such as `…astronomicalclockswallpaper.debug2` contains this app's name as a
+    # prefix, and counting it would report a B2 failure the app did not cause. The dump prints the
+    # package as the last token inside `Alarm{...}`, so it is delimited there in the text.
+    package_field = re.compile(rf"(?<![\w.]){re.escape(package)}(?![\w.])")
+    return sum(1 for line in dump.splitlines() if "Alarm{" in line and package_field.search(line))
 
 
 def count_held_wakelocks(device: device_layer.AdbDevice, app_uid: int | None) -> int:
@@ -954,6 +982,23 @@ def read_apk_sha256() -> str | None:
     return hashlib.sha256(apk.read_bytes()).hexdigest()
 
 
+def device_identity(device: device_layer.AdbDevice) -> str:
+    """
+    Name the device a record was measured on, without naming the device.
+
+    The serial is the only stable handle the harness has on which physical device a window ran on,
+    and it cannot be recorded as it stands: `docs/device-testing.md` keeps the model, OEM, and serial
+    off public surfaces, and `phase_report` prints every identity field. A salted digest distinguishes
+    one device from another while disclosing neither, and it is what stops two devices' records from
+    aggregating into one verdict.
+    """
+    serial = device.serial
+    if not serial:
+        detail = "the target device reported no serial, so a record cannot say which device it measured"
+        raise device_layer.ProbeError(detail)
+    return hashlib.sha256(f"{DEVICE_ID_SALT}{serial}".encode()).hexdigest()[:DEVICE_ID_CHARS]
+
+
 def record_path(state_dir: Path) -> Path:
     """Return the JSON Lines file the phase records accumulate in."""
     return state_dir / RECORD_FILE_NAME
@@ -1020,7 +1065,7 @@ class Recorder:
 
 
 def build_record(device: device_layer.AdbDevice, phase: str, duration_seconds: float, **values: object) -> Record:
-    """Assemble one record, stamping the build identity every report row has to carry."""
+    """Assemble one record, stamping the device and build identity every report row has to carry."""
     api_level = parse_api_level(device.run_adb(["shell", "getprop", "ro.build.version.sdk"]).decode(errors="replace"))
     return Record(
         phase=phase,
@@ -1029,7 +1074,9 @@ def build_record(device: device_layer.AdbDevice, phase: str, duration_seconds: f
         apk_sha256=read_apk_sha256(),
         api_level=api_level,
         duration_seconds=duration_seconds,
-        values=dict(values),
+        # The device is stamped here rather than passed in: every record has to carry it, so there is
+        # no call site that could forget it.
+        values={**values, "device_id": device_identity(device)},
     )
 
 
@@ -1141,7 +1188,7 @@ def verify_arm(device: device_layer.AdbDevice, arm: Arm, baseline: Baseline | No
 
 
 def arm_conditions(device: device_layer.AdbDevice, arm: Arm, baseline: Baseline | None) -> dict[str, object]:
-    """Describe the verified arm for the record, including the luminance the guard admitted."""
+    """Describe the verified arm for the record, including the luminance recorded for it."""
     return {
         "arm": arm.value,
         "baseline": baseline.value if baseline else None,
@@ -1198,8 +1245,17 @@ def ensure_visible_home(device: device_layer.AdbDevice) -> None:
     if device.read_screen_on() is not True:
         detail = "the display did not read back as on while the home screen was being established"
         raise device_layer.ProbeError(detail)
-    if device.read_keyguard_locked() is True:
+    # The keyguard read is three-valued — locked, unlocked, and could not be determined — and only a
+    # positive *unlocked* reading shows the home screen is what the window will measure. Treating an
+    # unreadable dump as "not locked" is the same defect as reading an unparsable probe as a zero: a
+    # locked device would have its lock screen measured for the whole window while the bound home
+    # component still matched the requested arm.
+    keyguard = device.read_keyguard_locked()
+    if keyguard is True:
         detail = "the device is still locked after dismissing the keyguard, so the home screen is not displayed"
+        raise device_layer.ProbeError(detail)
+    if keyguard is None:
+        detail = "the keyguard state could not be read, so it cannot be shown that the home screen is displayed"
         raise device_layer.ProbeError(detail)
 
 
@@ -1255,6 +1311,80 @@ def phase_resources(device: device_layer.AdbDevice) -> Record:
     return record
 
 
+def require_hidden_measurement(
+    window: Window,
+    states: Sequence[bool | None],
+    on_battery: Sequence[bool],
+) -> float:
+    """
+    Refuse a hidden window that is not a B3 measurement, returning the CPU it measured.
+
+    A window whose display came on, that saw a charger, or whose process CPU could not be read is not
+    the measurement B3 is defined on. These checks run after the phase's restore has been attempted,
+    so each refusal is raised from here rather than beside that path: the caller runs this inside the
+    `try` that persists the restore problems, and a refusal means the phase aborted with the device
+    possibly still changed.
+    """
+    if not states or not all(state is False for state in states):
+        detail = f"the display was not off for the whole window: {states}"
+        raise device_layer.ProbeError(detail)
+    charging = power_source_problem(on_battery)
+    if charging is not None:
+        detail = f"this window is not a valid measurement: {charging}"
+        raise device_layer.ProbeError(detail)
+    cpu_pct = window.cpu_pct
+    if cpu_pct is None:
+        detail = "the wallpaper process's CPU counters could not be read over the hidden window"
+        raise device_layer.ProbeError(detail)
+    return cpu_pct
+
+
+def require_visible_measurement(
+    window: Window,
+    states: Sequence[bool | None],
+    on_battery: Sequence[bool],
+    arm: Arm,
+) -> float:
+    """
+    Refuse a visible window that is not a B4/B5 measurement, returning its discharge rate.
+
+    `Window.discharge_rate_ua` is one of the refusals — it raises when the pack gained charge across
+    the window — so it is read here, inside the same path as the others, rather than at the print that
+    happens to need it first.
+    """
+    if states and not all(state is True for state in states):
+        detail = f"the display was not on for the whole visible window: {states}"
+        raise device_layer.ProbeError(detail)
+    charging = power_source_problem(on_battery)
+    if charging is not None:
+        detail = f"this is not a discharge measurement: {charging}"
+        raise device_layer.ProbeError(detail)
+    if arm is Arm.LIVE and window.cpu_pct is None:
+        detail = "the live wallpaper's CPU counters could not be read over a visible window"
+        raise device_layer.ProbeError(detail)
+    return window.discharge_rate_ua
+
+
+def require_memory_measurement(
+    states: Sequence[bool | None],
+    on_battery: Sequence[bool],
+    before: BatterySample,
+    after: BatterySample,
+) -> int:
+    """Refuse a memory window that is not a B6 measurement, returning the total-PSS growth in kB."""
+    if states and not all(state is True for state in states):
+        detail = f"the display was not on for the whole memory window: {states}"
+        raise device_layer.ProbeError(detail)
+    charging = power_source_problem(on_battery)
+    if charging is not None:
+        detail = f"this window is not a valid measurement: {charging}"
+        raise device_layer.ProbeError(detail)
+    if before.total_pss_kb is None or after.total_pss_kb is None:
+        detail = "a total-PSS sample could not be parsed, so growth has no value"
+        raise device_layer.ProbeError(detail)
+    return after.total_pss_kb - before.total_pss_kb
+
+
 def phase_hidden(device: device_layer.AdbDevice, minutes: float, *, recorder: Recorder) -> Record:
     """Record B3: hidden-state CPU over a screen-off window, with the visibility sampled."""
     clk_tck = require_clk_tck(device)
@@ -1279,37 +1409,32 @@ def phase_hidden(device: device_layer.AdbDevice, minutes: float, *, recorder: Re
             window, states, on_battery = run_window(device, pid, minutes, screen_on=False, clk_tck=clk_tck)
         finally:
             problems = undo_phase_changes(device, snapshot, prior_power, simulated=simulated)
+        # The acceptance checks and the record build sit inside this `try`, after the restore, rather
+        # than after the `except`: a window this phase refuses once the restore has already run is
+        # still an abort, and the restore problems it collected have to reach disk with it instead of
+        # leaving the shared device changed with nothing saying so. That is why the checks are a
+        # function of their own — they belong to that path rather than sitting beside it.
+        cpu_pct = require_hidden_measurement(window, states, on_battery)
+        print(f"hidden window {window.duration_seconds:.1f}s: screen_on readings={states}")
+        print(f"CPU {cpu_pct:.4f}% of one core against the {MAX_HIDDEN_CPU_PCT}% budget")
+        record = build_record(
+            device,
+            "hidden",
+            window.duration_seconds,
+            window_minutes=minutes,
+            cpu_pct=cpu_pct,
+            hidden_cpu_budget_pct=MAX_HIDDEN_CPU_PCT,
+            clk_tck=clk_tck,
+            power_source=power_source,
+            screen_on_samples=states,
+            on_battery_samples=on_battery,
+            wall_clock_seconds=round(window.duration_seconds, 1),
+            restore_problems=problems,
+        )
     except Exception as error:
         emit_aborted_restore_record(recorder, device, "hidden", error, problems)
         raise
-    hidden_all = states and all(state is False for state in states)
-    if not hidden_all:
-        detail = f"the display was not off for the whole window: {states}"
-        raise device_layer.ProbeError(detail)
-    charging = power_source_problem(on_battery)
-    if charging is not None:
-        detail = f"this window is not a valid measurement: {charging}"
-        raise device_layer.ProbeError(detail)
-    cpu_pct = window.cpu_pct
-    if cpu_pct is None:
-        detail = "the wallpaper process's CPU counters could not be read over the hidden window"
-        raise device_layer.ProbeError(detail)
-    print(f"hidden window {window.duration_seconds:.1f}s: screen_on readings={states}")
-    print(f"CPU {cpu_pct:.4f}% of one core against the {MAX_HIDDEN_CPU_PCT}% budget")
-    return build_record(
-        device,
-        "hidden",
-        window.duration_seconds,
-        window_minutes=minutes,
-        cpu_pct=cpu_pct,
-        hidden_cpu_budget_pct=MAX_HIDDEN_CPU_PCT,
-        clk_tck=clk_tck,
-        power_source=power_source,
-        screen_on_samples=states,
-        on_battery_samples=on_battery,
-        wall_clock_seconds=round(window.duration_seconds, 1),
-        restore_problems=problems,
-    )
+    return record
 
 
 def phase_visible(
@@ -1346,38 +1471,35 @@ def phase_visible(
             window, states, on_battery = run_window(device, pid, minutes, screen_on=True, clk_tck=clk_tck)
         finally:
             problems = undo_phase_changes(device, snapshot, prior_power, simulated=simulated)
+        # The acceptance checks and the record build sit inside this `try`, after the restore, rather
+        # than after the `except`: a window this phase refuses once the restore has already run is
+        # still an abort, and the restore problems it collected have to reach disk with it instead of
+        # leaving the shared device changed with nothing saying so. That is why the checks are a
+        # function of their own — they belong to that path rather than sitting beside it.
+        discharge_rate_ua = require_visible_measurement(window, states, on_battery, arm)
+        print(f"window {window.duration_seconds:.1f}s: discharge {window.discharge_uah} uAh")
+        print(f"discharge rate {discharge_rate_ua:.0f} uA, CPU {window.cpu_pct}% of one core")
+        record = build_record(
+            device,
+            "visible",
+            window.duration_seconds,
+            window_minutes=minutes,
+            discharge_uah=window.discharge_uah,
+            discharge_rate_ua=discharge_rate_ua,
+            cpu_pct=window.cpu_pct,
+            charge_counter_start_uah=window.start_sample.charge_counter_uah,
+            charge_counter_end_uah=window.end_sample.charge_counter_uah,
+            clk_tck=clk_tck,
+            power_source=power_source,
+            screen_on_samples=states,
+            on_battery_samples=on_battery,
+            restore_problems=problems,
+            **conditions,
+        )
     except Exception as error:
         emit_aborted_restore_record(recorder, device, "visible", error, problems)
         raise
-    if states and not all(state is True for state in states):
-        detail = f"the display was not on for the whole visible window: {states}"
-        raise device_layer.ProbeError(detail)
-    charging = power_source_problem(on_battery)
-    if charging is not None:
-        detail = f"this is not a discharge measurement: {charging}"
-        raise device_layer.ProbeError(detail)
-    if arm is Arm.LIVE and window.cpu_pct is None:
-        detail = "the live wallpaper's CPU counters could not be read over a visible window"
-        raise device_layer.ProbeError(detail)
-    print(f"window {window.duration_seconds:.1f}s: discharge {window.discharge_uah} uAh")
-    print(f"discharge rate {window.discharge_rate_ua:.0f} uA, CPU {window.cpu_pct}% of one core")
-    return build_record(
-        device,
-        "visible",
-        window.duration_seconds,
-        window_minutes=minutes,
-        discharge_uah=window.discharge_uah,
-        discharge_rate_ua=window.discharge_rate_ua,
-        cpu_pct=window.cpu_pct,
-        charge_counter_start_uah=window.start_sample.charge_counter_uah,
-        charge_counter_end_uah=window.end_sample.charge_counter_uah,
-        clk_tck=clk_tck,
-        power_source=power_source,
-        screen_on_samples=states,
-        on_battery_samples=on_battery,
-        restore_problems=problems,
-        **conditions,
-    )
+    return record
 
 
 def phase_memory(device: device_layer.AdbDevice, minutes: float, *, recorder: Recorder) -> Record:
@@ -1408,37 +1530,33 @@ def phase_memory(device: device_layer.AdbDevice, minutes: float, *, recorder: Re
             after = take_battery_sample(device, pid, clk_tck)
         finally:
             problems = undo_phase_changes(device, snapshot, prior_power, simulated=simulated)
+        # The acceptance checks and the record build sit inside this `try`, after the restore, rather
+        # than after the `except`: a window this phase refuses once the restore has already run is
+        # still an abort, and the restore problems it collected have to reach disk with it instead of
+        # leaving the shared device changed with nothing saying so. That is why the checks are a
+        # function of their own — they belong to that path rather than sitting beside it.
+        growth_kb = require_memory_measurement(states, on_battery, before, after)
+        print(f"total PSS {before.total_pss_kb} -> {after.total_pss_kb} kB over {minutes:.1f} min")
+        print(f"growth {growth_kb} kB against the {MAX_PSS_GROWTH_KB} kB budget")
+        record = build_record(
+            device,
+            "memory",
+            seconds,
+            window_minutes=minutes,
+            pss_start_kb=before.total_pss_kb,
+            pss_end_kb=after.total_pss_kb,
+            pss_growth_kb=growth_kb,
+            pss_budget_kb=MAX_PSS_GROWTH_KB,
+            clk_tck=clk_tck,
+            power_source=power_source,
+            screen_on_samples=states,
+            on_battery_samples=on_battery,
+            restore_problems=problems,
+        )
     except Exception as error:
         emit_aborted_restore_record(recorder, device, "memory", error, problems)
         raise
-    if states and not all(state is True for state in states):
-        detail = f"the display was not on for the whole memory window: {states}"
-        raise device_layer.ProbeError(detail)
-    charging = power_source_problem(on_battery)
-    if charging is not None:
-        detail = f"this window is not a valid measurement: {charging}"
-        raise device_layer.ProbeError(detail)
-    if before.total_pss_kb is None or after.total_pss_kb is None:
-        detail = "a total-PSS sample could not be parsed, so growth has no value"
-        raise device_layer.ProbeError(detail)
-    growth_kb = after.total_pss_kb - before.total_pss_kb
-    print(f"total PSS {before.total_pss_kb} -> {after.total_pss_kb} kB over {minutes:.1f} min")
-    print(f"growth {growth_kb} kB against the {MAX_PSS_GROWTH_KB} kB budget")
-    return build_record(
-        device,
-        "memory",
-        seconds,
-        window_minutes=minutes,
-        pss_start_kb=before.total_pss_kb,
-        pss_end_kb=after.total_pss_kb,
-        pss_growth_kb=growth_kb,
-        pss_budget_kb=MAX_PSS_GROWTH_KB,
-        clk_tck=clk_tck,
-        power_source=power_source,
-        screen_on_samples=states,
-        on_battery_samples=on_battery,
-        restore_problems=problems,
-    )
+    return record
 
 
 def phase_pilot(  # noqa: PLR0913 — the arms, the window shape, and the sink are all its inputs
@@ -1635,6 +1753,14 @@ def short_window_reason(record: Mapping[str, object]) -> str | None:
             f"a {phase} record carries no `duration_seconds`, so its window cannot be shown to be the "
             f"documented {minimum / 60.0:.0f} minutes"
         )
+    # `inf` and `nan` are written by a hand-edit or a corrupt record and neither is below the
+    # threshold — `nan` is not below anything — so a comparison alone would admit them as windows of
+    # the documented length. The CLI refuses them by name for the same reason; so does this.
+    if not math.isfinite(duration):
+        return (
+            f"a {phase} record's window ran {duration!r}s, which is not a finite length of time, so it "
+            f"cannot be shown to be the documented {minimum / 60.0:.0f} minutes"
+        )
     if duration < threshold:
         return (
             f"a {phase} record's window ran {duration:.1f}s, below the documented "
@@ -1643,33 +1769,56 @@ def short_window_reason(record: Mapping[str, object]) -> str | None:
     return None
 
 
+def black_baseline_verdict(declared_reason: str | None) -> Verdict:
+    """
+    Build B4's secondary-baseline verdict from the run's declaration, or from its absence.
+
+    The black static baseline is required only where the device permits setting one, and the harness
+    cannot tell "this device cannot set a static wallpaper" from "this run did not try": both leave the
+    state file without those windows. Inferring the exemption from that absence is what let a run skip
+    the document's secondary baseline and still exit zero, so the exemption is a declaration instead \u2014
+    `report --black-unavailable <reason>`. A run without one carries the criterion as unmeasured, which
+    gates like any other unmeasured criterion; a run with one has the reason quoted into the line, so
+    the declaration is part of the output the report document carries.
+    """
+    if declared_reason:
+        return Verdict(
+            "B4 vs black",
+            VerdictStatus.DEVICE_LIMITED,
+            "B4 vs black: NOT MEASURED (DEVICE-LIMITED) \u2014 the run declared that this device cannot "
+            f"set a static wallpaper: {declared_reason}. That baseline is required only where the device "
+            "permits setting one, so the dark-image comparison is left uncalibrated rather than assumed "
+            "equal to stock",
+        )
+    return Verdict(
+        "B4 vs black",
+        VerdictStatus.NOT_MEASURED,
+        "B4 vs black: NOT MEASURED - no black baseline windows were recorded and the run did not "
+        "declare the device unable to set one, so the document's secondary baseline is unmeasured "
+        "rather than exempt; pass --black-unavailable <reason> to record that the device is the reason",
+    )
+
+
 def b4_baseline_verdicts(
     pairs: Sequence[tuple[Mapping[str, object], Mapping[str, object]]],
+    *,
+    black_unavailable: str | None = None,
 ) -> list[Verdict]:
     """
     Build B4's verdicts, one block per documented baseline rather than one per recorded baseline.
 
     A block per *observed* baseline is what let a stock-only state file carry a complete-looking
     verdict: the secondary comparison was simply absent, and nothing in the report said so. The stock
-    comparison is the one B4 is gated on. The black static baseline is the document's secondary one and
-    is required only where the device permits setting it, so a run without those windows says so
-    explicitly instead of leaving the reader to notice a missing block.
+    comparison is the one B4 is gated on. The black static baseline is the document's secondary one, so
+    a run without those windows says so explicitly instead of leaving the reader to notice a missing
+    block \u2014 and says whether the device or the run is the reason (see `black_baseline_verdict`).
     """
     verdicts: list[Verdict] = []
     for baseline in (Baseline.STOCK.value, Baseline.BLACK.value):
         selected = [(live, base) for live, base in pairs if base.get("baseline") == baseline]
         if not selected:
             if baseline == Baseline.BLACK.value:
-                verdicts.append(
-                    Verdict(
-                        "B4 vs black",
-                        VerdictStatus.DEVICE_LIMITED,
-                        "B4 vs black: NOT MEASURED (DEVICE-LIMITED) \u2014 no black static baseline windows "
-                        "were recorded. That baseline is required only where the device permits setting "
-                        "one, and it is not reversible on a production build without root, so the "
-                        "dark-image comparison is left uncalibrated rather than assumed equal to stock",
-                    )
-                )
+                verdicts.append(black_baseline_verdict(black_unavailable))
             else:
                 verdicts.append(
                     Verdict(
@@ -1712,7 +1861,7 @@ def b4_baseline_verdicts(
     return verdicts
 
 
-def report_lines(records: Sequence[Mapping[str, object]]) -> list[Verdict]:
+def report_lines(records: Sequence[Mapping[str, object]], *, black_unavailable: str | None = None) -> list[Verdict]:
     """Build the pass/fail verdicts against the committed thresholds."""
     verdicts: list[Verdict] = []
     problems = collect_restore_problems(records)
@@ -1755,7 +1904,7 @@ def report_lines(records: Sequence[Mapping[str, object]]) -> list[Verdict]:
         verdicts.append(Verdict("B4/B5", VerdictStatus.NOT_MEASURED, f"B4/B5: NOT MEASURED - {error}"))
         pairs = []
 
-    verdicts.extend(b4_baseline_verdicts(pairs))
+    verdicts.extend(b4_baseline_verdicts(pairs, black_unavailable=black_unavailable))
 
     # B5 is the average visible CPU of the document's matrix, so the average is what is checked; the
     # worst window is reported beside it as the observation it is.
@@ -1808,21 +1957,18 @@ def report_exit_code(verdicts: Sequence[Verdict]) -> int:
     """
     Derive the report's exit status from its verdicts rather than from its text.
 
-    Any FAIL is non-zero. A criterion that was never measured is non-zero too, because an acceptance
-    run that skipped a criterion has not established the acceptance; the exceptions are the two
-    statuses that name *why* the absence is not a failure of this run — a criterion explicitly out of
-    scope for it (B1, which is #125's), and a criterion the device cannot measure at all (the black
-    static baseline, which the document requires only where the device permits setting one). Both are
-    printed by the report rather than dropped, so the absence is recorded even though it does not gate.
+    Every verdict that is not one of `NON_GATING_STATUSES` is non-zero: a criterion that was never
+    measured has not established the acceptance. The exceptions are the two statuses that name *why*
+    the absence is not a failure of this run — a criterion explicitly out of scope for it (B1, which is
+    #125's), and a criterion the device cannot measure at all (the black static baseline, and only
+    where the run has declared the device the reason). Both are printed by the report rather than
+    dropped, so the absence is recorded even though it does not gate. The rule lives on `Verdict` so
+    that this function and `Verdict.is_failure` cannot disagree about it.
     """
-    if any(verdict.status is VerdictStatus.FAIL for verdict in verdicts):
-        return 1
-    if any(verdict.status is VerdictStatus.NOT_MEASURED for verdict in verdicts):
-        return 1
-    return 0
+    return 1 if any(verdict.is_failure for verdict in verdicts) else 0
 
 
-def phase_report(records: Sequence[Mapping[str, object]]) -> int:
+def phase_report(records: Sequence[Mapping[str, object]], *, black_unavailable: str | None = None) -> int:
     """Print the aggregate report and every unrun check it can see, returning its exit status."""
     check_measurement_identity(records)
     revisions = {str(record.get("revision")) for record in records}
@@ -1856,7 +2002,7 @@ def phase_report(records: Sequence[Mapping[str, object]]) -> int:
             f"CPU 2 sigma {PILOT_CPU_NOISE_FLOOR_PCT}% of one core ({PILOT_REPORT})"
         )
     print()
-    verdicts = report_lines(records)
+    verdicts = report_lines(records, black_unavailable=black_unavailable)
     for verdict in verdicts:
         print(verdict.line)
     return report_exit_code(verdicts)
@@ -1925,6 +2071,21 @@ def minutes_at_least(minimum: float) -> Callable[[str], float]:
     return parse_minutes
 
 
+def nonblank_reason(raw: str) -> str:
+    """
+    Parse the reason a run declares one of the document's baselines unavailable.
+
+    The declaration is what earns the exemption, so a blank one declares nothing and is refused rather
+    than stored: an empty string would print a device-limited line that names no reason, which reads as
+    exactly the silent omission the declaration exists to replace.
+    """
+    reason = raw.strip()
+    if not reason:
+        message = "an empty reason declares nothing; say why the device cannot set the baseline"
+        raise argparse.ArgumentTypeError(message)
+    return reason
+
+
 def positive_int(raw: str) -> int:
     """Parse a strictly positive integer for the command line."""
     value = int(raw)
@@ -1962,7 +2123,17 @@ def build_argument_parser() -> argparse.ArgumentParser:
     memory = subcommands.add_parser("memory", help="B6: total-PSS growth over a long window")
     add_window_arguments(memory, MINIMUM_MEMORY_MINUTES)
 
-    subcommands.add_parser("report", help="Aggregate the records the phases wrote")
+    report = subcommands.add_parser("report", help="Aggregate the records the phases wrote")
+    report.add_argument(
+        "--black-unavailable",
+        type=nonblank_reason,
+        default=None,
+        metavar="REASON",
+        help=(
+            "Declare that this device cannot set a static wallpaper, so B4's black baseline is "
+            "device-limited rather than an unmeasured criterion"
+        ),
+    )
     return parser
 
 
@@ -2018,7 +2189,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"ERROR: {device_layer.error_detail(error)}", file=sys.stderr)
             return 1
         try:
-            return phase_report(records)
+            return phase_report(records, black_unavailable=args.black_unavailable)
         except device_layer.ProbeError as error:
             print(f"ERROR: {device_layer.error_detail(error)}", file=sys.stderr)
             return 1

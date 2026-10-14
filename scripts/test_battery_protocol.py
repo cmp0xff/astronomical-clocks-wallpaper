@@ -256,16 +256,20 @@ Display Power: state=ON
 
 # A `dumpsys alarm` excerpt in the shape the test device actually prints it, taken from its own dump:
 # the census is `<n> pending alarms: ` with no `Pending alarm batches:` line anywhere in it, and each
-# entry is a `<TYPE> #<n>: Alarm{...}` line whose last token is the package.
+# entry is a `<TYPE> #<n>: Alarm{...}` line whose last token is the package. The third entry is a
+# package whose name has this app's as a prefix, which is what an install of a `…debug2` build beside
+# this one puts in the list: it must not be counted as this app's alarm.
 ALARM_DUMP = """\
 Current Alarm Manager state:
   Settings:
     version=2
     min_futurity=+5s0ms
-  2 pending alarms:
+  3 pending alarms:
     ELAPSED #1: Alarm{eea5bdc type 3 origWhen 87399351 whenElapsed 87399351 android}
     RTC_WAKEUP #0: Alarm{7d0e24a type 0 origWhen 1712345678 whenElapsed 1712345678 \
 io.github.godaniya.astronomicalclockswallpaper.debug}
+    RTC_WAKEUP #1: Alarm{1be34f2 type 0 origWhen 1712345679 whenElapsed 1712345679 \
+io.github.godaniya.astronomicalclockswallpaper.debug2}
 """
 
 
@@ -292,8 +296,12 @@ class WakeLockAndAlarmProbeTest(unittest.TestCase):
                 subject.parse_wakelock_count(dump, 10026)
 
     def test_counts_only_the_alarms_that_name_the_package(self) -> None:
+        # Three pending alarms, one of them for `…astronomicalclockswallpaper.debug2`: counting by
+        # substring would report two alarms held by this app, a B2 failure it did not cause.
         self.assertEqual(1, subject.parse_alarm_count(ALARM_DUMP))
-        other_package = ALARM_DUMP.replace("io.github.godaniya.astronomicalclockswallpaper.debug", "com.other.pkg")
+        other_package = ALARM_DUMP.replace(
+            "io.github.godaniya.astronomicalclockswallpaper.debug2", "com.other.pkg2"
+        ).replace("io.github.godaniya.astronomicalclockswallpaper.debug", "com.other.pkg")
         self.assertEqual(0, subject.parse_alarm_count(other_package))
 
     def test_an_alarm_dump_without_the_census_is_an_error_not_a_zero(self) -> None:
@@ -305,6 +313,15 @@ class WakeLockAndAlarmProbeTest(unittest.TestCase):
         for dump in censusless:
             with self.subTest(dump=dump[:30]), self.assertRaises(device_layer.ProbeError):
                 subject.parse_alarm_count(dump)
+
+    def test_the_census_refusal_names_the_line_the_probe_requires(self) -> None:
+        # The required census is `<n> pending alarms:`. The refusal used to name `Pending alarm
+        # batches:`, a line the device never prints and this probe never looks for, which sent an
+        # operator looking in their dump for the wrong thing.
+        with self.assertRaises(device_layer.ProbeError) as raised:
+            subject.parse_alarm_count("Current Alarm Manager state:\n  Settings:\n")
+        self.assertIn("`pending alarms:`", str(raised.exception))
+        self.assertNotIn("Pending alarm batches", str(raised.exception))
 
     def test_an_unresolved_uid_is_refused_before_the_probe_runs(self) -> None:
         device = MagicMock()
@@ -413,10 +430,19 @@ class PowerSourceProbeTest(unittest.TestCase):
         self.assertEqual(subject.POWER_SOURCE_SIMULATED, mode)
         unplug.assert_called_once()
 
-    def test_a_window_that_saw_a_charger_is_refused(self) -> None:
+    def device_on_the_home_screen(self) -> MagicMock:
+        """Return a device that satisfies the home-screen guard, so a window can actually start."""
         device = MagicMock()
         device.read_process_cpu_clock_ticks.return_value = 100
         device.run_adb.return_value = b"36\n"
+        device.read_screen_on.return_value = True
+        device.read_keyguard_locked.return_value = False
+        return device
+
+    def test_a_window_that_saw_a_charger_is_refused(self) -> None:
+        # The device has to get past `ensure_visible_home` first, or the refusal under test is never
+        # reached and the test passes without exercising the charger check at all.
+        device = self.device_on_the_home_screen()
         with (
             patch.object(subject, "DeviceStateSnapshot"),
             patch.object(subject, "read_power_source_lines", return_value=ON_BATTERY_POWER_LINES),
@@ -425,9 +451,47 @@ class PowerSourceProbeTest(unittest.TestCase):
             patch.object(subject, "run_window", return_value=(_window(cpu=1.0), (True,), (True, False))),
             patch.object(subject, "undo_phase_changes", return_value=[]),
             patch.object(subject, "apply_power_mode", return_value=subject.POWER_SOURCE_DEVICE),
-            self.assertRaises(device_layer.ProbeError),
+            self.assertRaises(device_layer.ProbeError) as raised,
         ):
             subject.phase_visible(device, arm=subject.Arm.LIVE, baseline=None, minutes=1.0, recorder=recorder())
+        self.assertIn("charger connected inside the window", str(raised.exception))
+
+    def test_a_visible_window_whose_display_went_off_is_refused(self) -> None:
+        device = self.device_on_the_home_screen()
+        with (
+            patch.object(subject, "DeviceStateSnapshot"),
+            patch.object(subject, "read_power_source_lines", return_value=ON_BATTERY_POWER_LINES),
+            patch.object(subject, "verify_arm"),
+            patch.object(subject, "arm_conditions", return_value={"wallpaper_component": "c", "median_luma": 0.0}),
+            patch.object(subject, "run_window", return_value=(_window(cpu=1.0), (True, False), (True, True))),
+            patch.object(subject, "undo_phase_changes", return_value=[]),
+            patch.object(subject, "apply_power_mode", return_value=subject.POWER_SOURCE_DEVICE),
+            self.assertRaises(device_layer.ProbeError) as raised,
+        ):
+            subject.phase_visible(device, arm=subject.Arm.LIVE, baseline=None, minutes=1.0, recorder=recorder())
+        self.assertIn("the display was not on for the whole visible window", str(raised.exception))
+
+    def test_a_visible_window_whose_pack_gained_charge_is_refused(self) -> None:
+        # `Window.discharge_rate_ua` raises when the counter rose, which is the phase's own refusal
+        # rather than the print's: it has to be reached on the abort path like the others.
+        device = self.device_on_the_home_screen()
+        gained = subject.Window(
+            start_sample=subject.BatterySample(0.0, 3_980_000, 90, 4000, 10.0, 45_000),
+            end_sample=subject.BatterySample(600.0, 4_000_000, 90, 3990, 16.0, 45_500),
+            duration_seconds=600.0,
+        )
+        with (
+            patch.object(subject, "DeviceStateSnapshot"),
+            patch.object(subject, "read_power_source_lines", return_value=ON_BATTERY_POWER_LINES),
+            patch.object(subject, "verify_arm"),
+            patch.object(subject, "arm_conditions", return_value={"wallpaper_component": "c", "median_luma": 0.0}),
+            patch.object(subject, "run_window", return_value=(gained, (True,), (True,))),
+            patch.object(subject, "undo_phase_changes", return_value=[]),
+            patch.object(subject, "apply_power_mode", return_value=subject.POWER_SOURCE_DEVICE),
+            self.assertRaises(device_layer.ProbeError) as raised,
+        ):
+            subject.phase_visible(device, arm=subject.Arm.LIVE, baseline=None, minutes=1.0, recorder=recorder())
+        self.assertIn("pack gained charge", str(raised.exception))
 
     def test_a_window_with_no_power_sample_is_refused(self) -> None:
         self.assertIsNotNone(subject.power_source_problem([]))
@@ -450,8 +514,9 @@ class PowerSourceProbeTest(unittest.TestCase):
             subject.phase_hidden(device, minutes=1.0, recorder=recorder())
 
     def test_a_memory_window_that_saw_a_charger_is_refused(self) -> None:
-        device = MagicMock()
-        device.read_process_cpu_clock_ticks.return_value = 100
+        # As with the visible window: the home-screen guard has to be satisfied first, or this test
+        # passes on the guard's refusal and never exercises the charger check.
+        device = self.device_on_the_home_screen()
         sample = subject.BatterySample(0.0, 1, 100, 4000, 1.0, 1000)
         with (
             patch.object(subject, "DeviceStateSnapshot"),
@@ -461,9 +526,10 @@ class PowerSourceProbeTest(unittest.TestCase):
             patch.object(subject, "sample_window_states", return_value=([True, True], [True, False])),
             patch.object(subject, "undo_phase_changes", return_value=[]),
             patch.object(subject, "apply_power_mode", return_value=subject.POWER_SOURCE_DEVICE),
-            self.assertRaises(device_layer.ProbeError),
+            self.assertRaises(device_layer.ProbeError) as raised,
         ):
             subject.phase_memory(device, minutes=1.0, recorder=recorder())
+        self.assertIn("charger connected inside the window", str(raised.exception))
 
 
 class TCriticalTest(unittest.TestCase):
@@ -760,6 +826,86 @@ class AbortedRestoreTest(unittest.TestCase):
             subject.phase_hidden(device, minutes=10.0, recorder=subject.Recorder(state_dir))
         self.assertFalse((state_dir / subject.RECORD_FILE_NAME).exists())
 
+    def test_a_hidden_refusal_after_the_restore_persists_them_too(self) -> None:
+        # The window's acceptance checks run after `undo_phase_changes`, so a window refused for a
+        # reason that has nothing to do with the restore has to carry the restore's problems to disk
+        # all the same: the device is left changed either way, and this record is the only place the
+        # report can learn it. Before this path covered the checks, the `ProbeError` left through
+        # `main`'s handler and the problems went out of scope unwritten.
+        device = MagicMock()
+        device.read_process_cpu_clock_ticks.return_value = 100
+        device.run_adb.return_value = b"36\n"
+        state_dir = Path(tempfile.mkdtemp())
+        with (
+            patch.object(subject, "DeviceStateSnapshot"),
+            patch.object(subject, "read_power_source_lines", return_value=ON_BATTERY_POWER_LINES),
+            patch.object(subject, "verify_arm"),
+            patch.object(subject, "apply_power_mode", return_value=subject.POWER_SOURCE_DEVICE),
+            patch.object(subject, "run_window", return_value=(_window(cpu=1.0), (True, True), (True, True))),
+            patch.object(subject, "undo_phase_changes", return_value=["airplane_mode_on did not read back as 0"]),
+            contextlib.redirect_stdout(io.StringIO()),
+            self.assertRaises(device_layer.ProbeError) as raised,
+        ):
+            subject.phase_hidden(device, minutes=10.0, recorder=subject.Recorder(state_dir))
+        # The refusal is the window's, not the restore's — the display stayed on — but the restore
+        # problem that came with it is on disk.
+        self.assertIn("the display was not off for the whole window", str(raised.exception))
+        recorded = subject.load_records(state_dir)
+        self.assertEqual(["hidden_aborted"], [record["phase"] for record in recorded])
+        self.assertEqual(["airplane_mode_on did not read back as 0"], recorded[0]["restore_problems"])
+
+    def test_a_visible_refusal_after_the_restore_persists_them_too(self) -> None:
+        device = MagicMock()
+        device.read_process_cpu_clock_ticks.return_value = 100
+        device.run_adb.return_value = b"36\n"
+        device.read_screen_on.return_value = True
+        device.read_keyguard_locked.return_value = False
+        state_dir = Path(tempfile.mkdtemp())
+        with (
+            patch.object(subject, "DeviceStateSnapshot"),
+            patch.object(subject, "read_power_source_lines", return_value=ON_BATTERY_POWER_LINES),
+            patch.object(subject, "verify_arm"),
+            patch.object(subject, "arm_conditions", return_value={"wallpaper_component": "c", "median_luma": 0.0}),
+            patch.object(subject, "apply_power_mode", return_value=subject.POWER_SOURCE_DEVICE),
+            patch.object(subject, "run_window", return_value=(_window(cpu=1.0), (True,), (True, False))),
+            patch.object(subject, "undo_phase_changes", return_value=["screen_brightness did not read back as 128"]),
+            contextlib.redirect_stdout(io.StringIO()),
+            self.assertRaises(device_layer.ProbeError) as raised,
+        ):
+            subject.phase_visible(
+                device, arm=subject.Arm.LIVE, baseline=None, minutes=1.0, recorder=subject.Recorder(state_dir)
+            )
+        self.assertIn("charger connected inside the window", str(raised.exception))
+        recorded = subject.load_records(state_dir)
+        self.assertEqual(["visible_aborted"], [record["phase"] for record in recorded])
+        self.assertEqual(["screen_brightness did not read back as 128"], recorded[0]["restore_problems"])
+
+    def test_a_memory_refusal_after_the_restore_persists_them_too(self) -> None:
+        device = MagicMock()
+        device.read_process_cpu_clock_ticks.return_value = 100
+        device.run_adb.return_value = b"36\n"
+        device.read_screen_on.return_value = True
+        device.read_keyguard_locked.return_value = False
+        # A `dumpsys meminfo` that carried no TOTAL line, which is the third phase's own refusal.
+        unparsable = subject.BatterySample(0.0, 1, 100, 4000, 1.0, None)
+        state_dir = Path(tempfile.mkdtemp())
+        with (
+            patch.object(subject, "DeviceStateSnapshot"),
+            patch.object(subject, "read_power_source_lines", return_value=ON_BATTERY_POWER_LINES),
+            patch.object(subject, "verify_arm"),
+            patch.object(subject, "apply_power_mode", return_value=subject.POWER_SOURCE_DEVICE),
+            patch.object(subject, "take_battery_sample", side_effect=[unparsable, unparsable]),
+            patch.object(subject, "sample_window_states", return_value=([True], [True])),
+            patch.object(subject, "undo_phase_changes", return_value=["the display could not be restored"]),
+            contextlib.redirect_stdout(io.StringIO()),
+            self.assertRaises(device_layer.ProbeError) as raised,
+        ):
+            subject.phase_memory(device, minutes=1.0, recorder=subject.Recorder(state_dir))
+        self.assertIn("total-PSS sample could not be parsed", str(raised.exception))
+        recorded = subject.load_records(state_dir)
+        self.assertEqual(["memory_aborted"], [record["phase"] for record in recorded])
+        self.assertEqual(["the display could not be restored"], recorded[0]["restore_problems"])
+
 
 class MemoryPhaseTest(unittest.TestCase):
     """Checks that the B6 window verifies its arm and its display state."""
@@ -789,6 +935,66 @@ class MemoryPhaseTest(unittest.TestCase):
         ):
             subject.phase_memory(device, minutes=1.0, recorder=recorder())
         guard.assert_called_once()
+
+
+class HiddenPhaseTest(unittest.TestCase):
+    """Checks that the B3 window is only recorded when it is the measurement B3 is defined on."""
+
+    def device(self) -> MagicMock:
+        """Return a device whose arm, display state and CPU counters can all be read."""
+        device = MagicMock()
+        device.read_process_cpu_clock_ticks.return_value = 100
+        device.run_adb.return_value = b"36\n"
+        return device
+
+    def test_a_window_that_held_the_display_off_is_recorded_with_its_cpu(self) -> None:
+        # The success path: every other hidden-window test stops at a refusal, so the record B3 is
+        # actually judged on was never produced by the suite.
+        device = self.device()
+        with (
+            patch.object(subject, "DeviceStateSnapshot"),
+            patch.object(subject, "read_power_source_lines", return_value=ON_BATTERY_POWER_LINES),
+            patch.object(subject, "verify_arm"),
+            patch.object(subject, "apply_power_mode", return_value=subject.POWER_SOURCE_DEVICE),
+            patch.object(subject, "run_window", return_value=(_window(cpu=0.5), [False, False], [True, True])),
+            patch.object(subject, "undo_phase_changes", return_value=[]),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            record = subject.phase_hidden(device, minutes=1.0, recorder=recorder())
+        self.assertEqual("hidden", record.phase)
+        self.assertEqual(0.5, record.values["cpu_pct"])
+        self.assertEqual([False, False], record.values["screen_on_samples"])
+
+    def test_a_window_that_left_the_display_on_is_refused(self) -> None:
+        device = self.device()
+        with (
+            patch.object(subject, "DeviceStateSnapshot"),
+            patch.object(subject, "read_power_source_lines", return_value=ON_BATTERY_POWER_LINES),
+            patch.object(subject, "verify_arm"),
+            patch.object(subject, "apply_power_mode", return_value=subject.POWER_SOURCE_DEVICE),
+            patch.object(subject, "run_window", return_value=(_window(cpu=0.5), (False, True), (True, True))),
+            patch.object(subject, "undo_phase_changes", return_value=[]),
+            contextlib.redirect_stdout(io.StringIO()),
+            self.assertRaises(device_layer.ProbeError) as raised,
+        ):
+            subject.phase_hidden(device, minutes=1.0, recorder=recorder())
+        self.assertIn("the display was not off for the whole window", str(raised.exception))
+
+
+class WindowValidityTest(unittest.TestCase):
+    """Checks the window itself refuses a measurement that is not one."""
+
+    def test_a_cpu_counter_that_went_backwards_is_refused(self) -> None:
+        # The pid was recycled, or the process restarted inside the window: the delta is not CPU this
+        # process spent, and reporting it would put a nonsense figure into B3 or B5.
+        window = subject.Window(
+            start_sample=subject.BatterySample(0.0, 4_000_000, 90, 4000, 10.0, 45_000),
+            end_sample=subject.BatterySample(600.0, 3_980_000, 90, 3990, 5.0, 45_500),
+            duration_seconds=600.0,
+        )
+        with self.assertRaises(device_layer.ProbeError) as raised:
+            _ = window.cpu_pct
+        self.assertIn("went backwards", str(raised.exception))
 
 
 class DisplaySnapshotOrderTest(unittest.TestCase):
@@ -1178,12 +1384,85 @@ class ReportTest(unittest.TestCase):
         self.assertFalse(any(line.startswith("WINDOW DURATIONS") for line in lines))
         self.assertTrue(any(line.startswith("B4 vs stock point estimate") and "PASS" in line for line in lines))
 
-    def test_a_stock_only_run_still_reports_the_black_arm_as_not_measured(self) -> None:
+    def test_an_increase_between_the_provisional_and_committed_threshold_passes(self) -> None:
+        # The committed B4 threshold is 12.0123%, raised from the 5% provisional by the pilot's own
+        # noise floor, and every other B4 case in this file sits at 0% or above 20% — so a regression
+        # that put the provisional value back would pass the whole suite. +8% discriminates.
+        self.assertEqual(12.0123, subject.FINAL_MAX_VISIBLE_DELTA_PCT)
+        statuses = {(verdict.label, verdict.status) for verdict in subject.report_lines(pairs(4, 1080.0, 1000.0))}
+        self.assertIn(("B4 vs stock point estimate", subject.VerdictStatus.PASS), statuses)
+        self.assertIn(("B4 vs stock CI upper bound", subject.VerdictStatus.PASS), statuses)
+
+    def test_a_sequence_that_is_not_an_ab_alternation_is_refused(self) -> None:
+        # The document names this refusal as the reason the pairing means anything: pairing the nth
+        # baseline with the nth live window by file order would pair windows taken under different
+        # conditions, so a sequence that is not an alternation has no comparison in it.
+        records = [
+            visible_record("A", 1000.0, cpu=1.0),
+            visible_record("B", 1000.0, baseline="stock"),
+            visible_record("A", 1000.0, cpu=1.0),
+            visible_record("A", 1000.0, cpu=1.0),
+            visible_record("B", 1000.0, baseline="stock"),
+            visible_record("B", 1000.0, baseline="stock"),
+        ]
+        with self.assertRaises(device_layer.ProbeError) as raised:
+            subject.alternation_pairs(records)
+        self.assertIn("not an A/B alternation", str(raised.exception))
+        lines = self.lines(records)
+        self.assertTrue(any(line.startswith("B4/B5") and "NOT MEASURED" in line for line in lines))
+
+    def test_a_live_window_with_no_cpu_reading_leaves_b5_unmeasured(self) -> None:
+        records = pairs(4, 1000.0, 1000.0, cpu=1.0)
+        records[0]["cpu_pct"] = None
+        lines = self.lines(records)
+        self.assertTrue(any(line.startswith("B5 visible CPU") and "NOT MEASURED" in line for line in lines))
+
+    def test_a_window_with_no_discharge_rate_leaves_b4_unmeasured(self) -> None:
+        records = pairs(4, 1000.0, 1000.0, cpu=1.0)
+        del records[1]["discharge_rate_ua"]
+        lines = self.lines(records)
+        self.assertTrue(any(line.startswith("B4 vs stock") and "NOT MEASURED" in line for line in lines))
+
+    def test_a_non_finite_window_length_is_not_a_long_window(self) -> None:
+        # `inf` and `nan` satisfy the `isinstance` the report checks and neither is below the minimum,
+        # so a hand-edited or corrupt record used to be averaged in as a window of the documented
+        # length. The CLI refuses both by name; the report is fed a file it did not write, so it does
+        # too.
+        for duration in (float("inf"), float("nan"), float("-inf")):
+            with self.subTest(duration=duration):
+                record = visible_record("A", 1000.0, cpu=1.0, duration=duration)
+                self.assertIsNotNone(subject.short_window_reason(record))
+                lines = self.lines([record])
+                self.assertTrue(any(line.startswith("WINDOW DURATIONS: FAIL") for line in lines))
+
+    def test_a_stock_only_run_reports_the_black_arm_as_unmeasured(self) -> None:
         # One block per documented baseline, not one per baseline the state file happens to carry: a
         # stock-only set used to read as a complete verdict with the secondary baseline simply absent.
+        # And the absence is *unmeasured*, not exempt: a run that never attempted that arm leaves the
+        # same state file as one on a device that cannot set a static wallpaper, so the exemption has
+        # to be declared rather than inferred from the missing windows.
         lines = self.lines(full_pass_records())
         self.assertTrue(any(line.startswith("B4 vs black") and "NOT MEASURED" in line for line in lines))
+        self.assertFalse(any("DEVICE-LIMITED" in line for line in lines))
         self.assertTrue(any(line.startswith("B4 vs stock CI upper bound") and "PASS" in line for line in lines))
+
+    def test_a_declared_device_limit_exempts_the_black_arm_and_quotes_the_reason(self) -> None:
+        records = full_pass_records()
+        verdicts = subject.report_lines(records, black_unavailable="the build has no root")
+        line = next(verdict.line for verdict in verdicts if verdict.label == "B4 vs black")
+        self.assertIn("DEVICE-LIMITED", line)
+        self.assertIn("the build has no root", line)
+        self.assertEqual(0, subject.report_exit_code(verdicts))
+
+    def test_an_undeclared_black_baseline_gates_the_report(self) -> None:
+        verdicts = subject.report_lines(full_pass_records())
+        self.assertTrue(
+            any(
+                verdict.label == "B4 vs black" and verdict.status is subject.VerdictStatus.NOT_MEASURED
+                for verdict in verdicts
+            )
+        )
+        self.assertEqual(1, subject.report_exit_code(verdicts))
 
     def test_a_black_only_run_leaves_the_gated_comparison_unmeasured(self) -> None:
         records = [
@@ -1199,8 +1478,21 @@ class ReportExitCodeTest(unittest.TestCase):
     """Finding 5: the exit status comes from the verdicts, so a printed FAIL is non-zero."""
 
     def test_a_fully_measured_passing_report_exits_zero(self) -> None:
-        verdicts = subject.report_lines(full_pass_records())
+        verdicts = subject.report_lines(full_pass_records(), black_unavailable="the build has no root")
         self.assertEqual(0, subject.report_exit_code(verdicts))
+
+    def test_is_failure_agrees_with_the_exit_rule_on_every_status(self) -> None:
+        # `is_failure` is the type's own answer to "should the report fail", and the exit code is built
+        # from it: a status the two disagreed about would be a printed verdict whose text and exit
+        # status parted company.
+        for status in subject.VerdictStatus:
+            verdict = subject.Verdict("a criterion", status, f"a criterion: {status.value}")
+            self.assertEqual(
+                subject.report_exit_code([verdict]),
+                1 if verdict.is_failure else 0,
+                msg=status,
+            )
+        self.assertEqual(1, subject.report_exit_code([subject.Verdict("c", subject.VerdictStatus.NOT_MEASURED, "c")]))
 
     def test_a_fail_exits_non_zero(self) -> None:
         verdicts = subject.report_lines(pairs(4, 1200.0, 1000.0))
@@ -1226,8 +1518,8 @@ class ReportExitCodeTest(unittest.TestCase):
         self.assertIsNot(subject.VerdictStatus.PASS, verdicts[0].status)
         self.assertIsNot(subject.VerdictStatus.NOT_MEASURED, verdicts[0].status)
 
-    def test_a_stock_only_full_pass_exits_zero_with_the_black_line_present(self) -> None:
-        verdicts = subject.report_lines(full_pass_records())
+    def test_a_stock_only_full_pass_exits_zero_once_the_black_arm_is_declared(self) -> None:
+        verdicts = subject.report_lines(full_pass_records(), black_unavailable="the build has no root")
         self.assertEqual(0, subject.report_exit_code(verdicts))
         self.assertTrue(
             any(
@@ -1238,7 +1530,7 @@ class ReportExitCodeTest(unittest.TestCase):
 
     def test_phase_report_returns_the_derived_status(self) -> None:
         with contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(0, subject.phase_report(full_pass_records()))
+            self.assertEqual(0, subject.phase_report(full_pass_records(), black_unavailable="no root"))
             self.assertEqual(1, subject.phase_report(pairs(4, 1200.0, 1000.0)))
 
 
@@ -1287,6 +1579,46 @@ class MeasurementIdentityTest(unittest.TestCase):
 
     def test_a_checksum_no_record_carries_is_not_bounded(self) -> None:
         subject.check_measurement_identity([{"api_level": 36}, {"api_level": 36, "apk_sha256": "abc"}])
+
+    def test_a_mixed_device_is_refused_naming_both_digests(self) -> None:
+        # Two devices at one build and API level are still two measurements: the threshold and the
+        # noise floor behind it are per device, so their records must not be aggregated into one B4
+        # or B5 verdict.
+        records = [{"device_id": "aaaa", "apk_sha256": "a"}, {"device_id": "bbbb", "apk_sha256": "a"}]
+        with self.assertRaises(device_layer.ProbeError) as raised:
+            subject.check_measurement_identity(records)
+        self.assertIn("aaaa", str(raised.exception))
+        self.assertIn("bbbb", str(raised.exception))
+
+    def test_the_device_identity_is_a_digest_and_not_the_serial(self) -> None:
+        # `docs/device-testing.md` keeps the serial off public surfaces and `phase_report` prints
+        # every identity field, so the record carries a digest that tells two devices apart without
+        # naming either.
+        one, two = MagicMock(), MagicMock()
+        one.serial, two.serial = "R58M12345AB", "R58M12345AC"
+        identity = subject.device_identity(one)
+        self.assertEqual(identity, subject.device_identity(one))
+        self.assertNotEqual(identity, subject.device_identity(two))
+        self.assertNotIn("R58M", identity)
+        self.assertEqual(subject.DEVICE_ID_CHARS, len(identity))
+
+    def test_a_device_that_reports_no_serial_is_refused(self) -> None:
+        device = MagicMock()
+        device.serial = ""
+        with self.assertRaises(device_layer.ProbeError):
+            subject.device_identity(device)
+
+    def test_a_record_carries_the_device_it_was_measured_on(self) -> None:
+        device = MagicMock()
+        device.serial = "R58M12345AB"
+        device.run_adb.return_value = b"36\n"
+        with (
+            patch.object(subject, "read_source_revision", return_value="rev"),
+            patch.object(subject, "read_apk_sha256", return_value="abc"),
+        ):
+            record = subject.build_record(device, "resources", 0.0)
+        self.assertIn("device_id", subject.IDENTITY_FIELDS)
+        self.assertEqual(subject.device_identity(device), record.values["device_id"])
 
     def test_phase_report_refuses_a_mixed_set(self) -> None:
         records = [
@@ -1372,6 +1704,16 @@ class DurationArgumentTest(unittest.TestCase):
     def test_a_finite_positive_duration_is_accepted(self) -> None:
         # `--minutes` is in minutes, so the value that comes back is the one that went in.
         self.assertEqual(15.0, subject.build_argument_parser().parse_args(["hidden", "--minutes", "15"]).minutes)
+
+    def test_the_black_baseline_exemption_is_a_declaration_with_a_reason(self) -> None:
+        # The exemption cannot be inferred from the windows being absent, so the command line is where
+        # it is declared — and a blank declaration earns nothing, because the report quotes it.
+        parsed = self.parse("report", "--black-unavailable", "  setting one rewrites the home image  ")
+        self.assertEqual("setting one rewrites the home image", parsed.black_unavailable)
+        self.assertIsNone(self.parse("report").black_unavailable)
+        for raw in ("", "   "):
+            with self.subTest(raw=raw), self.assertRaises(argparse.ArgumentTypeError):
+                subject.nonblank_reason(raw)
 
     def test_each_windowed_phase_refuses_a_window_below_its_documented_length(self) -> None:
         cases = (
@@ -1492,6 +1834,17 @@ class VisibleHomeStateTest(unittest.TestCase):
         with self.assertRaises(device_layer.ProbeError):
             subject.ensure_visible_home(device)
 
+    def test_an_unreadable_keyguard_state_is_refused(self) -> None:
+        # The keyguard read is three-valued: locked, unlocked, and could not be determined. Only a
+        # positive unlocked reading shows the home screen is what the window will measure — treating
+        # "could not be determined" as unlocked would let a locked device have its lock screen
+        # measured for the whole window, with the bound home component still matching the arm.
+        device = self.device()
+        device.read_keyguard_locked.return_value = None
+        with self.assertRaises(device_layer.ProbeError) as raised:
+            subject.ensure_visible_home(device)
+        self.assertIn("could not be read", str(raised.exception))
+
     def test_a_display_that_could_not_be_woken_is_refused(self) -> None:
         device = self.device()
         device.wake_screen.return_value = False
@@ -1583,14 +1936,26 @@ class WakeLockUidMatchTest(unittest.TestCase):
 class AlarmBudgetWordingTest(unittest.TestCase):
     """Finding 6: the matrix and the probe must describe the same budget."""
 
+    def b2_row(self) -> str:
+        """Return the acceptance matrix's B2 row."""
+        budget = Path(__file__).resolve().parent.parent / "docs" / "battery-budget.md"
+        return next(line for line in budget.read_text(encoding="utf-8").splitlines() if line.startswith("| **B2:"))
+
     def test_the_matrix_budget_matches_what_the_probe_counts(self) -> None:
         # The probe counts every pending alarm the package holds, because the pending list does not
         # say whether an alarm repeats. A matrix row promising a narrower budget than the probe can
         # check would describe a criterion nothing measures.
-        budget = Path(__file__).resolve().parent.parent / "docs" / "battery-budget.md"
-        row = next(line for line in budget.read_text(encoding="utf-8").splitlines() if line.startswith("| **B2:"))
+        row = self.b2_row()
         self.assertIn("0 pending alarms of any kind", row)
         self.assertNotIn("repeating alarms", row)
+
+    def test_the_row_names_every_resource_the_report_judges(self) -> None:
+        # `report` emits a `B2 jobs` verdict and the probe reads `dumpsys jobscheduler`, so a row
+        # naming only wake locks and alarms would judge a budget whose target and method the matrix
+        # never states.
+        row = self.b2_row()
+        self.assertIn("0 JobScheduler jobs", row)
+        self.assertIn("dumpsys jobscheduler", row)
 
 
 class LiveComponentIdentityTest(unittest.TestCase):
@@ -1617,7 +1982,7 @@ class LiveComponentIdentityTest(unittest.TestCase):
         with patch.object(device_layer, "read_wallpaper_component", return_value=SERVICE_COMPONENT):
             self.assertEqual(SERVICE_COMPONENT, subject.verify_arm(device, subject.Arm.LIVE, None))
 
-    def test_arm_b_refuses_a_look_alike_service_too(self) -> None:
+    def test_arm_b_admits_a_component_that_is_not_the_live_service(self) -> None:
         device = MagicMock()
         device.serial = "serial"
         with patch.object(device_layer, "read_wallpaper_component", return_value=STOCK_COMPONENT):

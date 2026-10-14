@@ -1141,6 +1141,36 @@ class WallpaperComponentParsingTest(unittest.TestCase):
             with self.subTest(dump=dump[:30]), self.assertRaises(device_layer.ProbeError):
                 self.read(dump)
 
+    def test_a_component_field_with_no_value_is_refused(self) -> None:
+        # A truncated or reshaped dump can carry the field with nothing after the `=`. Returning that
+        # empty string reads as a successful parse, and since `component_is_live("")` is false, a
+        # baseline window would be recorded as valid against no component at all: an unreadable input
+        # standing in for a reading. With nothing usable anywhere, the read is refused.
+        dump = (
+            "System wallpaper state:\n"
+            "  mLastWallpaper state:\n"
+            "    mName=null\n"
+            "    mInfo.component=\n"
+            "Wallpaper per-file components:\n"
+            "  Wallpaper #0:\n"
+            "    mWallpaperComponent=\n"
+        )
+        with self.assertRaises(device_layer.ProbeError):
+            self.read(dump)
+
+    def test_an_empty_home_value_falls_through_to_the_per_file_component(self) -> None:
+        # With the home slot carrying no value, the names that remain are the per-file ones, which is
+        # what the fallback exists for.
+        dump = (
+            "System wallpaper state:\n"
+            "  mLastWallpaper state:\n"
+            "    mInfo.component=\n"
+            "Wallpaper per-file components:\n"
+            "  Wallpaper #0:\n"
+            f"    mWallpaperComponent={self.STATIC}\n"
+        )
+        self.assertEqual(self.STATIC, self.read(dump))
+
 
 class ProducerTraceTest(unittest.TestCase):
     """Checks the producer-window parsing and the zero-versus-unread distinction it exists for."""

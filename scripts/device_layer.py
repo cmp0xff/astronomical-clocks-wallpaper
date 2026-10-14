@@ -158,6 +158,13 @@ class ProbeError(RuntimeError):
     """A device probe that did not complete, as opposed to a successful reading that found nothing."""
 
 
+def component_value(line: str, field: str) -> str:
+    """Return what a wallpaper dump line carries for one component field, or `""` when it carries none."""
+    if field not in line:
+        return ""
+    return line.split(field, 1)[1].strip()
+
+
 def read_wallpaper_component(serial: str | None = None) -> str:
     """
     Return the home-screen wallpaper component from `dumpsys wallpaper`.
@@ -167,6 +174,12 @@ def read_wallpaper_component(serial: str | None = None) -> str:
     would silently report the lock wallpaper. When nothing live is bound the home section has no
     component at all, and the dump then falls back to the per-file components, where the first
     `mWallpaperComponent` line is the home slot; that fallback is what a static baseline reports.
+
+    A field that is present but empty is skipped rather than returned. `mInfo.component=` with nothing
+    after it parses to `""`, which `component_is_live` reports as not-live, so a truncated or reshaped
+    dump would be admitted as a valid static-baseline window recorded against no component at all —
+    an unreadable input taking the place of a reading. Skipping the empty value lets the fallback run
+    and, when nothing usable is left, the refusal below fire.
     """
     output = run_adb(["shell", "dumpsys", "wallpaper"], serial=serial).decode("utf-8", errors="replace")
     lines = output.splitlines()
@@ -181,11 +194,13 @@ def read_wallpaper_component(serial: str | None = None) -> str:
             len(lines),
         )
         for line in lines[section + 1 : boundary]:
-            if HOME_WALLPAPER_COMPONENT_FIELD in line:
-                return line.split(HOME_WALLPAPER_COMPONENT_FIELD, 1)[1].strip()
+            value = component_value(line, HOME_WALLPAPER_COMPONENT_FIELD)
+            if value:
+                return value
     for line in lines:
-        if STATIC_WALLPAPER_COMPONENT_FIELD in line:
-            return line.split(STATIC_WALLPAPER_COMPONENT_FIELD, 1)[1].strip()
+        value = component_value(line, STATIC_WALLPAPER_COMPONENT_FIELD)
+        if value:
+            return value
     detail = "dumpsys wallpaper reported no home-screen wallpaper component"
     raise ProbeError(detail)
 
