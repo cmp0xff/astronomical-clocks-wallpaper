@@ -6,8 +6,12 @@ Test build: local debug `app-debug.apk` built from this branch's tree with
 compiles is byte-identical to the tree at `5efae15`, so that revision names the application sources
 under test. The harness revision the records carry is
 `a9472458328ba4cd73d60b421531e40fca3b426f`; the three earlier records in the same state file carry
-`76a1b8ceec51c402c6a4082f015264fc41a9dd35`, and the two differ only in documentation and in the
-harness's own report aggregation, never in how a window is measured. The artifact was installed in
+`76a1b8ceec51c402c6a4082f015264fc41a9dd35`. The two differ in documentation and in the harness's own
+report aggregation, but not *only* in those: `a947245` also adds the `stay_on_while_plugged_in` pin
+that holds the display awake on every power source, and a refusal when the process CPU counter goes
+backwards inside a window. The first changes the conditions a visible window is measured under, which
+is why every record below names the revision it was taken at; the second can only refuse a window, so
+it can leave a measurement absent but never wrong. The artifact was installed in
 place with `adb install -r`.
 
 Physical device running Android 16 (API 36). Vendor, model, serial, and firmware build are withheld

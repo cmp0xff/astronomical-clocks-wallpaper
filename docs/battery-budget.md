@@ -30,7 +30,7 @@ resource budgets and avoid degrading battery life:
 | Criterion | Target Budget | Verification Methodology |
 | --- | --- | --- |
 | **B1: Hidden/Screen-Off Frames** | **0 frames** (hard requirement) | Frame counter or producer-trace window while the engine is hidden and the display is off. **Not measured by this protocol**: the frame console is #125 criterion 1, which has since landed its own evidence — the [2026-10-12 producer-trace pass](testing/reports/2026-10-12-test-125-hidden-frames-and-reboot.md) reads 0 frames over 60 s, bracketed by visible controls that do render. This document does not claim it. |
-| **B2: Wake Locks & Alarms** | **0 wake locks**, 0 pending alarms of any kind | `dumpsys power` and `dumpsys alarm`, attributed by the app's UID — matched as a whole token, so one uid cannot be matched by a prefix of another — and by package; each dump's own census line must be present, so an unparsable probe is an error rather than a count of zero |
+| **B2: Wake Locks, Alarms & Jobs** | **0 wake locks**, 0 pending alarms of any kind, **0 JobScheduler jobs** | `dumpsys power`, `dumpsys alarm` and `dumpsys jobscheduler`, attributed by the app's UID and by package — each matched as a whole token, so one uid or one package name cannot be matched by a prefix or a substring of another — and each dump's own census line must be present, so an unparsable probe is an error rather than a count of zero |
 | **B3: Hidden CPU Utilization** | **≤ 0.1% of one core** over ≥ 10 min | `/proc/<pid>/stat` deltas over a screen-off duration whose display state is sampled throughout |
 | **B4: Visible Screen-On Drain** | **≤ 12.0123% relative increase** vs the stock baseline — the committed noise floor, not the 5% provisional | A/B/A/B alternating runs of ≥ 15 minutes against stock `ImageWallpaper`; the paired 95% upper bound must also stay below the threshold. A black static wallpaper is the secondary baseline, required only where the device permits setting one |
 | **B5: Visible CPU Utilization** | **≤ 3% of one core** at 1 Hz over ≥ 15 min | `/proc/<pid>/stat` process ticks during a visible home-screen window |
@@ -72,11 +72,16 @@ its own evidence. No single invocation, and above all no single window, blocks f
      it cannot be set, the report prints the black comparison as not measured and device-limited
      rather than staying silent, and what stays uncalibrated on that device is the dark-image control.
    - A state file that records only one of the two baselines is reported as exactly that: the report
-     emits one block per documented baseline, so a missing one is visible rather than absent.
+     emits one block per documented baseline, so a missing one is visible rather than absent. The
+     device-limited exemption is **declared, not inferred**: `report --black-unavailable <reason>`
+     records the black comparison as not measured and device-limited, quotes the reason, and does not
+     fail the report, while a run without that declaration carries the missing black baseline as an
+     unmeasured criterion, which does fail it. A pass that simply skipped the arm therefore leaves a
+     failing report rather than one indistinguishable from a device that cannot set a wallpaper.
 4. **Arm verification, not arm switching**: the harness never performs the wallpaper swap it
    measures. Before each window it checks that the device matches the requested arm — the live
    service component for arm A, and any static component for arm B — and refuses the window
-   otherwise, so a mis-swapped wallpaper is recorded as a skipped window rather than a valid one.
+   otherwise, so a mis-swapped wallpaper fails the window rather than being recorded as a valid one.
    The screen's own luminance is recorded with every window and is deliberately **not** a gate: on
    the first device this was run against, the OEM stock wallpaper is a dark starfield whose median
    luminance sits at the black baseline's, so a brightness threshold would have refused valid stock
@@ -119,7 +124,8 @@ its own evidence. No single invocation, and above all no single window, blocks f
    B5 is checked against the average visible CPU its row defines, with the worst window reported
    beside it, and B6 against the worst recorded run. Every criterion prints pass, fail, or **not
    measured**, and any recorded restore failure is printed as a failure. A criterion that was never
-   measured is reported as not measured, never as a pass.
+   measured is reported as not measured, never as a pass — and it fails the report, unless it is the
+   secondary baseline and the run has declared the device unable to set one.
 
 ## Sources
 
@@ -142,8 +148,10 @@ Retrieved 2026-10-12. Both anchors are quoted from primary documentation rather 
   for the service state, and the device's own `cmd battery` help for the unplug/reset commands.
 - **Statistics** — the two-sided 95% Student t critical values in `scripts/battery_protocol.py`
   come from the table in the NIST/SEMATECH e-Handbook of Statistical Methods, section 1.3.6.7.3
-  ([`1.3.6.7.3`](https://www.itl.nist.gov/div898/handbook/eda/section3/eda3672.htm)); beyond 30
-  degrees of freedom the normal value 1.960 is used, where the two agree to three decimals.
+  ([`1.3.6.7.3`](https://www.itl.nist.gov/div898/handbook/eda/section3/eda3672.htm)) up to 30 degrees
+  of freedom. Past the table the normal value 1.960 is **not** used — at 31 degrees of freedom it is
+  2.040 — and the Cornish-Fisher expansion of the t quantile in `1/nu` is used instead, as the
+  harness's own comment beside those terms records.
 
 ## Recorded runs
 
@@ -166,7 +174,7 @@ Android/API level, APK checksum and source revision, and the limits of what it m
   — six alternations fixed before the pass, under the same committed threshold: B4 **passes** at a
   −30.775% point estimate with a 95% upper bound of −11.615% against 12.0123%, σ_d 18.254%; B5
   **fails** again at 4.3391% of one core; and the gauge is measured to quantise at 4.5 mAh rather
-  than the 1 mAh the 2026-10-12 report assumed.
+  than the 1 mAh the 2026-10-13 report carried.
 
 The reports are the record. A state file is working data and is reset between runs so that the
 pilot's windows cannot enter the final comparison; the floors the thresholds were committed from are

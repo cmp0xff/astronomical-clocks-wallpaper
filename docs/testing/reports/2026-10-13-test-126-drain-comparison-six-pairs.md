@@ -85,8 +85,9 @@ screen state, one site, and a three-hour window of a device's day are not a gene
 
 ## Observed results
 
-The pass ran from 2026-10-13 23:31 to 2026-10-14 03:14 local, 3 h 43 m of wall clock carrying 3 h 02 m
-of measured windows; the rest is the arm swaps and one interruption below.
+The pass ran from 2026-10-13 23:31 to 2026-10-14 03:14 local, 3 h 43 m of wall clock carrying 3 h 04 m
+of measured windows — the twelve durations below sum to 11020.3 s; the rest is the arm swaps and one
+interruption below.
 
 | Window | Arm | Duration | Charge-counter delta | Discharge rate | CPU | In-window samples |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -109,7 +110,7 @@ of measured windows; the rest is the arm swaps and one interruption below.
 | 2026-10-13 | power source | Every window recorded `power_source: device` and `on_battery` true at all 30 in-window samples, so no window was measured across a charger appearing |
 | 2026-10-13 | device state restored | All twelve records carry `restore_problems: []`; brightness, brightness mode, the timeout, airplane mode and the stay-awake setting were read back at their pre-window values |
 | 2026-10-13 | B2 | `resources`: 0 partial wake locks for uid 10026, 0 pending alarms and 0 jobs for the package |
-| 2026-10-13 | measurement identity | One APK digest, one API level, one power source and one `CLK_TCK` across all thirteen records, so the set aggregates as one configuration |
+| 2026-10-13 | measurement identity | One APK digest and one API level across all thirteen records, and one power source and one `CLK_TCK` across the twelve windows, so the set aggregates as one configuration — the `resources` census carries neither of those two, because it is not a discharge or CPU measurement. All thirteen come from the one device this report names. (The device digest the harness now records with every window postdates this pass, so these records carry none.) |
 | 2026-10-13 | harness revision | The windows were measured at `594d68c`; the `resources` record carries `9808562`. `git diff 9808562 594d68c -- scripts/` is empty, so the same harness code measured both |
 
 ### Interruptions
@@ -127,7 +128,8 @@ fixed before the pass, and no window was dropped or added for how it came out.
 
 Every charge-counter reading in the twelve windows is a multiple of **4500 uAh**, and there is no
 smaller divisor across them, so the quantum this device reports at is 4.5 mAh rather than the 1000 uAh
-the 2026-10-12 report assumed. That is 2.3%–6.2% of a single window's delta, which is the same order
+the 2026-10-13 report carried before this pass measured it. That is 2.3%–6.2% of a single window's
+delta, which is the same order
 as the threshold the criterion is judged against. It is a property of the gauge and it applies to both
 arms of a pair, so the paired difference is far less exposed to it than an absolute rate would be —
 but any reading of a single window carries it, and the per-window rates below should be read with that
@@ -140,11 +142,15 @@ in mind.
 | 2026-10-14 | **B4, relative increase against stock** | **−30.775%** point estimate; **95% CI upper bound −11.615%**; 6 pairs, df 5, t 2.571, σ_d 97676 uA (18.254% of the 535099 uA baseline mean), margin 19.16% | **PASS.** Both of B4's lines are inside the committed 12.0123% threshold, and the upper bound is inside it with 23.6 points to spare. The live wallpaper drew less than the stock baseline in **every one of the six pairs**, by between 17577 uA and 262890 uA |
 | 2026-10-14 | **B5, visible CPU** | mean **4.3391%** of one core over the six live windows, worst 4.4219% | **FAIL** against the 3% budget. Every one of the six live windows is above it on its own (4.2540%, 4.4219%, 4.3125%, 4.3128%, 4.3172%, 4.4164%), so the verdict does not rest on the mean |
 | 2026-10-14 | B2 | 0 wake locks, 0 alarms, 0 jobs | **PASS** |
-| 2026-10-14 | B4 against the black baseline | no black windows recorded | **NOT MEASURED (DEVICE-LIMITED)**, as the report prints: that baseline is required only where the device permits setting one, and this pass did not set one |
+| 2026-10-14 | B4 against the black baseline | no black windows recorded, and this pass declares the reason | **NOT MEASURED (DEVICE-LIMITED)**, declared to the report rather than inferred from the missing windows: setting a static wallpaper rewrites the home image and this production build has no root, so the black baseline could be neither backed up nor restored, and it would also destroy the stock baseline this comparison is measured against |
 | 2026-10-14 | B3, B6 | no hidden or memory window in this pass | **NOT MEASURED.** Their measurements stand in the earlier reports and were not re-run here |
 
-`python3 scripts/battery_protocol.py --state build/reports/battery-126-n6 report` prints these verdicts
-and exits 1, on B5 and on the two unmeasured criteria.
+`python3 scripts/battery_protocol.py --state build/reports/battery-126-n6 report --black-unavailable
+"setting a static wallpaper rewrites the home image and this production build has no root, so it could
+be neither backed up nor restored"` prints these verdicts and exits 1, on B5 and on the two unmeasured
+criteria. The device-limited black row is the one absence that does not gate, and it is a declaration:
+without that flag the same state file reports the missing black baseline as an unmeasured criterion
+and fails on it too.
 
 ## What this establishes, and what it does not
 
@@ -165,7 +171,10 @@ what the pre-registration projected the pair count from, and the reason six pair
 **It does not settle whether B4's threshold and its statistic belong together.** The threshold was
 committed from a single arm's 2σ; the criterion is judged on the paired 95% upper bound, which is the
 narrower of the two. This run passed, but a pass at a favourable point estimate says nothing about that
-mismatch: at the σ_d measured here, six pairs certify the budget only if the live arm measures about
-15% better than stock, and a device at parity would need roughly nineteen. The pair count is stated
+mismatch: at the σ_d measured here (18.254%), six pairs leave a 19.16% margin, so the budget is
+certified only if the live arm measures about 7% better than stock, and a device at parity would need
+roughly twelve — the first count whose margin, 11.60%, fits inside 12.0123%. It is the
+pre-registration's wider projected σ_d of 24.819% that gives the harder 14% and nineteen, which is why
+six pairs were fixed before the run rather than chosen after it. The pair count is stated
 here rather than acted on, because re-specifying B4 is a decision for the criterion's owner and not
 something a passing run should quietly make on its behalf.

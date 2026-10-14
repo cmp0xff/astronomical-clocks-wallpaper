@@ -21,12 +21,14 @@ greater of the stated value and the observed two-standard-deviation floor, **com
 run** so the number cannot be tuned to the result. This report is that pilot: four repeated windows
 of the documented length, and the thresholds it fixes.
 
-The pilot was run on the live-wallpaper arm. The document's wording says "baseline windows", and a
-baseline-arm pilot is what the discharge channel would need — but the target device's fuel gauge
+The pilot was run on the live-wallpaper arm. The document's wording at the time said "baseline
+windows", and a baseline-arm pilot is what the discharge channel would need — but the target device's
+fuel gauge
 turned out to be incapable of producing a discharge signal at all (below), and a baseline window has
 no wallpaper process to read CPU from, so a baseline pilot on this device would have recorded two
 zeroes and calibrated nothing. Running it on the live arm measures the channel that does work, and
-the discharge side is recorded as the dead channel it is rather than as a floor of zero.
+the discharge side is recorded as the dead channel it is rather than as a floor of zero. The document
+now states the same rule it was read against here: the pilot runs repeated windows on the live arm.
 
 ## Method
 

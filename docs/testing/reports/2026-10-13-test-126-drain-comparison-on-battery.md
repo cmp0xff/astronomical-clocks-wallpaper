@@ -90,10 +90,19 @@ that contains this section; the run below is the first to use them.
 **The discharge floor is this device's, not the wallpaper's.** Four windows spread from 335382 uA to
 387475 uA on the *same* arm with the same pinned conditions. That spread is what the harness measures
 when nothing is being compared, and it is a property of the gauge and the cell rather than of the
-wallpaper: the fuel gauge reports in 1000 uAh steps, so a 15-minute window's ~330000-390000 uAh
-carries roughly 0.3% quantisation, and a worn cell widens the rest. Nothing here says the wallpaper
+wallpaper: every charge-counter delta this pass recorded is a multiple of **4500 uAh**, so the gauge
+reports in 4.5 mAh steps and a 15-minute window's 76500-153000 uAh carries **2.9%-5.9%**
+quantisation, and a worn cell widens the rest. Nothing here says the wallpaper
 is or is not power-hungry; it says this device cannot resolve a difference smaller than about 12%
 between two 15-minute windows.
+
+**Correction (2026-10-14).** This paragraph read the gauge's step as 1000 uAh and the effect as
+roughly 0.3%, against a "~330000-390000 uAh" window. Those figures are the discharge *rates* in uA
+that the sentence before it quotes, not the windows' charge-counter deltas in uAh, and the deltas in
+this pass's own tables are all multiples of 4500 uAh — 94500, 99000 and 85500 in the pilot, and 76500
+to 153000 in the run below. The step is therefore 4.5 mAh rather than 1000 uAh, which is what the
+[six-pair pass](2026-10-13-test-126-drain-comparison-six-pairs.md) states from its own counters. No
+measurement in this report changed; the paragraph's arithmetic and its unit did.
 
 **The consequence is that B4's bar is now 12%, not 5%.** A live-versus-static difference smaller than
 that will not be distinguishable from this device's own variation, and the report below says
@@ -144,10 +153,14 @@ its duration.
 | 2026-10-13 | B2 jobs | 0 | PASS |
 | 2026-10-13 | B3 hidden CPU | 0.0404% of one core over 10 minutes | PASS against the 0.1% budget |
 | 2026-10-13 | B6 PSS growth | +3578 kB over 30 minutes | PASS against the 6144 kB budget |
+| 2026-10-13 | B4 against the black baseline | no black windows recorded, and this pass declares the reason | **NOT MEASURED (DEVICE-LIMITED)**, declared to the report rather than inferred from the missing windows: setting a static wallpaper rewrites the home image and this production build has no root, so the black baseline could be neither backed up nor restored |
 | 2026-10-13 | B1 hidden frames | not measured by this protocol | OUT OF SCOPE — #125 criterion 1, whose producer-trace evidence landed separately in [the 2026-10-12 pass](2026-10-12-test-125-hidden-frames-and-reboot.md) |
 
 `python3 scripts/battery_protocol.py --state build/reports/battery report` prints these verdicts and
-**exits 1**: the run is a failed acceptance, and the command that reports it now fails with it.
+**exits 1**: the run is a failed acceptance, and the command that reports it now fails with it. The
+device-limited black row is the one absence that does not gate, and it is declared:
+`report --black-unavailable "setting a static wallpaper rewrites the home image and this production
+build has no root, so it could be neither backed up nor restored"`.
 
 ## What the comparison does and does not establish
 
