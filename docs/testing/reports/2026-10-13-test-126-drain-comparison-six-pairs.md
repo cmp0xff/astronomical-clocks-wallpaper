@@ -162,9 +162,10 @@ a single window's quantisation is 2.3%–6.2% rather than 0.3%. And this device'
 came in at 18.254% of the baseline mean, against the 24.819% the 2026-10-13 pass measured — which is
 what the pre-registration projected the pair count from, and the reason six pairs were enough.
 
-**It does not repeal the re-specification question.** The recorded 2026-10-13 run failed B4 on its
-upper bound against a threshold committed from a different statistic. This run passed, but a pass at a
-favourable point estimate does not settle whether the criterion's threshold and statistic belong
-together. At the σ_d measured here, six pairs certify the budget only if the live arm measures about
-15% better than stock; a device at parity would still need roughly nineteen pairs. That is the number
-to re-specify from, and it is worth an issue even though this pass passed.
+**It does not settle whether B4's threshold and its statistic belong together.** The threshold was
+committed from a single arm's 2σ; the criterion is judged on the paired 95% upper bound, which is the
+narrower of the two. This run passed, but a pass at a favourable point estimate says nothing about that
+mismatch: at the σ_d measured here, six pairs certify the budget only if the live arm measures about
+15% better than stock, and a device at parity would need roughly nineteen. The pair count is stated
+here rather than acted on, because re-specifying B4 is a decision for the criterion's owner and not
+something a passing run should quietly make on its behalf.
