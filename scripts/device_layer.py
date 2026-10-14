@@ -32,6 +32,13 @@ PACKAGE_NAME: Final = "io.github.godaniya.astronomicalclockswallpaper.debug"
 SERVICE_NAME: Final = (
     f"{PACKAGE_NAME}/io.github.godaniya.astronomicalclockswallpaper.AstronomicalClocksWallpaperService"
 )
+# The platform's own static wallpaper engine, read from this device's `dumpsys wallpaper` as both
+# `mDefaultWallpaperComponent` and `mImageWallpaper`. It is the component every static baseline in
+# `docs/battery-budget.md` is measured against, and naming it is what stops *another package's* live
+# service from being admitted as a baseline: `verify_arm` refuses everything that is neither this
+# app's service nor this engine. Which static *image* the engine carries is not decidable over ADB
+# and is not claimed here; only that the bound component is the platform's own.
+PLATFORM_STATIC_WALLPAPER: Final = "com.android.systemui/com.android.systemui.wallpapers.ImageWallpaper"
 SERVICE_LOG_TAG: Final = "AstronomicalClocksWallpaperService"
 DISPLAY_LOG_TAG: Final = "DialDisplay"
 
@@ -55,6 +62,19 @@ WAKE_READ_PATTERN: Final = re.compile(r"mWakefulness=(\w+)")
 DISPLAY_STATE_PATTERN: Final = re.compile(r"Display State=(ON|OFF)")
 KEYGUARD_SHOWING_PATTERN: Final = re.compile(r"\bisKeyguardShowing[ \t]*=[ \t]*([^\s,;}]*)")
 WALLPAPER_VISIBLE_PATTERN: Final = re.compile(r"\bmVisible=([^\s,;}]*)")
+# The two lines `dumpsys window` uses to name what is in front. Either may be absent or carry no
+# package: this device's Android 16 build prints `mCurrentFocus=Window{39e680d u0 NotificationShade}`
+# while the shade is down, which names a window and no package at all. They are read in this order
+# and the first one that yields a package wins.
+FOCUS_WINDOW_PATTERN: Final = re.compile(r"\bmCurrentFocus=Window\{[^}]*\}")
+FOCUSED_APP_PATTERN: Final = re.compile(r"\bmFocusedApp=ActivityRecord\{[^}]*\}")
+# The `package/class` token inside those bodies. The package is captured and the class is not,
+# because the class varies between launchers and Android versions while the package does not: the
+# launcher this device resolves is
+# `com.sec.android.app.launcher/.activities.LauncherActivity`, and comparing activity classes would
+# make the comparison depend on which launcher build is installed.
+FOCUS_COMPONENT_PATTERN: Final = re.compile(r"\b([A-Za-z][\w]*(?:\.[\w]+)+)/")
+SHA256_HEX_PATTERN: Final = re.compile(r"^[0-9a-f]{64}$")
 
 # DialStyle.kt pins the two civil-scale tones: RIM is 0x1C2C39 (dark) and LIGHT_RIM is 0xE8E2D2 (light).
 DARK_RIM_RGB: Final = (0x1C, 0x2C, 0x39)
@@ -558,6 +578,114 @@ def read_keyguard_locked(serial: str) -> bool | None:
     return None
 
 
+def read_foreground_package(serial: str) -> str | None:
+    """
+    Read the package in front from `dumpsys window`, or None when no focus line names one.
+
+    `mCurrentFocus` is asked first and `mFocusedApp` is the fallback, because the two answer
+    different questions and only the second always names a package. `mCurrentFocus` is the window
+    that has input focus, which may be a system window with no package — this device prints
+    `Window{39e680d u0 NotificationShade}` while the shade is down — so a reading that stopped there
+    would have no package to report for a device that is plainly showing an app.
+
+    Only the package is returned. The activity class after the `/` is not, because it varies between
+    launcher builds while the package that owns the home screen does not.
+    """
+    output = run_adb(["shell", "dumpsys", "window"], serial=serial).decode("utf-8", errors="replace")
+    for pattern in (FOCUS_WINDOW_PATTERN, FOCUSED_APP_PATTERN):
+        match = pattern.search(output)
+        if match is None:
+            continue
+        component = FOCUS_COMPONENT_PATTERN.search(match.group(0))
+        if component is not None:
+            return captured_text(component, 1)
+    return None
+
+
+def read_home_package(serial: str) -> str | None:
+    """
+    Read the package the device resolves for the `HOME` intent, or None when it resolves none.
+
+    The device is asked which launcher it runs instead of the harness naming one. A launcher package
+    written into this repository would be an OEM and model statement on a public surface, which
+    `docs/device-testing.md` forbids; resolving it here keeps that identification on the device,
+    where it is already true.
+    """
+    output = run_adb(
+        [
+            "shell",
+            "cmd",
+            "package",
+            "resolve-activity",
+            "--brief",
+            "-a",
+            "android.intent.action.MAIN",
+            "-c",
+            "android.intent.category.HOME",
+        ],
+        serial=serial,
+    ).decode("utf-8", errors="replace")
+    for line in output.splitlines():
+        component = FOCUS_COMPONENT_PATTERN.search(line)
+        if component is not None:
+            return captured_text(component, 1)
+    return None
+
+
+def read_home_in_front(serial: str) -> bool | None:
+    """
+    Report whether the home screen is the surface in front, or None when that cannot be decided.
+
+    Three-valued for the same reason the keyguard read is: a device whose foreground package or
+    launcher package could not be read has not been shown to be on the home screen, and treating
+    "could not be read" as "yes" would let another app's surface be measured for the whole window
+    while the bound wallpaper component still matched the requested arm.
+
+    The comparison is between packages, not activity classes: the launcher resolves to
+    `com.sec.android.app.launcher/.activities.LauncherActivity` on this device and to a different
+    class on another build of the same launcher.
+    """
+    foreground = read_foreground_package(serial)
+    home = read_home_package(serial)
+    if foreground is None or home is None:
+        return None
+    return foreground == home
+
+
+def read_installed_apk_sha256(serial: str) -> str | None:
+    """
+    Read the SHA-256 of the installed APK from the device, or None when either step cannot answer.
+
+    Hashing the host checkout's build output was a different measurement from the one the window
+    ran against: the APK on the device may be an older install, and the artifact is absent on a
+    machine that did not build it, so the digest then recorded was `None` — an unreadable input
+    standing in for an identity. Reading the installed file is what the identity field claims.
+
+    `pm path` lists the split APKs of the package, and `base.apk` is the one whose digest identifies
+    the build. Neither step is allowed to fall back to a zero: a package that is not installed and a
+    device without `sha256sum` are both refusals.
+    """
+    paths = run_adb(["shell", "pm", "path", PACKAGE_NAME], serial=serial).decode("utf-8", errors="replace")
+    base_apk = next(
+        (
+            line.split("package:", 1)[1].strip()
+            for line in paths.splitlines()
+            if line.startswith("package:") and line.strip().endswith("/base.apk")
+        ),
+        None,
+    )
+    if base_apk is None:
+        return None
+    output = run_adb(["shell", "sha256sum", base_apk], serial=serial).decode("utf-8", errors="replace")
+    digest = output.split(maxsplit=1)[0] if output.split() else ""
+    # `sha256sum` prints `<digest>  <path>`, and a device without the tool answers with a shell
+    # error whose first token is not a digest. Requiring the shape keeps that error from being
+    # recorded as this build's identity.
+    if SHA256_HEX_PATTERN.match(digest) is None:
+        return None
+    return digest
+
+
 def read_screen_on(serial: str) -> bool | None:
     """Read the screen state, returning None when neither wakefulness nor display state is readable."""
     power = run_adb(["shell", "dumpsys", "power"], serial=serial).decode("utf-8")
@@ -1046,6 +1174,22 @@ class AdbDevice:
         """Read physical and override display sizes from `wm size`."""
         return read_display_size(self.serial)
 
+    def read_foreground_package(self) -> str | None:
+        """Read the package in front, or None when no focus line names one."""
+        return read_foreground_package(self.serial)
+
+    def read_home_package(self) -> str | None:
+        """Read the package the device resolves for the `HOME` intent, or None."""
+        return read_home_package(self.serial)
+
+    def read_home_in_front(self) -> bool | None:
+        """Report whether the home screen is the surface in front, or None when undecidable."""
+        return read_home_in_front(self.serial)
+
+    def read_installed_apk_sha256(self) -> str | None:
+        """Read the SHA-256 of this package's installed `base.apk`, or None when unreadable."""
+        return read_installed_apk_sha256(self.serial)
+
     def read_keyguard_locked(self) -> bool | None:
         """Read whether the keyguard is currently showing on this device."""
         return read_keyguard_locked(self.serial)
@@ -1101,7 +1245,13 @@ class AdbDevice:
         self.run_adb(["shell", "wm", "dismiss-keyguard"])
 
     def show_home(self) -> None:
-        """Send KEYCODE_HOME."""
+        """
+        Send KEYCODE_HOME.
+
+        This sends the event and reports nothing about what it did: an input event can be dropped,
+        and a caller that needs the home screen to actually be in front has to read it back with
+        `read_home_in_front`. `battery_protocol.ensure_visible_home` is the caller that does.
+        """
         self.run_adb(["shell", "input", "keyevent", "KEYCODE_HOME"])
 
     def run_restore_command(self, command: Sequence[str]) -> bool:

@@ -213,6 +213,7 @@ class ClkTckProbeTest(unittest.TestCase):
         device.run_adb.return_value = b"36\n"
         device.read_screen_on.return_value = True
         device.read_keyguard_locked.return_value = False
+        device.read_home_in_front.return_value = True
         with (
             patch.object(subject, "DeviceStateSnapshot"),
             patch.object(subject, "read_power_source_lines", return_value=ON_BATTERY_POWER_LINES),
@@ -273,6 +274,70 @@ io.github.godaniya.astronomicalclockswallpaper.debug2}
 """
 
 
+# A `dumpsys power` whose only lock is of a type other than `PARTIAL_WAKE_LOCK`, which is the state
+# the test device was actually in: `Wake Locks: size=1` holding a `DOZE_WAKE_LOCK`. The census counts
+# that lock, so a probe that enumerates partial locks alone can never reconcile with it.
+POWER_DUMP_DOZE_LOCK = """\
+POWER MANAGER (dumpsys power)
+
+Power Manager Service:
+  mWakefulness=Dozing
+  Wake Locks: size=1
+    DOZE_WAKE_LOCK                    'dream:doze' ACQ=-2m22s355ms (uid=10026 pid=1538 displayId=0 lock=782c8f1)
+  Suspend Blockers: size=5
+    PowerManagerService.Booting: ref count=0 []
+Display Power: state=OFF
+"""
+
+# A `dumpsys alarm` in the shape the test device prints: each entry is an `Alarm{...}` header followed
+# by indented continuation lines, the block is closed by a later section at the census's own indent,
+# and below that section there is a *second* censused list whose entries look exactly like the first
+# list's. The past-due entry names this app; nothing pending does, so the probe must report zero.
+ALARM_DUMP_WITH_SECTIONS = """\
+Current Alarm Manager state:
+  Settings:
+    version=2
+  2 pending alarms:
+    ELAPSED #1: Alarm{eea5bdc type 3 origWhen 87399351 whenElapsed 87399351 android}
+      tag=*alarm*:android.intent.action.TIME_SET
+      type=ELAPSED origWhen=+1s351ms window=+22m30s0ms
+      operation=PendingIntent{83f0995: PendingIntentRecord{aca9438 android broadcastIntent}}
+    RTC_WAKEUP #2: Alarm{7d0e24a type 0 origWhen 1712345678 whenElapsed 1712345678 com.other.app}
+      tag=*walarm*:com.other.app.action.TICK
+  LazyAlarmStore stats:
+    GET_COUNT: count=0
+  Past-due non-wakeup alarms: 1
+    ELAPSED #1: Alarm{ae0dbfa type 3 origWhen 151266000 whenElapsed 151266000 \
+io.github.godaniya.astronomicalclockswallpaper.debug}
+      tag=*alarm*:io.github.godaniya.astronomicalclockswallpaper.action.FIRED
+"""
+
+# The namespaced job-line shapes the test device prints and the plain `JOB #<uid>/<id>` pattern did
+# not match. WorkManager keeps its jobs under `androidx.work.systemjobscheduler` and the sync adapters
+# under `SyncManager`, so an app that scheduled a worker had that worker's line dropped from the count
+# and "the app holds no jobs" could come from a dump that listed one.
+JOBSCHEDULER_DUMP_NAMESPACED = """\
+Battery level: 94
+Registered 3 jobs:
+  JOB #1000/29: 6a6e122 com.samsung.android.statsd/androidx.work.impl.background.systemjob.SystemJobService
+  JOB androidx.work.systemjobscheduler:10123/42: abc1234 \
+@androidx.work.systemjobscheduler@io.github.godaniya.astronomicalclockswallpaper.debug/\
+androidx.work.impl.background.systemjob.SystemJobService
+  JOB SyncManager:1000/4: 78b894a @SyncManager@com.samsung.android.memo/com.osp.app.signin/a@example.org:android
+"""
+
+# A jobscheduler dump whose second job line carries neither a component nor a hash. It matches the
+# entry predicate, so it counts towards the census, and it cannot be attributed to any package: a
+# probe that only counted what it could parse would report the app's own jobs from a dump in which a
+# job it could not place had been silently dropped.
+JOBSCHEDULER_DUMP_UNATTRIBUTABLE = """\
+Battery level: 94
+Registered 2 jobs:
+  JOB #1000/29: 6a6e122 com.samsung.android.statsd/androidx.work.impl.background.systemjob.SystemJobService
+  JOB #1000/31: 6a6e123
+"""
+
+
 class WakeLockAndAlarmProbeTest(unittest.TestCase):
     """Finding 1: an unparsable power or alarm dump is an error, not a zero-lock B2 pass."""
 
@@ -329,6 +394,74 @@ class WakeLockAndAlarmProbeTest(unittest.TestCase):
             subject.count_held_wakelocks(device, None)
         probe.assert_not_called()
 
+    def test_a_wake_lock_of_another_type_is_counted_and_accounted_for(self) -> None:
+        # The census counts every lock on the device, and this device's was `Wake Locks: size=1`
+        # holding a `DOZE_WAKE_LOCK`. Enumerating `PARTIAL_WAKE_LOCK` alone leaves that census
+        # unaccounted for and the lock itself invisible: the app's own non-partial wake lock would be
+        # reported as no wake lock at all, which is a B2 pass it did not earn.
+        self.assertEqual(1, subject.parse_wakelock_count(POWER_DUMP_DOZE_LOCK, 10026))
+        self.assertEqual(0, subject.parse_wakelock_count(POWER_DUMP_DOZE_LOCK, 1013))
+
+    def test_a_power_dump_truncated_after_its_census_is_refused(self) -> None:
+        # The finding this closes: the census line survives truncation, so a parser that only asks
+        # whether a census is present reads a cut-off dump as a legitimate zero-lock pass.
+        lines = POWER_DUMP.splitlines()
+        cut = next(index for index, line in enumerate(lines) if "Wake Locks: size=" in line) + 1
+        census_only = "\n".join(lines[:cut]) + "\n"
+        with self.assertRaises(device_layer.ProbeError) as raised:
+            subject.parse_wakelock_count(census_only, 10026)
+        self.assertIn("declares 2", str(raised.exception))
+        self.assertIn("lists 0", str(raised.exception))
+
+    def test_a_census_that_outnumbers_the_locks_is_refused(self) -> None:
+        # A dump that stopped part-way through the lock list. The count and the dump disagree and
+        # there is no reading that reconciles them, so the window is refused rather than measured.
+        census_only = POWER_DUMP.replace("size=2", "size=4")
+        with self.assertRaises(device_layer.ProbeError) as raised:
+            subject.parse_wakelock_count(census_only, 10026)
+        self.assertIn("truncated", str(raised.exception))
+
+    def test_a_census_that_undercounts_the_locks_is_refused(self) -> None:
+        # The other direction. A census of 1 over a block holding 2 locks means one of them is a shape
+        # the census does not count, so the block cannot be read as this census's entries either.
+        undercounted = POWER_DUMP.replace("size=2", "size=1")
+        with self.assertRaises(device_layer.ProbeError) as raised:
+            subject.parse_wakelock_count(undercounted, 10026)
+        self.assertIn("lists 2", str(raised.exception))
+
+    def test_a_census_with_no_locks_at_all_is_still_a_real_zero(self) -> None:
+        # The refusal above must not turn a device that genuinely holds nothing into an error.
+        empty = POWER_DUMP.replace("size=2", "size=0").replace("_WAKE_LOCK", "_NOT_A_LOCK")
+        self.assertEqual(0, subject.parse_wakelock_count(empty, 10026))
+
+    def test_an_alarm_in_a_later_section_is_not_counted_as_pending(self) -> None:
+        # `ALARM_DUMP_WITH_SECTIONS` names this app in `Past-due non-wakeup alarms:` and in nothing
+        # pending. Scanning the whole dump for `Alarm{...}` finds the fired alarm and reports it as a
+        # pending one the app is holding, which is a B2 failure the app does not have.
+        self.assertEqual(0, subject.parse_alarm_count(ALARM_DUMP_WITH_SECTIONS))
+
+    def test_the_alarm_block_counts_multi_line_entries_and_stops_at_the_next_section(self) -> None:
+        # Each pending entry is an `Alarm{...}` header plus continuation lines, and the section after
+        # the block holds a second censused list of the same shape. The block has to end at the
+        # section boundary and count headers, not lines.
+        entries = subject.census_entry_block(
+            ALARM_DUMP_WITH_SECTIONS,
+            subject.ALARM_CENSUS_PATTERN,
+            subject.ALARM_ENTRY_PATTERN,
+            probe="alarm dump",
+            census_line="`pending alarms:`",
+            entry_shape="`<TYPE> #<n>: Alarm{…}`",
+        )
+        self.assertEqual(2, len(entries))
+
+    def test_an_alarm_census_that_does_not_match_the_block_is_refused(self) -> None:
+        # A dump truncated between the census and the entries is the same fabricated zero as the
+        # wake-lock one: the census line is what survives.
+        truncated = ALARM_DUMP_WITH_SECTIONS.replace("  2 pending alarms:", "  5 pending alarms:")
+        with self.assertRaises(device_layer.ProbeError) as raised:
+            subject.parse_alarm_count(truncated)
+        self.assertIn("declares 5", str(raised.exception))
+
 
 class LoadRecordsTest(unittest.TestCase):
     """Finding 3: a truncated state file is a named error, not a traceback."""
@@ -377,6 +510,38 @@ class JobProbeTest(unittest.TestCase):
         for dump in ("Settings:\n  min_ready_cpu_only_jobs_count=3\n", "", "no jobs here\n"):
             with self.subTest(dump=dump[:20]), self.assertRaises(device_layer.ProbeError):
                 subject.parse_job_count(dump)
+
+    def test_a_namespaced_job_is_attributed_to_its_package(self) -> None:
+        # `androidx.work.systemjobscheduler:<uid>/<id>` and `SyncManager:<uid>/<id>` are where an
+        # app's WorkManager workers and sync adapters actually live. The old pattern matched only
+        # `JOB #<uid>/<id>`, so a scheduled worker was invisible and the app read as holding no jobs.
+        self.assertEqual(1, subject.parse_job_count(JOBSCHEDULER_DUMP_NAMESPACED))
+
+    def test_every_job_line_is_accounted_for_by_the_census(self) -> None:
+        entries = subject.census_entry_block(
+            JOBSCHEDULER_DUMP_NAMESPACED,
+            subject.JOBSCHEDULER_CENSUS_PATTERN,
+            subject.JOB_ENTRY_PATTERN,
+            probe="jobscheduler dump",
+            census_line="`Registered <n> jobs:`",
+            entry_shape="`JOB [<namespace>:]#<uid>/<id>: <hash> <component>`",
+        )
+        self.assertEqual(3, len(entries))
+        self.assertEqual(3, len([line for line in entries if subject.JOB_LINE_PATTERN.match(line)]))
+
+    def test_a_job_line_that_cannot_be_attributed_is_refused(self) -> None:
+        # It matches the entry predicate, so it counts towards the census; if it were dropped from
+        # the per-package count instead, the app's own jobs would be reported from a dump in which a
+        # job nobody could place had gone missing.
+        with self.assertRaises(device_layer.ProbeError) as raised:
+            subject.parse_job_count(JOBSCHEDULER_DUMP_UNATTRIBUTABLE)
+        self.assertIn("cannot be attributed", str(raised.exception))
+
+    def test_a_job_census_that_does_not_match_the_list_is_refused(self) -> None:
+        truncated = JOBSCHEDULER_DUMP_NAMESPACED.replace("Registered 3 jobs:", "Registered 9 jobs:")
+        with self.assertRaises(device_layer.ProbeError) as raised:
+            subject.parse_job_count(truncated)
+        self.assertIn("declares 9", str(raised.exception))
 
 
 class PowerSourceProbeTest(unittest.TestCase):
@@ -437,6 +602,7 @@ class PowerSourceProbeTest(unittest.TestCase):
         device.run_adb.return_value = b"36\n"
         device.read_screen_on.return_value = True
         device.read_keyguard_locked.return_value = False
+        device.read_home_in_front.return_value = True
         return device
 
     def test_a_window_that_saw_a_charger_is_refused(self) -> None:
@@ -680,6 +846,34 @@ class ArmGuardTest(unittest.TestCase):
                     self.assertIsNone(error)
                     self.assertEqual(STOCK_COMPONENT, accepted)
 
+    def test_baseline_arm_refuses_another_package_s_live_wallpaper(self) -> None:
+        # Arm B admitted "any component that is not this app's service", which a third-party live
+        # wallpaper satisfies. Such a window would be recorded against the stock or black arm while
+        # draining whatever that live service costs, so the baseline it claims is not the baseline
+        # it measures.
+        other_live = "ComponentInfo{com.example.other/com.example.other.LiveWallpaperService}"
+        refused = self.refusal(WHITE_FRAME, other_live, subject.Arm.BASELINE, subject.Baseline.STOCK)
+        self.assertIn("com.example.other", refused)
+        self.assertIn("not a baseline", refused)
+
+    def test_baseline_arm_refuses_a_static_component_from_another_package(self) -> None:
+        # Naming the platform engine is stronger than "anything that is not ours": a component that
+        # looks static but belongs elsewhere is still not the baseline the criterion defines.
+        other_static = "ComponentInfo{com.example.launcher/com.example.launcher.ImageWallpaper}"
+        for baseline in (subject.Baseline.STOCK, subject.Baseline.BLACK):
+            with self.subTest(baseline=baseline):
+                refused = self.refusal(BLACK_FRAME, other_static, subject.Arm.BASELINE, baseline)
+                self.assertIn("not a baseline", refused)
+
+    def test_the_platform_engine_is_the_only_static_component_admitted(self) -> None:
+        self.assertTrue(subject.component_is_static(STOCK_COMPONENT))
+        self.assertTrue(subject.component_is_static(device_layer.PLATFORM_STATIC_WALLPAPER))
+        self.assertFalse(subject.component_is_static(SERVICE_COMPONENT))
+        self.assertFalse(
+            subject.component_is_static("ComponentInfo{com.example.other/com.example.other.LiveWallpaperService}")
+        )
+        self.assertFalse(subject.component_is_static(""))
+
     def test_the_baseline_luminance_is_recorded_not_gated(self) -> None:
         device = MagicMock()
         device.serial = "serial"
@@ -710,6 +904,7 @@ class VisiblePhaseGuardTest(unittest.TestCase):
         device.run_adb.return_value = b"36\n"
         device.read_screen_on.return_value = True
         device.read_keyguard_locked.return_value = False
+        device.read_home_in_front.return_value = True
         return device
 
     def test_a_mismatched_arm_is_refused_before_the_window_starts(self) -> None:
@@ -786,6 +981,7 @@ class AbortedRestoreTest(unittest.TestCase):
         device = MagicMock()
         device.read_process_cpu_clock_ticks.return_value = 100
         device.run_adb.return_value = b"36\n"
+        device.read_installed_apk_sha256.return_value = "a" * 64
         state_dir = Path(tempfile.mkdtemp())
         sink = subject.Recorder(state_dir)
         with (
@@ -835,6 +1031,7 @@ class AbortedRestoreTest(unittest.TestCase):
         device = MagicMock()
         device.read_process_cpu_clock_ticks.return_value = 100
         device.run_adb.return_value = b"36\n"
+        device.read_installed_apk_sha256.return_value = "a" * 64
         state_dir = Path(tempfile.mkdtemp())
         with (
             patch.object(subject, "DeviceStateSnapshot"),
@@ -860,6 +1057,8 @@ class AbortedRestoreTest(unittest.TestCase):
         device.run_adb.return_value = b"36\n"
         device.read_screen_on.return_value = True
         device.read_keyguard_locked.return_value = False
+        device.read_home_in_front.return_value = True
+        device.read_installed_apk_sha256.return_value = "a" * 64
         state_dir = Path(tempfile.mkdtemp())
         with (
             patch.object(subject, "DeviceStateSnapshot"),
@@ -886,6 +1085,8 @@ class AbortedRestoreTest(unittest.TestCase):
         device.run_adb.return_value = b"36\n"
         device.read_screen_on.return_value = True
         device.read_keyguard_locked.return_value = False
+        device.read_home_in_front.return_value = True
+        device.read_installed_apk_sha256.return_value = "a" * 64
         # A `dumpsys meminfo` that carried no TOTAL line, which is the third phase's own refusal.
         unparsable = subject.BatterySample(0.0, 1, 100, 4000, 1.0, None)
         state_dir = Path(tempfile.mkdtemp())
@@ -915,6 +1116,7 @@ class MemoryPhaseTest(unittest.TestCase):
         device.read_process_cpu_clock_ticks.return_value = 100
         device.read_screen_on.return_value = True
         device.read_keyguard_locked.return_value = False
+        device.read_home_in_front.return_value = True
         sample = subject.BatterySample(
             timestamp=0.0,
             charge_counter_uah=1,
@@ -1620,6 +1822,30 @@ class MeasurementIdentityTest(unittest.TestCase):
         self.assertIn("device_id", subject.IDENTITY_FIELDS)
         self.assertEqual(subject.device_identity(device), record.values["device_id"])
 
+    def test_the_digest_is_read_from_the_installed_apk(self) -> None:
+        # The identity the record carries is the build the *device* is running. Hashing the host
+        # checkout's artifact answers a different question, and answers it with `None` on a machine
+        # that never built one, so "unknown build" could be recorded as though it were an identity.
+        device = MagicMock()
+        device.read_installed_apk_sha256.return_value = "b" * 64
+        self.assertEqual("b" * 64, subject.read_apk_sha256(device))
+
+    def test_a_digest_the_device_cannot_answer_is_refused(self) -> None:
+        device = MagicMock()
+        device.read_installed_apk_sha256.return_value = None
+        with self.assertRaises(device_layer.ProbeError) as raised:
+            subject.read_apk_sha256(device)
+        self.assertIn("which build", str(raised.exception))
+
+    def test_a_record_now_names_the_installed_build(self) -> None:
+        device = MagicMock()
+        device.serial = "R58M12345AB"
+        device.run_adb.return_value = b"36\n"
+        device.read_installed_apk_sha256.return_value = "c" * 64
+        with patch.object(subject, "read_source_revision", return_value="rev"):
+            record = subject.build_record(device, "resources", 0.0)
+        self.assertEqual("c" * 64, record.apk_sha256)
+
     def test_phase_report_refuses_a_mixed_set(self) -> None:
         records = [
             {"phase": "hidden", "cpu_pct": 0.1, "apk_sha256": "aaa", "api_level": 36},
@@ -1810,6 +2036,7 @@ class VisibleHomeStateTest(unittest.TestCase):
         device.wake_screen.return_value = True
         device.read_screen_on.return_value = True
         device.read_keyguard_locked.return_value = False
+        device.read_home_in_front.return_value = True
         return device
 
     def test_the_keyguard_is_dismissed_and_home_is_shown_before_measuring(self) -> None:
@@ -1850,6 +2077,43 @@ class VisibleHomeStateTest(unittest.TestCase):
         device.wake_screen.return_value = False
         with self.assertRaises(device_layer.ProbeError):
             subject.ensure_visible_home(device)
+
+    def test_another_package_in_front_is_refused(self) -> None:
+        # `show_home()` sends KEYCODE_HOME and reports nothing about what it did. When the event is
+        # dropped the display, the keyguard and the arm all still read as the visible home state,
+        # and the app left in front is the surface the window would measure — a visible window whose
+        # wallpaper is not the one it names.
+        device = self.device()
+        device.read_home_in_front.return_value = False
+        with self.assertRaises(device_layer.ProbeError) as raised:
+            subject.ensure_visible_home(device)
+        self.assertIn("another package is in front", str(raised.exception))
+
+    def test_an_unreadable_foreground_package_is_refused(self) -> None:
+        # Three-valued, like the keyguard read: "could not be read" is not "the home screen is there".
+        device = self.device()
+        device.read_home_in_front.return_value = None
+        with self.assertRaises(device_layer.ProbeError) as raised:
+            subject.ensure_visible_home(device)
+        self.assertIn("could not be read", str(raised.exception))
+
+    def test_the_home_screen_is_read_back_until_it_is_in_front(self) -> None:
+        # The launcher takes a moment to come forward, so a single reading would refuse a window that
+        # is about to be valid. The readback is bounded the way the service-log confirmations are.
+        device = self.device()
+        device.read_home_in_front.side_effect = [False, None, True]
+        with patch.object(subject.time, "sleep") as sleep:
+            subject.ensure_visible_home(device)
+        self.assertEqual(3, device.read_home_in_front.call_count)
+        self.assertEqual(2, sleep.call_count)
+
+    def test_the_readback_is_bounded_and_refuses_once_it_runs_out(self) -> None:
+        device = self.device()
+        device.read_home_in_front.return_value = False
+        with patch.object(subject.time, "sleep") as sleep, self.assertRaises(device_layer.ProbeError):
+            subject.ensure_visible_home(device)
+        self.assertEqual(subject.HOME_CONFIRM_ATTEMPTS, device.read_home_in_front.call_count)
+        self.assertEqual(subject.HOME_CONFIRM_ATTEMPTS - 1, sleep.call_count)
 
 
 def _all_set_except(missing: str) -> Callable[[object, str, str], int | None]:
@@ -1982,7 +2246,7 @@ class LiveComponentIdentityTest(unittest.TestCase):
         with patch.object(device_layer, "read_wallpaper_component", return_value=SERVICE_COMPONENT):
             self.assertEqual(SERVICE_COMPONENT, subject.verify_arm(device, subject.Arm.LIVE, None))
 
-    def test_arm_b_admits_a_component_that_is_not_the_live_service(self) -> None:
+    def test_arm_b_admits_the_platform_static_engine(self) -> None:
         device = MagicMock()
         device.serial = "serial"
         with patch.object(device_layer, "read_wallpaper_component", return_value=STOCK_COMPONENT):
@@ -1990,6 +2254,17 @@ class LiveComponentIdentityTest(unittest.TestCase):
                 STOCK_COMPONENT,
                 subject.verify_arm(device, subject.Arm.BASELINE, subject.Baseline.STOCK),
             )
+
+    def test_arm_b_refuses_a_live_service_from_another_package(self) -> None:
+        device = MagicMock()
+        device.serial = "serial"
+        look_alike = "ComponentInfo{com.example.other/com.example.other.LiveWallpaperService}"
+        with (
+            patch.object(device_layer, "read_wallpaper_component", return_value=look_alike),
+            self.assertRaises(device_layer.ProbeError) as raised,
+        ):
+            subject.verify_arm(device, subject.Arm.BASELINE, subject.Baseline.STOCK)
+        self.assertIn("com.example.other", str(raised.exception))
 
 
 if __name__ == "__main__":

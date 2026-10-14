@@ -40,25 +40,54 @@ BATTERY_LEVEL_PATTERN: Final = re.compile(r"^[ \t]*level:[ \t]*(\d+)[ \t]*$", re
 BATTERY_VOLTAGE_PATTERN: Final = re.compile(r"^[ \t]*voltage:[ \t]*(\d+)[ \t]*$", re.MULTILINE)
 TOTAL_PSS_PATTERN: Final = re.compile(r"^\s*TOTAL\s+(\d+)", re.MULTILINE)
 SDK_PATTERN: Final = re.compile(r"^(\d+)$")
-# `dumpsys jobscheduler` lists each scheduled job as `JOB #<uid>/<id>: <hash> <pkg>/<service>`; the
-# fields after the colon are the job's deferred/source hash and the component. Group 3 is the package
-# the job belongs to, which is what attributes it to the app.
-JOB_LINE_PATTERN: Final = re.compile(r"^\s*JOB #(\d+)/(\d+):\s+\S+\s+([\w.]+)/", re.MULTILINE)
+# Every shape `dumpsys jobscheduler` prints a job line in, taken from the test device's own dump.
+# The two components at the end of a job line are a `<hash> <component>` pair; the component is
+# either `<pkg>/<class>` or `<ns>@<pkg>/<class>`, and one legacy line on this device is tagged
+# rather than component-shaped (`DownloadManager:<pkg>`). The old pattern recognised the plain
+# `JOB #<uid>/<id>` form only, which matched 74 of the 521 job lines this device lists: the
+# namespaced form (`androidx.work.systemjobscheduler:<uid>/<id>`, `SyncManager:<uid>/<id>`) is where
+# WorkManager and the sync adapters keep their jobs, so an app's own jobs could be silently dropped
+# from the count. Group 1 is the package the job belongs to, which is what attributes it to the app.
+JOB_LINE_PATTERN: Final = re.compile(
+    r"^\s*JOB \S+/-?\d+:\s+\S+\s+(?:@[\w.]+@)?(?:[A-Za-z][\w.]*:)?([\w.\-]+)(?:[/:]|$)",
+    re.MULTILINE,
+)
+# The job *entry* predicate: one line per job, whatever its shape. It is deliberately wider than
+# JOB_LINE_PATTERN, so that a job line the attribution cannot parse shows up as a count mismatch or
+# as an unparsable entry rather than being dropped silently.
+JOB_ENTRY_PATTERN: Final = re.compile(r"^\s*JOB \S+/-?\d+:", re.MULTILINE)
+# The wake-lock entry predicate counts every lock type, not `PARTIAL_WAKE_LOCK` alone. The census
+# counts the whole device, and this device's `Wake Locks: size=1` is a `DOZE_WAKE_LOCK`, so an
+# app-scoped count of partial locks can never equal the census and the census could never be
+# checked against it.
+WAKE_LOCK_ENTRY_PATTERN: Final = re.compile(r"^\s*\w+_WAKE_LOCK\b", re.MULTILINE)
+# The alarm entry predicate: the census block prints one `<TYPE> #<n>: Alarm{...}` header per
+# pending alarm. It must be read inside the census block only, because a later section lists alarms
+# of its own in exactly this shape — this device prints `Past-due non-wakeup alarms: 1` followed by
+# `ELAPSED #1: Alarm{...}` — and a whole-dump scan counts that one too.
+ALARM_ENTRY_PATTERN: Final = re.compile(r"^\s*\w+\s*#\d+:\s*Alarm\{", re.MULTILINE)
 # A `dumpsys jobscheduler` dump that has been read at all prints a `Registered <n> jobs:` census line
 # before the job list; requiring it is what separates "the app has no jobs" from "this is not a
 # jobscheduler dump", so an unparsable probe is an error rather than a zero.
-JOBSCHEDULER_CENSUS_PATTERN: Final = re.compile(r"^\s*Registered (\d+) jobs:", re.MULTILINE)
+JOBSCHEDULER_CENSUS_PATTERN: Final = re.compile(r"^[ \t]*Registered (\d+) jobs:", re.MULTILINE)
 # A `dumpsys power` that has been read at all prints its wake-lock census before listing the locks,
 # the same way `dumpsys jobscheduler` prints its job census. Requiring it is what separates "the app
 # holds no wake locks" from "this is not a power dump", so a truncated or reshaped dump is an error
 # rather than a zero.
-POWER_WAKELOCK_CENSUS_PATTERN: Final = re.compile(r"^\s*Wake Locks: size=(\d+)\s*$", re.MULTILINE)
+#
+# The leading and trailing whitespace classes are `[ \t]` and not `\s`. `\s` matches a newline, so
+# `^\s*(\d+) pending alarms:` can begin its match at the blank line *above* the census and run
+# into it — the match then starts one line early, and a parser that locates the censused block from
+# the match start reads the block from the wrong line. Requiring a line's own spaces keeps the match
+# on the census line.
+POWER_WAKELOCK_CENSUS_PATTERN: Final = re.compile(r"^[ \t]*Wake Locks: size=(\d+)[ \t]*$", re.MULTILINE)
 # `dumpsys alarm` likewise prints a census before listing the pending alarms, and that census is what
 # makes an alarm count trustworthy. The line is taken from the test device's own dump, which reads
-# `  152 pending alarms: ` — count first, no `Pending alarm batches:` line anywhere in it. A device
-# whose alarm dump is shaped differently fails loudly here rather than reporting a zero, which is the
-# behaviour this census exists for.
-ALARM_CENSUS_PATTERN: Final = re.compile(r"^\s*(\d+) pending alarms:\s*$", re.MULTILINE)
+# `  164 pending alarms: ` — count first, no `Pending alarm batches:` line anywhere in it. The count
+# is a count of entries and not the highest entry index: the block below this census is numbered `#1`
+# onwards, and on five consecutive reads of one device the declared count and the number of entry
+# lines agreed exactly, which is what `census_entry_block` holds them to.
+ALARM_CENSUS_PATTERN: Final = re.compile(r"^[ \t]*(\d+) pending alarms:[ \t]*$", re.MULTILINE)
 POWERED_LINE_PATTERN: Final = re.compile(r"^\s*(\w+) powered:\s*(true|false)\s*$", re.MULTILINE)
 # The four power sources `dumpsys battery` reports. A reading is only complete when all four are
 # present: a dump that lost three of them must not be read as "the remaining one is false, so the
@@ -89,6 +118,12 @@ MINIMUM_SECONDS_BY_PHASE: Final = {
     "visible": MINIMUM_WINDOW_MINUTES * 60.0,
     "memory": MINIMUM_MEMORY_MINUTES * 60.0,
 }
+# The launcher takes a moment to come forward after KEYCODE_HOME, so the readback that the home
+# screen is in front is bounded exactly the way the service-log confirmations in `device_layer` are:
+# five reads half a second apart, which covers the transition without holding the phase open.
+HOME_CONFIRM_ATTEMPTS: Final = 5
+HOME_CONFIRM_INTERVAL_SECONDS: Final = 0.5
+
 SAMPLE_INTERVAL_SECONDS: Final = 30.0
 COMMAND_TIMEOUT_SECONDS: Final = 60
 
@@ -864,47 +899,130 @@ def take_battery_sample(device: device_layer.AdbDevice, pid: int | None, clk_tck
     )
 
 
-def parse_wakelock_count(dump: str, app_uid: int) -> int:
+def census_entry_block(  # noqa: PLR0913 — the dump, the two patterns, and the three names it refuses by
+    dump: str,
+    census_pattern: re.Pattern[str],
+    entry_pattern: re.Pattern[str],
+    *,
+    probe: str,
+    census_line: str,
+    entry_shape: str,
+) -> list[str]:
     """
-    Count the partial wake locks a `dumpsys power` dump attributes to one UID.
+    Return the entry lines of a censused dump section, refusing unless they account for the census.
 
-    The dump's own `Wake Locks: size=<n>` census is required, for the same reason the jobscheduler
-    census is: a dump without it is not a power dump, and counting its matching lines would report
-    "the app holds no wake locks" from output that says nothing about wake locks at all. A dump that
-    carries the census and no lock for this UID is a real zero.
+    The census alone is not a check. A dump truncated after its census line still carries the count,
+    and a parser that reads only "does the census exist" then reports a legitimate zero from output
+    that lists nothing at all — a fabricated pass for the budget that measures it. Requiring the
+    enumerated entries to *equal* the declared count is what makes the census mean something, and it
+    fails in both directions: fewer entries is a truncated dump, more is a shape the probe does not
+    know that the count was never meant to include.
+
+    The block runs from the census line to the first line that is neither an entry nor indented
+    deeper than the census, so a later section cannot inflate it. That boundary is not hypothetical:
+    this device's alarm dump prints `Past-due non-wakeup alarms: 1` followed by
+    `ELAPSED #1: Alarm{...}` in exactly the entry shape, four hundred lines below the pending-alarm
+    census, and a scan of the whole dump counts it. Multi-line entries are why the boundary is drawn
+    by indentation rather than by "the first line that is not an entry": an alarm entry is an
+    `Alarm{...}` header followed by six or more `key=value` continuation lines, none of which are
+    entries.
+
+    `probe` names the dump for the message, `census_line` is the literal line required of it, and
+    `entry_shape` is what one entry looks like, so that a refusal says which of the two failures it
+    is rather than only that something was wrong.
     """
-    if POWER_WAKELOCK_CENSUS_PATTERN.search(dump) is None:
+    census = census_pattern.search(dump)
+    if census is None:
         detail = (
-            "the power dump carried no `Wake Locks: size=` census, so it cannot be read as a wake-lock "
-            "count; refusing to report a zero"
+            f"the {probe} carried no {census_line} census, so it cannot be read as a count of its "
+            f"entries; refusing to report a zero from output that lists none"
         )
         raise device_layer.ProbeError(detail)
+    declared = int(census.group(1))
+    lines = dump.splitlines()
+    census_index = dump.count("\n", 0, census.start())
+    census_text = lines[census_index] if census_index < len(lines) else ""
+    indent = len(census_text) - len(census_text.lstrip())
+    entries: list[str] = []
+    for line in lines[census_index + 1 :]:
+        if not line.strip():
+            continue
+        if entry_pattern.match(line):
+            entries.append(line)
+            continue
+        if len(line) - len(line.lstrip()) <= indent:
+            break
+    if len(entries) < declared:
+        detail = (
+            f"the {probe} declares {declared} entries but the block below its {census_line} census "
+            f"lists {len(entries)}: the dump is truncated, or an entry shaped like {entry_shape} was "
+            f"not recognised"
+        )
+        raise device_layer.ProbeError(detail)
+    if len(entries) > declared:
+        detail = (
+            f"the {probe} declares {declared} entries but its census block lists {len(entries)}: a "
+            f"line matching {entry_shape} that the census does not count is inside the block"
+        )
+        raise device_layer.ProbeError(detail)
+    return entries
+
+
+def parse_wakelock_count(dump: str, app_uid: int) -> int:
+    """
+    Count the wake locks a `dumpsys power` dump attributes to one UID.
+
+    The dump's own `Wake Locks: size=<n>` census is required *and* the enumerated locks must account
+    for it, for the reason `census_entry_block` gives. A dump that carries the census and no lock for
+    this UID is a real zero.
+
+    Every lock type is counted before the UID is applied, not `PARTIAL_WAKE_LOCK` alone. The census
+    counts the whole device and this device's `Wake Locks: size=1` is a `DOZE_WAKE_LOCK`, so a
+    partial-only scan could never be reconciled with the census and the census would go unchecked.
+    The B2 budget is about locks the app holds, whatever their type, so widening the predicate to
+    match the census also matches the budget.
+    """
+    entries = census_entry_block(
+        dump,
+        POWER_WAKELOCK_CENSUS_PATTERN,
+        WAKE_LOCK_ENTRY_PATTERN,
+        probe="power dump",
+        census_line="`Wake Locks: size=`",
+        entry_shape="`<TYPE>_WAKE_LOCK '<name>' ACQ=… (uid=<uid> …)`",
+    )
     # The uid is matched as a whole token, not as a prefix of one: a lock line for uid 10026 contains
     # the text `uid=1002`, so a prefix test would attribute another process's wake lock to an app
     # whose own uid happens to be a prefix of it, and report a B2 failure the app did not cause.
     uid_field = re.compile(rf"\buid={app_uid}\b")
-    return sum(1 for line in dump.splitlines() if "PARTIAL_WAKE_LOCK" in line and uid_field.search(line))
+    return sum(1 for line in entries if uid_field.search(line))
 
 
 def parse_alarm_count(dump: str, package: str = device_layer.PACKAGE_NAME) -> int:
     """
     Count the pending alarms a `dumpsys alarm` dump attributes to one package.
 
-    As with the power and jobscheduler probes, the dump's own `<n> pending alarms:` census is required
-    so that a truncated or reshaped dump is an error rather than a zero.
+    As with the power and jobscheduler probes, the dump's own `<n> pending alarms:` census is
+    required *and* the enumerated alarms must account for it, for the reason `census_entry_block`
+    gives.
     """
-    if ALARM_CENSUS_PATTERN.search(dump) is None:
-        detail = (
-            "the alarm dump carried no `pending alarms:` census, so it cannot be read as an "
-            "alarm count; refusing to report a zero"
-        )
-        raise device_layer.ProbeError(detail)
+    entries = census_entry_block(
+        dump,
+        ALARM_CENSUS_PATTERN,
+        ALARM_ENTRY_PATTERN,
+        probe="alarm dump",
+        census_line="`pending alarms:`",
+        entry_shape="`<TYPE> #<n>: Alarm{…}`",
+    )
     # The package is matched as a whole token, not as a substring, for the reason the uid is: an alarm
     # owned by a package such as `…astronomicalclockswallpaper.debug2` contains this app's name as a
     # prefix, and counting it would report a B2 failure the app did not cause. The dump prints the
     # package as the last token inside `Alarm{...}`, so it is delimited there in the text.
+    #
+    # Attribution runs over the census block rather than the whole dump, which is what stops an alarm
+    # that is *not* pending from counting as one: this device's `Past-due non-wakeup alarms:` section
+    # lists fired alarms that still name their owner in the same `Alarm{...}` shape.
     package_field = re.compile(rf"(?<![\w.]){re.escape(package)}(?![\w.])")
-    return sum(1 for line in dump.splitlines() if "Alarm{" in line and package_field.search(line))
+    return sum(1 for line in entries if package_field.search(line))
 
 
 def count_held_wakelocks(device: device_layer.AdbDevice, app_uid: int | None) -> int:
@@ -926,17 +1044,34 @@ def parse_job_count(dump: str, package: str = device_layer.PACKAGE_NAME) -> int:
     """
     Count the JobScheduler jobs a package holds in a `dumpsys jobscheduler` dump.
 
-    The dump's own `Registered <n> jobs:` census is required: a dump without it is not a jobscheduler
-    dump, and reading it as a zero would report "the app holds no jobs" from output that says nothing
-    about jobs at all. A dump that carries the census and no job for the package is a real zero.
+    The dump's own `Registered <n> jobs:` census is required *and* the enumerated jobs must account
+    for it, for the reason `census_entry_block` gives. A dump that carries the census and no job for
+    the package is a real zero.
+
+    Every job line must also be attributable to a package. The census check counts entries, so a job
+    line the attribution cannot parse would otherwise be counted towards the census, dropped from the
+    per-package total, and reported as "the app holds no such job" — the silent drop this refusal
+    replaces.
     """
-    if JOBSCHEDULER_CENSUS_PATTERN.search(dump) is None:
+    entries = census_entry_block(
+        dump,
+        JOBSCHEDULER_CENSUS_PATTERN,
+        JOB_ENTRY_PATTERN,
+        probe="jobscheduler dump",
+        census_line="`Registered <n> jobs:`",
+        entry_shape="`JOB [<namespace>:]#<uid>/<id>: <hash> <component>`",
+    )
+    unattributable = [line for line in entries if JOB_LINE_PATTERN.match(line) is None]
+    if unattributable:
         detail = (
-            "the jobscheduler dump carried no `Registered <n> jobs:` census, so it cannot be read as a "
-            "job count; refusing to report a zero"
+            f"the jobscheduler dump lists {len(unattributable)} job lines whose component cannot be "
+            f"attributed to a package, so the per-package count would silently drop them; the first "
+            f"is {unattributable[0].strip()!r}"
         )
         raise device_layer.ProbeError(detail)
-    return sum(1 for match in JOB_LINE_PATTERN.finditer(dump) if match.group(3) == package)
+    # Every entry line was shown above to match exactly once, so counting over the rejoined block is
+    # the same as counting per line, and it keeps the pattern's own match object for the package.
+    return sum(1 for match in JOB_LINE_PATTERN.finditer("\n".join(entries)) if match.group(1) == package)
 
 
 def count_jobs(device: device_layer.AdbDevice) -> int:
@@ -974,12 +1109,29 @@ def read_source_revision() -> str:
     return result.stdout.strip()
 
 
-def read_apk_sha256() -> str | None:
-    """Hash the debug APK under test, or None when it has not been built."""
-    apk = Path("app/build/outputs/apk/debug/app-debug.apk")
-    if not apk.is_file():
-        return None
-    return hashlib.sha256(apk.read_bytes()).hexdigest()
+def read_apk_sha256(device: device_layer.AdbDevice) -> str:
+    """
+    Read the SHA-256 of the APK as it is *installed on the device*, or refuse.
+
+    The record's `apk_sha256` is the identity of the build a window measured, and every report row
+    that aggregates windows is gated on it: `check_measurement_identity` refuses a set that mixes
+    two. Hashing the host checkout's `app/build/outputs/apk/debug/app-debug.apk` answered a
+    different question — the digest of the artifact on this machine, which need not be the build the
+    device is running — and answered it with `None` on a machine that never built the APK, so a
+    record could carry "unknown build" as though that were an identity.
+
+    Both steps are required to answer: a package that is not installed has no `base.apk` to hash, and
+    a device without `sha256sum` returns a shell error that is not a digest. Either is a refusal
+    rather than a null, because a null is what the field must never carry for a window that ran.
+    """
+    digest = device.read_installed_apk_sha256()
+    if digest is None:
+        detail = (
+            f"the SHA-256 of {device_layer.PACKAGE_NAME}'s installed base.apk could not be read, so the "
+            f"record cannot say which build this window measured"
+        )
+        raise device_layer.ProbeError(detail)
+    return digest
 
 
 def device_identity(device: device_layer.AdbDevice) -> str:
@@ -1071,7 +1223,7 @@ def build_record(device: device_layer.AdbDevice, phase: str, duration_seconds: f
         phase=phase,
         recorded_at=dt.datetime.now(dt.UTC).isoformat(timespec="seconds"),
         revision=read_source_revision(),
-        apk_sha256=read_apk_sha256(),
+        apk_sha256=read_apk_sha256(device),
         api_level=api_level,
         duration_seconds=duration_seconds,
         # The device is stamped here rather than passed in: every record has to carry it, so there is
@@ -1158,16 +1310,33 @@ def component_is_live(component: str) -> bool:
     return component_name(component) == device_layer.SERVICE_NAME
 
 
+def component_is_static(component: str) -> bool:
+    """
+    Report whether a home-wallpaper component is the platform's own static wallpaper engine.
+
+    Arm B accepts a component on the strength of it not being this app's live service, which admits
+    *another package's* live wallpaper: a third-party live service is neither this app nor a static
+    image, and a window measured on one would be recorded as the stock or black baseline while
+    draining whatever that service costs. Requiring the platform engine closes that, and it is the
+    strongest statement the component supports — which static *image* the engine carries is a
+    separate, undecidable question, so this predicate does not claim one.
+    """
+    return component_name(component) == device_layer.PLATFORM_STATIC_WALLPAPER
+
+
 def verify_arm(device: device_layer.AdbDevice, arm: Arm, baseline: Baseline | None) -> str:
     """
     Refuse a window whose device does not match the arm it is about to be recorded against.
 
     The component is the fact that decides the arm, and it is decidable: the home slot names the live
-    service when the app is bound and a static component when it is not. Which *static* image a
-    baseline carries is not decidable this way, and the screen's own luminance does not decide it
-    either — this device's OEM stock wallpaper is a dark starfield, so a brightness threshold would
-    refuse valid stock windows while still not separating the two baselines. The luminance is
-    recorded with every window as an observation and is not used to admit one.
+    service when the app is bound and the platform's static engine when it is not. Arm B therefore
+    requires the platform engine by name rather than accepting anything that is not this app's
+    service — a third-party live wallpaper satisfies "not this app" and would be recorded as the
+    stock or black baseline. Which *static* image a baseline carries is not decidable this way, and
+    the screen's own luminance does not decide it either — this device's OEM stock wallpaper is a
+    dark starfield, so a brightness threshold would refuse valid stock windows while still not
+    separating the two baselines. The luminance is recorded with every window as an observation and
+    is not used to admit one.
     """
     component = device_layer.read_wallpaper_component(device.serial)
     if arm is Arm.LIVE:
@@ -1183,6 +1352,14 @@ def verify_arm(device: device_layer.AdbDevice, arm: Arm, baseline: Baseline | No
         raise device_layer.ProbeError(detail)
     if component_is_live(component):
         detail = f"arm B was requested but the live service is still bound as {component_name(component)}"
+        raise device_layer.ProbeError(detail)
+    if not component_is_static(component):
+        detail = (
+            f"arm B was requested but the bound wallpaper is {component_name(component)}, which is "
+            f"neither this app's service nor the platform's static engine "
+            f"({device_layer.PLATFORM_STATIC_WALLPAPER}); another package's live wallpaper is not a "
+            f"baseline"
+        )
         raise device_layer.ProbeError(detail)
     return component
 
@@ -1227,6 +1404,34 @@ def power_source_problem(on_battery: Sequence[bool]) -> str | None:
     return None
 
 
+def wait_home_in_front(device: device_layer.AdbDevice) -> bool | None:
+    """
+    Read back that the home screen is in front, bounded the way the service-log confirmations are.
+
+    `show_home` sends an input event and reports nothing about what it did; an event the system drops
+    leaves the previous app in front, and every other check in `ensure_visible_home` still passes —
+    the display is on, the keyguard is not locked, and the bound wallpaper component is the one the
+    arm requested. The surface measured would then be that other app's, and the wallpaper the window
+    claims to measure would not be the wallpaper on screen. The launcher takes a moment to come
+    forward, so this re-reads a bounded number of times rather than once.
+
+    Returns None when no read succeeded, which the caller must treat as a refusal: "could not be
+    read" is not "the home screen is there".
+    """
+    saw_not_in_front = False
+    for attempt in range(HOME_CONFIRM_ATTEMPTS):
+        reading = device.read_home_in_front()
+        if reading is True:
+            return True
+        # A `False` is the device saying some other package is in front, which no later reading
+        # retracts; a `None` is a read that said nothing. They are kept apart so that a run of
+        # unreadable dumps is not reported as "another app is in front", and vice versa.
+        saw_not_in_front = saw_not_in_front or reading is False
+        if attempt + 1 < HOME_CONFIRM_ATTEMPTS:
+            time.sleep(HOME_CONFIRM_INTERVAL_SECONDS)
+    return False if saw_not_in_front else None
+
+
 def ensure_visible_home(device: device_layer.AdbDevice) -> None:
     """
     Put the device on the home screen with the display on, or refuse the window.
@@ -1236,6 +1441,12 @@ def ensure_visible_home(device: device_layer.AdbDevice) -> None:
     that started locked, or with another app in front, would have its lock screen or that app measured
     while the bound component still matched the requested arm. The qualification harness establishes
     this state explicitly before its own screen-on phases, and this one now does too.
+
+    The two checks after `show_home()` are what make the state *established* rather than requested,
+    and they cover different failures: the keyguard read says no lock surface is covering the home
+    screen, and the foreground read says the home screen is the thing in front at all. Neither
+    implies the other — a device unlocked on another app's activity passes the first and fails the
+    second — and both are three-valued, so an unreadable device is refused rather than assumed.
     """
     if not device.wake_screen():
         detail = "the display could not be woken for a visible window"
@@ -1256,6 +1467,22 @@ def ensure_visible_home(device: device_layer.AdbDevice) -> None:
         raise device_layer.ProbeError(detail)
     if keyguard is None:
         detail = "the keyguard state could not be read, so it cannot be shown that the home screen is displayed"
+        raise device_layer.ProbeError(detail)
+    # `show_home()` above sent the event; this is what says it landed. The keyguard and the display
+    # can both read as the visible home state wants while another app is still in front, because
+    # neither of them names the surface: KEYCODE_HOME is an input event the system may drop, and a
+    # dropped one leaves the previous app in front with the bound home component still matching the
+    # requested arm. The readback is three-valued for the same reason the keyguard's is.
+    in_front = wait_home_in_front(device)
+    if in_front is False:
+        detail = (
+            f"another package is in front after KEYCODE_HOME: the device reports "
+            f"{device.read_foreground_package()} where it resolves {device.read_home_package()} as home, "
+            f"so the wallpaper is not the surface this window would measure"
+        )
+        raise device_layer.ProbeError(detail)
+    if in_front is None:
+        detail = "the foreground package could not be read, so it cannot be shown that the home screen is displayed"
         raise device_layer.ProbeError(detail)
 
 
@@ -1291,7 +1518,7 @@ def phase_resources(device: device_layer.AdbDevice) -> Record:
     wake_locks = count_held_wakelocks(device, uid)
     alarms = count_alarms(device)
     jobs = count_jobs(device)
-    print(f"$ adb -s {device.serial} shell dumpsys power   (PARTIAL_WAKE_LOCK uid={uid}) -> {wake_locks}")
+    print(f"$ adb -s {device.serial} shell dumpsys power   (every wake-lock type, uid={uid}) -> {wake_locks}")
     print(f"$ adb -s {device.serial} shell dumpsys alarm   ({device_layer.PACKAGE_NAME}) -> {alarms}")
     print(f"$ adb -s {device.serial} shell dumpsys jobscheduler   ({device_layer.PACKAGE_NAME}) -> {jobs}")
     summary = read_batterystats_summary(device)
