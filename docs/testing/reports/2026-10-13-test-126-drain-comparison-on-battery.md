@@ -148,7 +148,7 @@ its duration.
 | --- | --- | --- | --- |
 | 2026-10-13 | **B4, relative increase against stock** | **−25.038%** point estimate (**95% CI upper bound +14.449%**, 4 pairs, df 3, t 3.182) | **FAIL.** The point estimate is inside the 12.0123% budget — it says the live wallpaper drew *less* than the stock baseline — but the criterion requires the paired 95% upper bound to stay below the threshold as well, and **+14.449% is above 12.0123%**. The interval is too wide to certify the budget. It would also have failed the 5% provisional threshold, so the pilot's floor did not change this verdict |
 | 2026-10-13 | **B5, visible CPU** | mean **3.7479% of one core** over the four live windows; worst window 3.7780% | **FAIL** against the committed 3% budget. Every one of the four live windows is above it on its own (3.7006%, 3.7780%, 3.7371%, 3.7758%), so the verdict does not rest on the mean |
-| 2026-10-13 | B2 wake locks | 0 | PASS |
+| 2026-10-13 | B2 wake locks | 0 | PASS. Partial locks only: the probe at this revision enumerated `PARTIAL_WAKE_LOCK` and nothing else, while the budget is now 0 wake locks of any type, reconciled against the dump's own census. Both landed later in the same pull request |
 | 2026-10-13 | B2 alarms | 0 | PASS |
 | 2026-10-13 | B2 jobs | 0 | PASS |
 | 2026-10-13 | B3 hidden CPU | 0.0404% of one core over 10 minutes | PASS against the 0.1% budget |

@@ -33,6 +33,13 @@ and prints its own evidence. Wake locks are counted from `dumpsys power` lines t
 counted from `dumpsys alarm` lines naming the package. A UID that cannot be resolved is an error,
 not a zero.
 
+**The wake-lock count below is of partial locks only**, which is what the probe enumerated at the
+revision this pass ran. The budget is now **0 wake locks of any type** and the probe reconciles every
+`<TYPE>_WAKE_LOCK` entry against the dump's own `Wake Locks: size=` census, both of which landed
+later in the same pull request. A lock of another type — a `DOZE_WAKE_LOCK`, say — held by the app
+would not appear in this pass's evidence, so this report substantiates the partial-lock criterion
+rather than the current one.
+
 The B3 window sleeps the display, then samples `dumpsys power`'s display state every 30 seconds for
 the whole ten minutes and *requires* every sample to read off, so the window is a screen-off window
 by measurement rather than by an endpoint check. CPU comes from `/proc/<pid>/stat` deltas, counted
@@ -47,7 +54,7 @@ command exit non-zero. Every record here carries an empty `restore_problems` lis
 
 | Date | Check | Observed |
 | --- | --- | --- |
-| 2026-10-12 | B2, wake locks and alarms | `dumpsys power` filtered by `uid=10026` (the wallpaper process's own UID, read from `/proc/20859`) matched 0 `PARTIAL_WAKE_LOCK` lines; `dumpsys alarm` matched 0 `Alarm{` lines naming the package. Both against a budget of zero |
+| 2026-10-12 | B2, wake locks and alarms | `dumpsys power` filtered by `uid=10026` (the wallpaper process's own UID, read from `/proc/20859`) matched 0 `PARTIAL_WAKE_LOCK` lines; `dumpsys alarm` matched 0 `Alarm{` lines naming the package. Both against a budget of zero. Partial locks only — see the Method note above |
 | 2026-10-12 | B2, corroboration | `dumpsys batterystats` for the package reported `Total cpu time: u=1m 30s 768ms s=1m 1s 655ms`, `Fg Service for: 7m 2s 103ms`, `Total running: 13m 45s 367ms`. The issue classes this as a software model and corroborating evidence only, and it is recorded as such |
 | 2026-10-12 | B3, hidden CPU | 604.17 s of screen-off window with the CPU counters read at both ends: **0.0397% of one core**, against the 0.1% budget. The display state was sampled 20 times inside the window and read off for all 20 |
 | 2026-10-12 | B6, memory growth | 30.0 min of visible window: total PSS 50037 kB → 51670 kB, growth **+1633 kB** against the 6144 kB budget |

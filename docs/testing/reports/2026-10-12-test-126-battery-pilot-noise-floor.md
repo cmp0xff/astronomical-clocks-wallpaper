@@ -65,7 +65,7 @@ not support what was claimed of it, and this report replaces those claims rather
 
 | Claim in the opening commit | What the run and this pilot show |
 | --- | --- |
-| 0 wake locks, 0 alarms | Both counts were read once, on the home screen, before a five-second sample. A single-instant census is what the probe reads; it is not a duration, and Android vitals' own 2-hour-in-24 measurement is what bounds a duration |
+| 0 wake locks, 0 alarms | Both counts were read once, on the home screen, before a five-second sample. A single-instant census is what the probe reads; it is not a duration, and Android vitals' own 2-hour-in-24 measurement is what bounds a duration. The wake-lock count is of partial locks, the only type the probe enumerated at this revision |
 | "CPU < 1.5 s" | That figure is a lifetime cumulative `batterystats` total and not a rate, and it was quoted in place of the per-sample figure the same run printed: 0.270 s and 0.320 s of CPU in 5 s, which is 5.40% and 6.40% of one core. Against the document's own budgets — B5 at 3% and B3 at 0.1% — those are failures |
 | "delta=0 uAh", "voltage=0 mV" | The zero voltage came from the unanchored pattern matching `Max charging voltage: 0`. The zero delta is real but means the charge counter is frozen, not that the device drew nothing; this pilot reproduces it across four fifteen-minute windows, and the drain report records it as the dead channel that leaves B4 unmeasurable |
 | "137 tests passing" | 137 was the whole `scripts` suite. The battery protocol's own file held 12 tests then and holds 54 now |
