@@ -30,9 +30,9 @@ resource budgets and avoid degrading battery life:
 | Criterion | Target Budget | Verification Methodology |
 | --- | --- | --- |
 | **B1: Hidden/Screen-Off Frames** | **0 frames** (hard requirement) | Frame counter or producer-trace window while the engine is hidden and the display is off. **Not measured by this protocol**: the frame console is #125 criterion 1, which has since landed its own evidence — the [2026-10-12 producer-trace pass](testing/reports/2026-10-12-test-125-hidden-frames-and-reboot.md) reads 0 frames over 60 s, bracketed by visible controls that do render. This document does not claim it. |
-| **B2: Wake Locks, Alarms & Jobs** | **0 wake locks**, 0 pending alarms of any kind, **0 JobScheduler jobs** | `dumpsys power`, `dumpsys alarm` and `dumpsys jobscheduler`, attributed by the app's UID and by package — each matched as a whole token, so one uid or one package name cannot be matched by a prefix or a substring of another — and each dump's own census line must be present, so an unparsable probe is an error rather than a count of zero |
+| **B2: Wake Locks, Alarms & Jobs** | **0 wake locks**, 0 pending alarms of any kind, **0 JobScheduler jobs** | `dumpsys power`, `dumpsys alarm` and `dumpsys jobscheduler`, attributed by the app's UID and by package — each matched as a whole token, so one uid or one package name cannot be matched by a prefix or a substring of another — and each dump's own census line must be present **and must account for every entry the dump enumerates**: the count of enumerated entries must equal the declared count, so an unparsable or truncated probe is an error rather than a count of zero |
 | **B3: Hidden CPU Utilization** | **≤ 0.1% of one core** over ≥ 10 min | `/proc/<pid>/stat` deltas over a screen-off duration whose display state is sampled throughout |
-| **B4: Visible Screen-On Drain** | **≤ 12.0123% relative increase** vs the stock baseline — the committed noise floor, not the 5% provisional | A/B/A/B alternating runs of ≥ 15 minutes against stock `ImageWallpaper`; the paired 95% upper bound must also stay below the threshold. A black static wallpaper is the secondary baseline, required only where the device permits setting one |
+| **B4: Visible Screen-On Drain** | **≤ 12.0123% relative increase in mean discharge rate** vs the stock baseline — the committed noise floor, not the 5% provisional | The fuel-gauge charge counter (`dumpsys battery` `Charge counter`, µAh) read at both ends of each window, its delta over the window expressed as a mean current in µA, compared live against stock. A/B/A/B alternating runs of ≥ 15 minutes against stock `ImageWallpaper`; the paired 95% upper bound must also stay below the threshold. A black static wallpaper is the secondary baseline, required only where the device permits setting one |
 | **B5: Visible CPU Utilization** | **≤ 3% of one core** at 1 Hz over ≥ 15 min | `/proc/<pid>/stat` process ticks during a visible home-screen window |
 | **B6: Memory Stability** | **≤ 6144 kB** total-PSS growth, the budget the existing qualification harness runs at | `dumpsys meminfo` PSS sampling across a ≥ 30-minute window |
 
@@ -54,6 +54,11 @@ its own evidence. No single invocation, and above all no single window, blocks f
    override is cleared only when it was applied. The power source is re-sampled inside the window,
    and a window that saw a charger appear is refused as not a discharge measurement rather than
    recorded as one.
+
+   B4's percentage is a relative increase in **discharge rate**, and it is not a CPU figure: its
+   numerator and denominator are both charge-counter currents in µA, so 12.0123% means the live arm's
+   mean discharge rate may exceed the baseline arm's by that fraction of the baseline arm's own rate.
+   B5 is the separate CPU channel, measured from `/proc/<pid>/stat` in percent of one core.
 2. **Environmental Controls**:
    - Screen brightness pinned at a constant level with auto-brightness off.
    - Airplane mode enabled, to take the cellular and Wi-Fi radios out of the comparison.
@@ -80,8 +85,13 @@ its own evidence. No single invocation, and above all no single window, blocks f
      failing report rather than one indistinguishable from a device that cannot set a wallpaper.
 4. **Arm verification, not arm switching**: the harness never performs the wallpaper swap it
    measures. Before each window it checks that the device matches the requested arm — the live
-   service component for arm A, and any static component for arm B — and refuses the window
-   otherwise, so a mis-swapped wallpaper fails the window rather than being recorded as a valid one.
+   service component for arm A, and the platform's own static wallpaper engine
+   (`com.android.systemui/com.android.systemui.wallpapers.ImageWallpaper`) for arm B — and refuses
+   the window otherwise, so a mis-swapped wallpaper fails the window rather than being recorded as a
+   valid one. Arm B is admitted on that named component and not merely on "anything that is not this
+   app's service": a third-party live wallpaper satisfies the latter and is not a baseline, so a
+   window measured on one would be recorded against the stock or black arm while draining whatever
+   that service costs.
    The screen's own luminance is recorded with every window and is deliberately **not** a gate: on
    the first device this was run against, the OEM stock wallpaper is a dark starfield whose median
    luminance sits at the black baseline's, so a brightness threshold would have refused valid stock
@@ -96,14 +106,18 @@ its own evidence. No single invocation, and above all no single window, blocks f
 
    The floor must be read for what it is, because it is **not the statistic B4 tests**. A single
    arm's 2σ bounds how far one window's rate can move. B4's criterion is the paired 95% upper bound
-   on the live-minus-baseline difference, and pairing removes the drift both arms share, so that
-   interval is narrower than the single-arm spread the floor is taken from. A threshold set to the
-   single-arm floor is therefore a *conservative* stand-in for the statistic actually tested, never a
-   tighter one — and it cannot by itself predict whether a run will pass, because the interval's
-   width also depends on the per-pair difference sd and on how many pairs were recorded. What that
-   leaves uncalibrated is recorded rather than glossed: each report states the σ_d it observed, so the
-   pair count a future run needs can be computed from measurement instead of guessed, and the
-   threshold is committed to a fixed n before the run rather than re-read after it.
+   on the live-minus-baseline difference, and pairing removes the drift both arms share. The floor is
+   nonetheless **not a conservative stand-in for the statistic actually tested**, and the record says
+   so: the margin the test must clear is `t(n−1)·σ_d/√n`, so it is governed by the per-pair
+   difference sd and by the number of pairs `n`, and it can exceed the threshold several times over.
+   The [2026-10-13 four-pair pass](testing/reports/2026-10-13-test-126-drain-comparison-on-battery.md)
+   is the measured example: a −25.038% point estimate carried a 95% interval half-width of 39.49%
+   against a 12.0123% bar, and the run failed on the interval rather than on the direction. A
+   threshold taken from the single-arm floor therefore neither bounds the interval from above nor
+   predicts whether a run will pass. What that leaves uncalibrated is recorded rather than glossed:
+   each report states the σ_d it observed, so the pair count a future run needs can be computed from
+   measurement instead of guessed, and the threshold is committed to a fixed n before the run rather
+   than re-read after it.
 
    The final threshold is the greater of the provisional value and the observed noise floor, and it is
    committed — the constants in `scripts/battery_protocol.py` are changed and committed, and a dated
@@ -156,7 +170,9 @@ Retrieved 2026-10-12. Both anchors are quoted from primary documentation rather 
 ## Recorded runs
 
 Each run is a dated report under [`testing/reports/`](testing/reports/), carrying its device's
-Android/API level, APK checksum and source revision, and the limits of what it measured:
+Android/API level, the SHA-256 of the APK **as installed on the device** — read from the device
+rather than from a host build artifact, so the digest names the build the windows actually ran
+against — and the source revision, and the limits of what it measured:
 
 - [2026-10-12 pilot and committed thresholds](testing/reports/2026-10-12-test-126-battery-pilot-noise-floor.md)
   — four 15-minute windows on one device, the floors they give, and the thresholds committed from them.
