@@ -85,8 +85,86 @@ screen state, one site, and a three-hour window of a device's day are not a gene
 
 ## Observed results
 
-To be recorded by the commit that follows the run.
+The pass ran from 2026-10-13 23:31 to 2026-10-14 03:14 local, 3 h 43 m of wall clock carrying 3 h 02 m
+of measured windows; the rest is the arm swaps and one interruption below.
+
+| Window | Arm | Duration | Charge-counter delta | Discharge rate | CPU | In-window samples |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | A (live) | 917.3 s | 162000 uAh | 635805 uA | 4.2540% of one core | 30/30 display on, on battery |
+| 2 | B (stock) | 919.6 s | 193500 uAh | 757512 uA | — no process to read, as expected for a static wallpaper | 30/30 |
+| 3 | A | 919.7 s | 94500 uAh | 369883 uA | 4.4219% | 30/30 |
+| 4 | B | 916.4 s | 121500 uAh | 477296 uA | — | 30/30 |
+| 5 | A | 917.6 s | 72000 uAh | 282485 uA | 4.3125% | 30/30 |
+| 6 | B | 917.8 s | 76500 uAh | 300062 uA | — | 30/30 |
+| 7 | A | 919.6 s | 81000 uAh | 317101 uA | 4.3128% | 30/30 |
+| 8 | B | 916.3 s | 144000 uAh | 565727 uA | — | 30/30 |
+| 9 | A | 919.4 s | 81000 uAh | 317180 uA | 4.3172% | 30/30 |
+| 10 | B | 918.1 s | 139500 uAh | 547015 uA | — | 30/30 |
+| 11 | A | 917.7 s | 76500 uAh | 300092 uA | 4.4164% | 30/30 |
+| 12 | B | 920.8 s | 144000 uAh | 562982 uA | — | 30/30 |
+
+| Date | Check | Observed |
+| --- | --- | --- |
+| 2026-10-13 | arm verification | Each of the twelve records names the component it was measured against — the live service for arm A, the static `ImageWallpaper` for arm B — so no window was recorded against the wrong arm |
+| 2026-10-13 | power source | Every window recorded `power_source: device` and `on_battery` true at all 30 in-window samples, so no window was measured across a charger appearing |
+| 2026-10-13 | device state restored | All twelve records carry `restore_problems: []`; brightness, brightness mode, the timeout, airplane mode and the stay-awake setting were read back at their pre-window values |
+| 2026-10-13 | B2 | `resources`: 0 partial wake locks for uid 10026, 0 pending alarms and 0 jobs for the package |
+| 2026-10-13 | measurement identity | One APK digest, one API level, one power source and one `CLK_TCK` across all thirteen records, so the set aggregates as one configuration |
+| 2026-10-13 | harness revision | The windows were measured at `594d68c`; the `resources` record carries `9808562`. `git diff 9808562 594d68c -- scripts/` is empty, so the same harness code measured both |
+
+### Interruptions
+
+One, recorded rather than smoothed over. **The twelfth window aborted at 750 s of 900 s**: the
+wireless-debugging transport dropped mid-window, `adb` reported the device offline, and the in-window
+restore could not run, so the device was left with airplane mode still enabled. The phase wrote no
+record — a window that did not finish is not a measurement — and the aborted restore was surfaced on
+stderr rather than swallowed. Airplane mode was cleared by hand, the device re-checked as arm B with
+the display on and the launcher in front, and the window re-run from the start. **The re-run is the
+twelfth pre-registered window, not a fifth-through-eighth added after seeing a result**: the count was
+fixed before the pass, and no window was dropped or added for how it came out.
+
+### Gauge resolution, measured from this run's own counters
+
+Every charge-counter reading in the twelve windows is a multiple of **4500 uAh**, and there is no
+smaller divisor across them, so the quantum this device reports at is 4.5 mAh rather than the 1000 uAh
+the 2026-10-12 report assumed. That is 2.3%–6.2% of a single window's delta, which is the same order
+as the threshold the criterion is judged against. It is a property of the gauge and it applies to both
+arms of a pair, so the paired difference is far less exposed to it than an absolute rate would be —
+but any reading of a single window carries it, and the per-window rates below should be read with that
+in mind.
 
 ## Verdicts
 
-To be recorded by the commit that follows the run.
+| Date | Criterion | Observed | Verdict |
+| --- | --- | --- | --- |
+| 2026-10-14 | **B4, relative increase against stock** | **−30.775%** point estimate; **95% CI upper bound −11.615%**; 6 pairs, df 5, t 2.571, σ_d 97676 uA (18.254% of the 535099 uA baseline mean), margin 19.16% | **PASS.** Both of B4's lines are inside the committed 12.0123% threshold, and the upper bound is inside it with 23.6 points to spare. The live wallpaper drew less than the stock baseline in **every one of the six pairs**, by between 17577 uA and 262890 uA |
+| 2026-10-14 | **B5, visible CPU** | mean **4.3391%** of one core over the six live windows, worst 4.4219% | **FAIL** against the 3% budget. Every one of the six live windows is above it on its own (4.2540%, 4.4219%, 4.3125%, 4.3128%, 4.3172%, 4.4164%), so the verdict does not rest on the mean |
+| 2026-10-14 | B2 | 0 wake locks, 0 alarms, 0 jobs | **PASS** |
+| 2026-10-14 | B4 against the black baseline | no black windows recorded | **NOT MEASURED (DEVICE-LIMITED)**, as the report prints: that baseline is required only where the device permits setting one, and this pass did not set one |
+| 2026-10-14 | B3, B6 | no hidden or memory window in this pass | **NOT MEASURED.** Their measurements stand in the earlier reports and were not re-run here |
+
+`python3 scripts/battery_protocol.py --state build/reports/battery-126-n6 report` prints these verdicts
+and exits 1, on B5 and on the two unmeasured criteria.
+
+## What this establishes, and what it does not
+
+**It establishes** that on this device, this build and these window conditions, the paired 95% upper
+bound on the live-versus-stock discharge difference is below the committed threshold at six pairs.
+#126's criterion 3 can be read from this for the stock baseline.
+
+**It does not establish** the comparison against the black static baseline, which stays device-limited
+and unmeasured for the reason the earlier reports give. It does not explain the **direction** of the
+difference: the live arm drew less than stock in every pair, and no mechanism is claimed for that. The
+pass is one device, one build, one screen state, one site, and three hours of one evening.
+
+**It corrects two figures the earlier reports carried.** The gauge quantum is 4.5 mAh, not 1 mAh, so
+a single window's quantisation is 2.3%–6.2% rather than 0.3%. And this device's per-pair difference sd
+came in at 18.254% of the baseline mean, against the 24.819% the 2026-10-13 pass measured — which is
+what the pre-registration projected the pair count from, and the reason six pairs were enough.
+
+**It does not repeal the re-specification question.** The recorded 2026-10-13 run failed B4 on its
+upper bound against a threshold committed from a different statistic. This run passed, but a pass at a
+favourable point estimate does not settle whether the criterion's threshold and statistic belong
+together. At the σ_d measured here, six pairs certify the budget only if the live arm measures about
+15% better than stock; a device at parity would still need roughly nineteen pairs. That is the number
+to re-specify from, and it is worth an issue even though this pass passed.

@@ -162,6 +162,11 @@ Android/API level, APK checksum and source revision, and the limits of what it m
   channel's floor is 12.0123% of the mean, which raised the committed B4 threshold from the 5%
   provisional to 12.0123%, and the comparison then **failed** on its 95% upper bound (+14.449%)
   while B5 was measured and **failed** again at 3.7479% of one core.
+- [2026-10-13 pre-registered six-pair A/B/A/B on battery](testing/reports/2026-10-13-test-126-drain-comparison-six-pairs.md)
+  — six alternations fixed before the pass, under the same committed threshold: B4 **passes** at a
+  −30.775% point estimate with a 95% upper bound of −11.615% against 12.0123%, σ_d 18.254%; B5
+  **fails** again at 4.3391% of one core; and the gauge is measured to quantise at 4.5 mAh rather
+  than the 1 mAh the 2026-10-12 report assumed.
 
 The reports are the record. A state file is working data and is reset between runs so that the
 pilot's windows cannot enter the final comparison; the floors the thresholds were committed from are
