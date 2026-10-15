@@ -1073,6 +1073,149 @@ class SharedDeviceLayerTest(unittest.TestCase):
                     self.assertFalse(hasattr(harness, name), f"{harness.__name__} shadows {name}")
 
 
+class WallpaperComponentParsingTest(unittest.TestCase):
+    """The arm-critical `dumpsys wallpaper` read, parsed directly rather than through a mock."""
+
+    # The read's expected values are the identifiers the harness itself names — `SERVICE_NAME` and
+    # `PLATFORM_STATIC_WALLPAPER` — while the dump prints each of them inside a `ComponentInfo{}`
+    # wrapper. The two must be equal for an arm check to compare a reading against a named component
+    # at all, so the parser strips the wrapper and these fixtures keep both forms apart on purpose.
+    LIVE = device_layer.SERVICE_NAME
+    LOCK = "com.example.lock/com.example.LockWallpaper"
+    STATIC = device_layer.PLATFORM_STATIC_WALLPAPER
+
+    def wrapped(self, component: str) -> str:
+        """Return a component as `dumpsys wallpaper` prints it, inside the `ComponentInfo{}` wrapper."""
+        return f"ComponentInfo{{{component}}}"
+
+    def read(self, output: str) -> str:
+        """Parse a wallpaper dump through the real parser."""
+        with patch.object(device_layer, "run_adb", return_value=output.encode()):
+            return device_layer.read_wallpaper_component("device")
+
+    def test_the_component_wrapper_is_stripped(self) -> None:
+        # The normalization the arm check rests on, and the one case it must not admit: a wrapper with
+        # nothing inside it names no component, so it normalizes to the empty string the parser skips
+        # rather than to a component with no name in it.
+        cases = (
+            ("ComponentInfo{com.example.app/.Main}", "com.example.app/.Main"),
+            ("com.example.app/.Main", "com.example.app/.Main"),
+            ("  ComponentInfo{com.example.app/.Main}  ", "com.example.app/.Main"),
+            ("ComponentInfo{}", ""),
+            ("", ""),
+        )
+        for value, expected in cases:
+            with self.subTest(value=value):
+                self.assertEqual(expected, device_layer.component_identifier(value))
+
+    def test_the_device_forwards_the_readback(self) -> None:
+        # The follow-on arm check reads through `AdbDevice` as every other probe in the harness does,
+        # so the parser is reachable as a method and not only as a module function.
+        dump = f"  mLastWallpaper state:\n    mInfo.component={self.wrapped(self.LIVE)}\n"
+        with patch.object(device_layer, "run_adb", return_value=dump.encode()):
+            self.assertEqual(self.LIVE, device_layer.AdbDevice("device").read_wallpaper_component())
+
+    def test_the_live_home_component_is_returned(self) -> None:
+        dump = (
+            "System wallpaper state:\n"
+            "  mLastWallpaper state:\n"
+            "    mName=null\n"
+            "    mWallpaperId=57\n"
+            f"    mInfo.component={self.wrapped(self.LIVE)}\n"
+            "  mLastLockWallpaper state:\n"
+            f"    mInfo.component={self.wrapped(self.LOCK)}\n"
+        )
+        self.assertEqual(self.LIVE, self.read(dump))
+
+    def test_the_lock_section_is_not_read_through(self) -> None:
+        # The lock slot reports the same `mInfo.component=` field a few lines below the home one. A
+        # parser that read past the boundary would report the lock wallpaper as the home component,
+        # which would admit a window against an arm the device is not in.
+        dump = (
+            "System wallpaper state:\n"
+            "  mLastWallpaper state:\n"
+            "    mName=ImageWallpaper\n"
+            "    mWallpaperId=57\n"
+            "  mLastLockWallpaper state:\n"
+            f"    mInfo.component={self.wrapped(self.LOCK)}\n"
+            "Wallpaper per-file components:\n"
+            "  Wallpaper #0:\n"
+            f"    mWallpaperComponent={self.wrapped(self.STATIC)}\n"
+        )
+        self.assertEqual(self.STATIC, self.read(dump))
+
+    def test_the_home_scan_stops_at_the_per_file_components(self) -> None:
+        # With no lock section to bound it the home scan would run to the end of the dump, where a
+        # later `mInfo.component=` — another slot's, or a reshaped per-file entry's — would be
+        # reported as the home component and admit a window against an arm the device is not in. The
+        # per-file header bounds it the way the lock header does, so the static fallback still wins.
+        dump = (
+            "System wallpaper state:\n"
+            "  mLastWallpaper state:\n"
+            "    mName=ImageWallpaper\n"
+            "Wallpaper per-file components:\n"
+            "  Wallpaper #0:\n"
+            f"    mWallpaperComponent={self.wrapped(self.STATIC)}\n"
+            "  Wallpaper #1:\n"
+            f"    mInfo.component={self.wrapped(self.LOCK)}\n"
+        )
+        self.assertEqual(self.STATIC, self.read(dump))
+
+    def test_the_static_fallback_reports_the_first_per_file_component(self) -> None:
+        # With nothing live bound the home section carries no component, and the per-file list is what
+        # names the static wallpaper a baseline arm is recorded against.
+        dump = (
+            "System wallpaper state:\n"
+            "  mLastWallpaper state:\n"
+            "    mName=ImageWallpaper\n"
+            "Wallpaper per-file components:\n"
+            "  Wallpaper #0:\n"
+            f"    mWallpaperComponent={self.wrapped(self.STATIC)}\n"
+            "  Wallpaper #1:\n"
+            f"    mWallpaperComponent={self.wrapped(self.LOCK)}\n"
+        )
+        self.assertEqual(self.STATIC, self.read(dump))
+
+    def test_a_dump_naming_no_component_is_refused(self) -> None:
+        for dump in (
+            "",
+            "System wallpaper state:\n  mLastWallpaper state:\n    mName=null\n",
+            "Wallpaper per-file components:\n  Wallpaper #0:\n    mWallpaperId=57\n",
+        ):
+            with self.subTest(dump=dump[:30]), self.assertRaises(device_layer.ProbeError):
+                self.read(dump)
+
+    def test_a_component_field_with_no_value_is_refused(self) -> None:
+        # A truncated or reshaped dump can carry the field with nothing after the `=`. Returning that
+        # empty string reads as a successful parse, and since `component_is_live("")` is false, a
+        # baseline window would be recorded as valid against no component at all: an unreadable input
+        # standing in for a reading. With nothing usable anywhere, the read is refused.
+        dump = (
+            "System wallpaper state:\n"
+            "  mLastWallpaper state:\n"
+            "    mName=null\n"
+            "    mInfo.component=\n"
+            "Wallpaper per-file components:\n"
+            "  Wallpaper #0:\n"
+            "    mWallpaperComponent=\n"
+        )
+        with self.assertRaises(device_layer.ProbeError):
+            self.read(dump)
+
+    def test_an_empty_home_value_falls_through_to_the_per_file_component(self) -> None:
+        # With the home slot carrying no value, the names that remain are the per-file ones, which is
+        # what the fallback exists for.
+        dump = (
+            "System wallpaper state:\n"
+            "  mLastWallpaper state:\n"
+            "    mInfo.component=\n"
+            "Wallpaper per-file components:\n"
+            "  Wallpaper #0:\n"
+            f"    mWallpaperComponent={self.wrapped(self.STATIC)}\n"
+        )
+        self.assertEqual(self.STATIC, self.read(dump))
+
+
 class ProducerTraceTest(unittest.TestCase):
     """Checks the producer-window parsing and the zero-versus-unread distinction it exists for."""
 
@@ -2686,6 +2829,176 @@ class DeviceStateParsingTest(unittest.TestCase):
                 patch.object(device_layer, "run_adb", return_value=output.encode()),
             ):
                 self.assertIs(device_layer.read_keyguard_locked("device"), expected)
+
+
+class ForegroundProbeTest(unittest.TestCase):
+    """Finding 3: the surface in front is read back, and it is read as a package."""
+
+    def read(self, output: str) -> object:
+        """Run the foreground probe against a `dumpsys window` body."""
+        with patch.object(device_layer, "run_adb", return_value=output.encode()):
+            return device_layer.read_foreground_package("device")
+
+    def test_the_focus_window_names_the_package(self) -> None:
+        output = "  mCurrentFocus=Window{a1b2c3d u0 com.example.app/com.example.app.MainActivity}\n"
+        self.assertEqual("com.example.app", self.read(output))
+
+    def test_a_focus_window_without_a_package_is_undecidable_not_a_fallthrough(self) -> None:
+        # This device's own state while the shade is down: the focused *window* is a system window
+        # with no package in it. Reading the resumed activity from the line below would report the
+        # launcher as the surface in front while an overlay covers it, and `read_home_in_front`
+        # would then admit a window measured on the shade as a visible home-screen window.
+        output = (
+            "  mCurrentFocus=Window{39e680d u0 NotificationShade}\n"
+            "  mFocusedApp=ActivityRecord{111535639 u0 com.example.launcher/"
+            ".activities.LauncherActivity t6685}\n"
+        )
+        self.assertIsNone(self.read(output))
+
+    def test_a_null_focus_reads_the_resumed_app(self) -> None:
+        output = "  mCurrentFocus=null\n  mFocusedApp=ActivityRecord{1 u0 com.example.app/.Main t1}\n"
+        self.assertEqual("com.example.app", self.read(output))
+
+    def test_no_focus_line_at_all_is_none_rather_than_a_guess(self) -> None:
+        for output in ("", "  mCurrentFocus=null\n", "  something else entirely\n"):
+            with self.subTest(output=output[:24]):
+                self.assertIsNone(self.read(output))
+
+    def test_the_home_package_is_the_one_the_device_resolves(self) -> None:
+        # The device is asked which launcher it runs rather than the harness naming one: a launcher
+        # package in this repository would be an OEM and model statement on a public surface.
+        output = (
+            "priority=0 preferredOrder=0 match=0x108000 specificIndex=-1 isDefault=true\n"
+            "com.example.launcher/.activities.LauncherActivity\n"
+        )
+        with patch.object(device_layer, "run_adb", return_value=output.encode()):
+            self.assertEqual("com.example.launcher", device_layer.read_home_package("device"))
+
+    def test_an_unresolvable_home_package_is_none(self) -> None:
+        for output in ("", "No activity found\n"):
+            with self.subTest(output=output[:20]), patch.object(device_layer, "run_adb", return_value=output.encode()):
+                self.assertIsNone(device_layer.read_home_package("device"))
+
+    def read_home_in_front(self, focus: str, home: str) -> bool | None:
+        """Answer `dumpsys window` with `focus` and the home resolution with `home`, then read it."""
+
+        def run(args: list[str], serial: str | None = None, timeout: int = 0) -> bytes:
+            del serial, timeout
+            body = home if "resolve-activity" in args else f"  mCurrentFocus={focus}\n"
+            return body.encode()
+
+        with patch.object(device_layer, "run_adb", side_effect=run):
+            return device_layer.read_home_in_front("device")
+
+    def test_home_in_front_compares_packages_not_activity_classes(self) -> None:
+        # The launcher's activity class differs between builds and launchers; the package that owns
+        # the home screen is what says the home screen is showing. A focus window with no package —
+        # this device's own state while the shade is down — leaves the answer undecidable rather than
+        # being read either way.
+        cases = (
+            (
+                "Window{1 u0 com.example.launcher/.activities.LauncherActivity}",
+                "com.example.launcher/.activities.OtherLauncherActivity",
+                True,
+            ),
+            ("Window{1 u0 com.example.other/.MainActivity}", "com.example.launcher/.L", False),
+            ("Window{1 u0 NotificationShade}", "com.example.launcher/.L", None),
+        )
+        for focus, home, expected in cases:
+            with self.subTest(focus=focus):
+                self.assertIs(self.read_home_in_front(focus, home), expected)
+
+    def test_home_in_front_is_undecidable_when_the_home_package_cannot_be_resolved(self) -> None:
+        self.assertIs(self.read_home_in_front("Window{1 u0 com.example.app/.Main}", ""), None)
+
+    def test_the_stable_home_read_is_taken_before_the_foreground_snapshot(self) -> None:
+        # The ordering is the point of the fix: resolving `HOME` first leaves the foreground read as
+        # late as possible before the comparison, narrowing the window in which a switch away from
+        # home could be read as the state now. Later rounds must not put the snapshot back in front.
+        with patch.object(device_layer, "run_adb", return_value=b"  mCurrentFocus=null\n") as run_adb:
+            device_layer.read_home_in_front("device")
+        # Each recorded invocation, named as such: `call` here would read like `unittest.mock.call`,
+        # which this module does not import and does not need.
+        self.assertEqual(
+            [invocation.args[0][:2] for invocation in run_adb.call_args_list],
+            [["shell", "cmd"], ["shell", "dumpsys"]],
+        )
+
+
+class InstalledApkDigestTest(unittest.TestCase):
+    """Finding 4: the digest names the build the device is running, not the host's artifact."""
+
+    BASE_APK = "/data/app/~~xyz==/io.github.godaniya.astronomicalclockswallpaper.debug-abc==/base.apk"
+    DIGEST = "3ef8bf795587aff1488e2e073b3cc3bf70eb7620df821cb4bfa3d953fda3dc4d"
+
+    def run_with(self, path_output: bytes, digest_output: bytes) -> object:
+        """Run the digest probe against the two commands' outputs."""
+        with patch.object(device_layer, "run_adb", side_effect=[path_output, digest_output]):
+            return device_layer.read_installed_apk_sha256("device")
+
+    def test_the_base_apk_digest_is_returned(self) -> None:
+        self.assertEqual(
+            self.DIGEST,
+            self.run_with(
+                f"package:{self.BASE_APK}\n".encode(),
+                f"{self.DIGEST}  {self.BASE_APK}\n".encode(),
+            ),
+        )
+
+    def test_a_split_listing_still_hashes_the_base_apk(self) -> None:
+        paths = (
+            f"package:{self.BASE_APK}\n"
+            "package:/data/app/~~xyz==/io.github.godaniya.astronomicalclockswallpaper.debug-abc==/split_config.arm64.apk\n"
+        )
+        self.assertEqual(
+            self.DIGEST,
+            self.run_with(paths.encode(), f"{self.DIGEST}  {self.BASE_APK}\n".encode()),
+        )
+
+    def test_a_package_that_is_not_installed_is_none(self) -> None:
+        self.assertIsNone(self.run_with(b"", b""))
+
+    def test_a_device_without_sha256sum_is_none_rather_than_an_exception(self) -> None:
+        # A device lacking `sha256sum` answers 127, the shell's command-not-found, which `adb shell`
+        # propagates and `run_adb` checks. That status is the refusal the docstring promises rather
+        # than an exception escaping the probe.
+        with patch.object(
+            device_layer,
+            "run_adb",
+            side_effect=[
+                f"package:{self.BASE_APK}\n".encode(),
+                subprocess.CalledProcessError(127, ["adb"], stderr=b"/system/bin/sh: sha256sum: not found"),
+            ],
+        ):
+            self.assertIsNone(device_layer.read_installed_apk_sha256("device"))
+
+    def test_other_hash_failures_propagate(self) -> None:
+        # Only command-not-found is a refusal. A transport that dropped or a `pm` that could not
+        # answer is this probe failing, and returning None would record an unreadable identity in
+        # place of a reading.
+        with (
+            patch.object(
+                device_layer,
+                "run_adb",
+                side_effect=[
+                    f"package:{self.BASE_APK}\n".encode(),
+                    subprocess.CalledProcessError(1, ["adb"], stderr=b"device offline"),
+                ],
+            ),
+            self.assertRaises(subprocess.CalledProcessError),
+        ):
+            device_layer.read_installed_apk_sha256("device")
+
+    def test_error_text_on_stdout_is_not_read_as_a_digest(self) -> None:
+        # A shell that reports an error while still exiting 0 puts that text where the digest would
+        # be; recording its first token would make it look like the build's identity. This is the
+        # shape guard, which is independent of the exit status handled above.
+        self.assertIsNone(
+            self.run_with(
+                f"package:{self.BASE_APK}\n".encode(),
+                b"/system/bin/sh: sha256sum: not found\n",
+            )
+        )
 
 
 class PhasePrerequisiteTest(unittest.TestCase):

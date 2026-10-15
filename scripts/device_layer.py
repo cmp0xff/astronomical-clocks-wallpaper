@@ -32,6 +32,13 @@ PACKAGE_NAME: Final = "io.github.godaniya.astronomicalclockswallpaper.debug"
 SERVICE_NAME: Final = (
     f"{PACKAGE_NAME}/io.github.godaniya.astronomicalclockswallpaper.AstronomicalClocksWallpaperService"
 )
+# The platform's own static wallpaper engine, read from this device's `dumpsys wallpaper` as both
+# `mDefaultWallpaperComponent` and `mImageWallpaper`. It is the component every static baseline in
+# `docs/battery-budget.md` is measured against, and naming it is what stops *another package's* live
+# service from being admitted as a baseline: `verify_arm` refuses everything that is neither this
+# app's service nor this engine. Which static *image* the engine carries is not decidable over ADB
+# and is not claimed here; only that the bound component is the platform's own.
+PLATFORM_STATIC_WALLPAPER: Final = "com.android.systemui/com.android.systemui.wallpapers.ImageWallpaper"
 SERVICE_LOG_TAG: Final = "AstronomicalClocksWallpaperService"
 DISPLAY_LOG_TAG: Final = "DialDisplay"
 
@@ -44,6 +51,10 @@ ADB_RESTORE_TIMEOUT_SECONDS: Final = 60
 # A trace dump moves the whole trace buffer over the transport, which a plain shell call cannot.
 ADB_TRACE_TIMEOUT_SECONDS: Final = 120
 
+# `adb shell` exits with the status of the command it ran, so a shell that cannot find that command
+# answers this status. It is how a device without `sha256sum` reports the tool's absence.
+SHELL_COMMAND_NOT_FOUND_STATUS: Final = 127
+
 # The service logs its acceptance asynchronously; a deferred or racy write can land after the
 # broadcast command returns, so the confirmation re-reads a bounded number of times.
 LOG_CONFIRM_ATTEMPTS: Final = 5
@@ -55,6 +66,20 @@ WAKE_READ_PATTERN: Final = re.compile(r"mWakefulness=(\w+)")
 DISPLAY_STATE_PATTERN: Final = re.compile(r"Display State=(ON|OFF)")
 KEYGUARD_SHOWING_PATTERN: Final = re.compile(r"\bisKeyguardShowing[ \t]*=[ \t]*([^\s,;}]*)")
 WALLPAPER_VISIBLE_PATTERN: Final = re.compile(r"\bmVisible=([^\s,;}]*)")
+# The two lines `dumpsys window` uses to name what is in front. Either may be absent or carry no
+# package: this device's Android 16 build prints `mCurrentFocus=Window{39e680d u0 NotificationShade}`
+# while the shade is down, which names a window and no package at all. They are read in this order,
+# and `mCurrentFocus` is the answer whenever it names a window: `mFocusedApp` is consulted only when
+# no focused window is reported at all, never to fill a package into one that carries none.
+FOCUS_WINDOW_PATTERN: Final = re.compile(r"\bmCurrentFocus=Window\{[^}]*\}")
+FOCUSED_APP_PATTERN: Final = re.compile(r"\bmFocusedApp=ActivityRecord\{[^}]*\}")
+# The `package/class` token inside those bodies. The package is captured and the class is not,
+# because the class varies between launchers and Android versions while the package does not: the
+# launcher the physical device resolves is `com.example.launcher/.activities.LauncherActivity` (a
+# placeholder; the resolved package is withheld per docs/device-testing.md), and comparing activity
+# classes would make the comparison depend on which launcher build is installed.
+FOCUS_COMPONENT_PATTERN: Final = re.compile(r"\b([A-Za-z][\w]*(?:\.[\w]+)+)/")
+SHA256_HEX_PATTERN: Final = re.compile(r"^[0-9a-f]{64}$")
 
 # DialStyle.kt pins the two civil-scale tones: RIM is 0x1C2C39 (dark) and LIGHT_RIM is 0xE8E2D2 (light).
 DARK_RIM_RGB: Final = (0x1C, 0x2C, 0x39)
@@ -142,6 +167,17 @@ MAX_BRIGHTNESS: Final = 100
 
 SCREENCAP_HEADER_BYTES: Final = 16
 MIN_SPLIT_FIELDS: Final = 2
+# The home-screen wallpaper is the one the `mLastWallpaper` section names; the lock slot and the
+# desktop-file component are reported separately and must not be mistaken for it.
+HOME_WALLPAPER_SECTION: Final = "mLastWallpaper state:"
+HOME_WALLPAPER_COMPONENT_FIELD: Final = "mInfo.component="
+LOCK_WALLPAPER_SECTION: Final = "mLastLockWallpaper state:"
+PER_FILE_WALLPAPER_SECTION: Final = "Wallpaper per-file components:"
+STATIC_WALLPAPER_COMPONENT_FIELD: Final = "mWallpaperComponent="
+# The dump prints a component as `ComponentInfo{package/class}`, while the identifiers this harness
+# compares against — `SERVICE_NAME` and `PLATFORM_STATIC_WALLPAPER` — are written without the wrapper,
+# as `am` and `dumpsys activity service` take them.
+COMPONENT_INFO_WRAPPER: Final = re.compile(r"^ComponentInfo\{(.*)\}$")
 
 
 class ScreencapError(RuntimeError):
@@ -150,6 +186,78 @@ class ScreencapError(RuntimeError):
 
 class ProbeError(RuntimeError):
     """A device probe that did not complete, as opposed to a successful reading that found nothing."""
+
+
+def component_value(line: str, field: str) -> str:
+    """Return what a wallpaper dump line carries for one component field, or `""` when it carries none."""
+    if field not in line:
+        return ""
+    return line.split(field, 1)[1].strip()
+
+
+def component_identifier(value: str) -> str:
+    """
+    Return the `package/class` identifier a wallpaper dump's component field carries.
+
+    The field holds `ComponentInfo{package/class}`, and stripping the wrapper is what makes the
+    reading comparable to the identifiers this harness names: `SERVICE_NAME` and
+    `PLATFORM_STATIC_WALLPAPER` are written unwrapped, as `am` and `dumpsys activity service` take
+    them, so an arm check comparing this reading against either name would otherwise reject both.
+    Normalizing here keeps that to one representation, at the single place that knows the dump's
+    format.
+
+    A value that carries no wrapper is returned trimmed, and `ComponentInfo{}` normalizes to the
+    empty string so that the caller's emptiness check refuses it rather than admitting a component
+    with no name in it.
+    """
+    match = COMPONENT_INFO_WRAPPER.match(value.strip())
+    return captured_text(match, 1) if match is not None else value.strip()
+
+
+def read_wallpaper_component(serial: str | None = None) -> str:
+    """
+    Return the home-screen wallpaper component from `dumpsys wallpaper`, as `package/class`.
+
+    The `mLastWallpaper` section names the live home component, and that read is bounded to its own
+    section: the lock slot that follows it reports the same field, and the per-file list beyond that
+    names components of its own, so reading past either boundary would silently report another slot's
+    component. When nothing live is bound the home section has no component at all, and the dump then
+    falls back to the per-file components, where the first `mWallpaperComponent` line is the home
+    slot; that fallback is what a static baseline reports.
+
+    The dump wraps both fields as `ComponentInfo{package/class}`, and the wrapper is stripped by
+    `component_identifier` so the reading is directly comparable to `SERVICE_NAME` and
+    `PLATFORM_STATIC_WALLPAPER`, which are written unwrapped. A caller that compares this value to a
+    component it named itself therefore compares like with like.
+
+    A field that is present but empty is skipped rather than returned. `mInfo.component=` with nothing
+    after it parses to `""`, which `component_is_live` reports as not-live, so a truncated or reshaped
+    dump would be admitted as a valid static-baseline window recorded against no component at all —
+    an unreadable input taking the place of a reading. Skipping the empty value lets the fallback run
+    and, when nothing usable is left, the refusal below fire.
+    """
+    output = run_adb(["shell", "dumpsys", "wallpaper"], serial=serial).decode("utf-8", errors="replace")
+    lines = output.splitlines()
+    section = next((index for index, line in enumerate(lines) if line.strip() == HOME_WALLPAPER_SECTION), None)
+    if section is not None:
+        boundary = next(
+            (
+                index
+                for index, line in enumerate(lines[section + 1 :], start=section + 1)
+                if line.strip() in (LOCK_WALLPAPER_SECTION, PER_FILE_WALLPAPER_SECTION)
+            ),
+            len(lines),
+        )
+        for line in lines[section + 1 : boundary]:
+            value = component_identifier(component_value(line, HOME_WALLPAPER_COMPONENT_FIELD))
+            if value:
+                return value
+    for line in lines:
+        value = component_identifier(component_value(line, STATIC_WALLPAPER_COMPONENT_FIELD))
+        if value:
+            return value
+    detail = "dumpsys wallpaper reported no home-screen wallpaper component"
+    raise ProbeError(detail)
 
 
 def error_detail(error: BaseException) -> str:
@@ -503,6 +611,145 @@ def read_keyguard_locked(serial: str) -> bool | None:
     if readings and all(reading == "false" for reading in readings):
         return False
     return None
+
+
+def read_foreground_package(serial: str) -> str | None:
+    """
+    Read the package in front from `dumpsys window`, or None when it cannot be read as one.
+
+    `mCurrentFocus` is the window with input focus and is asked first. `mFocusedApp` is the resumed
+    activity and is the fallback, but only when `mCurrentFocus` names no window at all — `null`, or
+    no such line — because the two answer different questions and a gap in one is not the other.
+
+    A `mCurrentFocus` that names a window carrying no package is not a gap to be filled in from the
+    line below it. That is a system window holding the focus, and this device prints exactly that —
+    `Window{39e680d u0 NotificationShade}` — while the shade is down. Falling through to
+    `mFocusedApp` there would report the resumed app as the surface in front while an overlay covers
+    it, which is precisely the reading `read_home_in_front` must not be given: a visible window would
+    be measured on the shade rather than on the wallpaper it claims to measure, with the display and
+    the keyguard both reading as the visible home state. Returning None instead makes the caller
+    refuse, which is what "the foreground could not be read" is for.
+
+    Only the package is returned. The activity class after the `/` is not, because it varies between
+    launcher builds while the package that owns the home screen does not.
+    """
+    output = run_adb(["shell", "dumpsys", "window"], serial=serial).decode("utf-8", errors="replace")
+    focus = FOCUS_WINDOW_PATTERN.search(output)
+    if focus is not None:
+        component = FOCUS_COMPONENT_PATTERN.search(focus.group(0))
+        return captured_text(component, 1) if component is not None else None
+    resumed = FOCUSED_APP_PATTERN.search(output)
+    if resumed is not None:
+        component = FOCUS_COMPONENT_PATTERN.search(resumed.group(0))
+        if component is not None:
+            return captured_text(component, 1)
+    return None
+
+
+def read_home_package(serial: str) -> str | None:
+    """
+    Read the package the device resolves for the `HOME` intent, or None when it resolves none.
+
+    The device is asked which launcher it runs instead of the harness naming one. A launcher package
+    written into this repository would be an OEM and model statement on a public surface, which
+    `docs/device-testing.md` forbids; resolving it here keeps that identification on the device,
+    where it is already true.
+    """
+    output = run_adb(
+        [
+            "shell",
+            "cmd",
+            "package",
+            "resolve-activity",
+            "--brief",
+            "-a",
+            "android.intent.action.MAIN",
+            "-c",
+            "android.intent.category.HOME",
+        ],
+        serial=serial,
+    ).decode("utf-8", errors="replace")
+    for line in output.splitlines():
+        component = FOCUS_COMPONENT_PATTERN.search(line)
+        if component is not None:
+            return captured_text(component, 1)
+    return None
+
+
+def read_home_in_front(serial: str) -> bool | None:
+    """
+    Report whether the home screen is the surface in front, or None when that cannot be decided.
+
+    Three-valued for the same reason the keyguard read is: a device whose foreground package or
+    launcher package could not be read has not been shown to be on the home screen, and treating
+    "could not be read" as "yes" would let another app's surface be measured for the whole window
+    while the bound wallpaper component still matched the requested arm.
+
+    The comparison is between packages, not activity classes: the launcher resolves to
+    `com.example.launcher/.activities.LauncherActivity` and to a different class on another build of
+    the same launcher.
+    """
+    # The `HOME` resolution is the more stable of the two and is read first, so the foreground
+    # snapshot that decides the answer is taken as late as possible and a switch away from home
+    # during the first round trip is less likely to be read as the state at this point. The two reads
+    # are still not atomic, so a caller measuring a window must verify the surface at the points it
+    # requires rather than trusting this one answer for the whole window.
+    home = read_home_package(serial)
+    foreground = read_foreground_package(serial)
+    if foreground is None or home is None:
+        return None
+    return foreground == home
+
+
+def read_installed_apk_sha256(serial: str) -> str | None:
+    """
+    Read the SHA-256 of the installed APK from the device, or None when the installed build is unnamed.
+
+    Hashing the host checkout's build output was a different measurement from the one the window
+    ran against: the APK on the device may be an older install, and the artifact is absent on a
+    machine that did not build it, so the digest then recorded was `None` — an unreadable input
+    standing in for an identity. Reading the installed file is what the identity field claims.
+
+    `pm path` lists the split APKs of the package, and `base.apk` is the one whose digest identifies
+    the build. Neither step is allowed to fall back to a zero, so None is returned when there is no
+    installed build to name: the listing carries no `base.apk`, the shell cannot find `sha256sum`, or
+    the answer's first token is not a digest.
+
+    A step that *failed* is a different reading and does not return None. A `pm path` that exits
+    non-zero, a `sha256sum` that exits with anything other than the shell's command-not-found, and a
+    transport that drops all propagate `CalledProcessError`, so a caller cannot mistake a probe that
+    failed for a device that has no installed build.
+    """
+    paths = run_adb(["shell", "pm", "path", PACKAGE_NAME], serial=serial).decode("utf-8", errors="replace")
+    base_apk = next(
+        (
+            line.split("package:", 1)[1].strip()
+            for line in paths.splitlines()
+            if line.startswith("package:") and line.strip().endswith("/base.apk")
+        ),
+        None,
+    )
+    if base_apk is None:
+        return None
+    try:
+        output = run_adb(["shell", "sha256sum", base_apk], serial=serial).decode("utf-8", errors="replace")
+    except subprocess.CalledProcessError as error:
+        # `adb shell` exits with the status of the command it ran and `run_adb` checks that status,
+        # so a missing tool reaches this probe as a status rather than as error text: that status is
+        # the refusal the docstring above promises. Any other non-zero exit is this probe failing —
+        # a transport that dropped or a `pm` that could not answer — and propagating it keeps such a
+        # failure from being read as an absent tool.
+        if error.returncode == SHELL_COMMAND_NOT_FOUND_STATUS:
+            return None
+        raise
+    digest = output.split(maxsplit=1)[0] if output.split() else ""
+    # `sha256sum` prints `<digest>  <path>`. A shell that reports an error while still exiting 0 —
+    # or an answer that is truncated, wrapped or otherwise reshaped — leaves a first token that is
+    # not a digest, and requiring the shape keeps that text from being recorded as the build's
+    # identity. It is a second defence, independent of the exit status handled above.
+    if SHA256_HEX_PATTERN.match(digest) is None:
+        return None
+    return digest
 
 
 def read_screen_on(serial: str) -> bool | None:
@@ -993,6 +1240,22 @@ class AdbDevice:
         """Read physical and override display sizes from `wm size`."""
         return read_display_size(self.serial)
 
+    def read_foreground_package(self) -> str | None:
+        """Read the package in front, or None when no focus line names one."""
+        return read_foreground_package(self.serial)
+
+    def read_home_package(self) -> str | None:
+        """Read the package the device resolves for the `HOME` intent, or None."""
+        return read_home_package(self.serial)
+
+    def read_home_in_front(self) -> bool | None:
+        """Report whether the home screen is the surface in front, or None when undecidable."""
+        return read_home_in_front(self.serial)
+
+    def read_installed_apk_sha256(self) -> str | None:
+        """Read the SHA-256 of this package's installed `base.apk`, or None; raises when the probe fails."""
+        return read_installed_apk_sha256(self.serial)
+
     def read_keyguard_locked(self) -> bool | None:
         """Read whether the keyguard is currently showing on this device."""
         return read_keyguard_locked(self.serial)
@@ -1025,6 +1288,10 @@ class AdbDevice:
         """Read this device's system timezone, or None."""
         return read_device_timezone(self.serial)
 
+    def read_wallpaper_component(self) -> str:
+        """Read this device's home-screen wallpaper component; raises ProbeError when none is reported."""
+        return read_wallpaper_component(self.serial)
+
     def read_wallpaper_visible(self) -> bool | None:
         """Read whether the wallpaper engine is reported visible on this device."""
         return read_wallpaper_visible(self.serial)
@@ -1048,7 +1315,13 @@ class AdbDevice:
         self.run_adb(["shell", "wm", "dismiss-keyguard"])
 
     def show_home(self) -> None:
-        """Send KEYCODE_HOME."""
+        """
+        Send KEYCODE_HOME.
+
+        This sends the event and reports nothing about what it did: an input event can be dropped,
+        and a caller that needs the home screen to actually be in front has to read it back with
+        `read_home_in_front`. `battery_protocol.ensure_visible_home` is the caller that does.
+        """
         self.run_adb(["shell", "input", "keyevent", "KEYCODE_HOME"])
 
     def run_restore_command(self, command: Sequence[str]) -> bool:
