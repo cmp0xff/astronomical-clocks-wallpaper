@@ -36,7 +36,7 @@ resource budgets and avoid degrading battery life:
 | **B3: Hidden CPU Utilization** | **≤ 0.1% of one core** over ≥ 10 min | `/proc/<pid>/stat` deltas over a screen-off duration whose display state is sampled throughout |
 | **B4: Visible Screen-On Drain** | **≤ 12.0123% relative increase in mean discharge rate** vs the stock baseline — the committed noise floor, not the 5% provisional | The fuel-gauge charge counter (`dumpsys battery` `Charge counter`, µAh) read at both ends of each window, its delta over the window expressed as a mean current in µA, compared live against stock. A/B/A/B alternating runs of ≥ 15 minutes against stock `ImageWallpaper`; the paired 95% upper bound must also stay below the threshold. A black static wallpaper is the secondary baseline, required only where the device permits setting one |
 | **B5: Visible CPU Utilization** | **≤ 3% of one core** at 1 Hz over ≥ 15 min | `/proc/<pid>/stat` process ticks during a visible home-screen window |
-| **B6: Memory Stability** | **≤ 6144 kB** total-PSS growth, the budget the existing qualification harness runs at | `dumpsys meminfo` PSS sampling across a ≥ 30-minute window |
+| **B6: Memory Stability** | **≤ 6144 kB** total-PSS growth, the `--max-pss-growth-kb` limit the qualification harness is run with (it requires that limit per run and has no default), set to this value in the recorded 2026-10-07 passes | `dumpsys meminfo` PSS sampling across a ≥ 30-minute window |
 
 `scripts/battery_protocol.py` implements B2–B6 as separate bounded subcommands. The five measuring
 phases — `resources`, `hidden`, `visible`, `pilot`, and `memory` — each write one or more records
@@ -132,8 +132,9 @@ its verdicts over them. No single invocation, and above all no single window, bl
 
    Windowing is part of the criterion, not a default. Each windowed phase's `--minutes` refuses a
    window shorter than its row above documents, and the report fails and discards a record whose own
-   recorded duration is below that length, so a six-second window cannot be reported as a
-   ten-minute measurement.
+   recorded duration falls more than 5% below that length — the widest shortfall the harness still
+   reads as a window that ran its whole length — so neither a six-second window nor a nine-minute one
+   can be reported as a ten-minute measurement.
 6. **Report**: the `report` subcommand aggregates the recorded windows. It refuses to pair a window
    sequence that is not an A/B alternation, compares each baseline separately, refuses fewer than
    the four alternations this issue mandates, and uses the Student t critical value for the actual
