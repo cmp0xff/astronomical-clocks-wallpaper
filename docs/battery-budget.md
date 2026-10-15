@@ -12,7 +12,9 @@ resource budgets and avoid degrading battery life:
 - **Android Vitals excessive wake locks**: Android vitals reports partial wake lock use as
   *excessive* when all partial wake locks, added together, run for 2 or more hours in a 24-hour
   period. Because a wallpaper has no legitimate background processing requirement, this project
-  enforces a **strict zero-tolerance** standard: zero partial wake locks and zero pending alarms.
+  enforces a **strict zero-tolerance** standard of its own: **zero wake locks of any type** — the
+  vitals anchor above measures partial locks, this budget counts every type the platform can hold —
+  and zero pending alarms.
   The alarm budget counts *every* pending alarm the package holds, not only repeating ones. A
   wallpaper has no scheduled work of any kind to justify one, and the pending list `dumpsys alarm`
   prints does not say whether an alarm repeats, so a budget written as "repeating alarms" could not
@@ -152,7 +154,8 @@ Retrieved 2026-10-12. Both anchors are quoted from primary documentation rather 
   running a foreground service", that audio, location, and `JobScheduler` user-initiated wake locks
   are currently exempt, and that exceeding the threshold in more than 5% of sessions over 28 days
   can affect Play visibility. The zero-tolerance budget above is stricter than the vitals threshold
-  by choice, as a wallpaper has no background work to justify any of it.
+  by choice, in two ways — it counts every wake-lock type where this metric counts partial locks
+  alone, and it holds a wallpaper to no background work at all.
 - **Platform rendering guidance** — [`WallpaperService.Engine#onVisibilityChanged(boolean)`](https://developer.android.com/reference/android/service/wallpaper/WallpaperService.Engine#onVisibilityChanged(boolean)).
   The javadoc, as pinned in AOSP `frameworks/base` at tag
   [`android-16.0.0_r1`](https://android.googlesource.com/platform/frameworks/base/+/android-16.0.0_r1/core/java/android/service/wallpaper/WallpaperService.java),
@@ -177,7 +180,9 @@ against — and the source revision, and the limits of what it measured:
 - [2026-10-12 pilot and committed thresholds](testing/reports/2026-10-12-test-126-battery-pilot-noise-floor.md)
   — four 15-minute windows on one device, the floors they give, and the thresholds committed from them.
 - [2026-10-12 B2, B3 and B6](testing/reports/2026-10-12-test-126-hidden-resources-memory.md)
-  — 0 wake locks, 0 alarms, 0.0397% hidden CPU over 10 minutes, and +1633 kB PSS growth over 30 minutes.
+  — 0 **partial** wake locks (the only lock type that pass's probe enumerated; the all-type budget
+  and its census accounting landed later in the same pull request, and the report states the same
+  limitation), 0 alarms, 0.0397% hidden CPU over 10 minutes, and +1633 kB PSS growth over 30 minutes.
 - [2026-10-12 A/B/A/B drain comparison](testing/reports/2026-10-12-test-126-drain-comparison.md)
   — B5 measured and **failed** at 3.4552% of one core against the 3% budget, and B4 **not measured**
   because the fuel gauge on that device reports a constant charge counter while it is on USB.
