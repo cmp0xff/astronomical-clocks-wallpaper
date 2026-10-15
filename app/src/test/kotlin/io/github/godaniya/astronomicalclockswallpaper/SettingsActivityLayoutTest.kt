@@ -4,6 +4,7 @@ import android.graphics.Rect
 import android.view.View
 import android.view.ViewGroup
 import android.widget.ScrollView
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -24,6 +25,25 @@ class SettingsActivityLayoutTest {
     @Test
     fun controlsScrollWithLargeText() {
         assertControlsReachable(fontScale = 2.0F)
+    }
+
+    @Test
+    @Config(qualifiers = "sw600dp-w1280dp-h800dp-mdpi")
+    fun tabletControlsConstrained() {
+        Robolectric.buildActivity(SettingsActivity::class.java).use { controller ->
+            val activity = controller.setup().get()
+            val scroll = activity.findViewById<ScrollView>(R.id.settings_scroll)
+            val viewportWidth = 1280
+            val viewportHeight = 800
+            scroll.measure(
+                View.MeasureSpec.makeMeasureSpec(viewportWidth, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(viewportHeight, View.MeasureSpec.EXACTLY),
+            )
+            scroll.layout(0, 0, viewportWidth, viewportHeight)
+            val content = scroll.getChildAt(0)
+            assertEquals(560, content.width)
+            assertEquals((viewportWidth - 560) / 2, content.left)
+        }
     }
 
     private fun assertControlsReachable(fontScale: Float) {
