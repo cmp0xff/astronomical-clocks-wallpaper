@@ -38,9 +38,10 @@ resource budgets and avoid degrading battery life:
 | **B5: Visible CPU Utilization** | **≤ 3% of one core** at 1 Hz over ≥ 15 min | `/proc/<pid>/stat` process ticks during a visible home-screen window |
 | **B6: Memory Stability** | **≤ 6144 kB** total-PSS growth, the budget the existing qualification harness runs at | `dumpsys meminfo` PSS sampling across a ≥ 30-minute window |
 
-`scripts/battery_protocol.py` implements B2–B6 as separate bounded subcommands — `resources`,
-`hidden`, `visible`, `pilot`, `memory`, and `report` — each of which writes one record and prints
-its own evidence. No single invocation, and above all no single window, blocks for hours.
+`scripts/battery_protocol.py` implements B2–B6 as separate bounded subcommands. The five measuring
+phases — `resources`, `hidden`, `visible`, `pilot`, and `memory` — each write one or more records
+and print their own evidence; `report` writes none, reading the records the phases left and printing
+its verdicts over them. No single invocation, and above all no single window, blocks for hours.
 
 ## Methodology and Noise Floor Policy
 
@@ -129,8 +130,8 @@ its own evidence. No single invocation, and above all no single window, blocks f
    would present an unmeasured channel as a perfectly quiet one. Nothing measured in `pilot` windows
    is aggregated into the final comparison, so committing the threshold cannot be tuned to the result.
 
-   Windowing is part of the criterion, not a default. Each phase's `--minutes` refuses a window
-   shorter than its row above documents, and the report fails and discards a record whose own
+   Windowing is part of the criterion, not a default. Each windowed phase's `--minutes` refuses a
+   window shorter than its row above documents, and the report fails and discards a record whose own
    recorded duration is below that length, so a six-second window cannot be reported as a
    ten-minute measurement.
 6. **Report**: the `report` subcommand aggregates the recorded windows. It refuses to pair a window
