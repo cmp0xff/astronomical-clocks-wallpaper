@@ -37,6 +37,7 @@ notice-rgx = "# SPDX-License-Identifier: Apache-2\\.0"
 # Both harnesses print their report to stdout; T201 has no third-party logger to convert to, and the
 # report is the deliverable. scripts/ is deliberately not an importable package, which is what
 # INP001 asks for.
+"scripts/battery_protocol.py" = ["T201", "INP001"]
 "scripts/battery_report.py" = ["T201", "INP001"]
 "scripts/device_layer.py" = ["T201", "INP001"]
 "scripts/device_qualification.py" = ["T201", "INP001"]
@@ -46,6 +47,7 @@ notice-rgx = "# SPDX-License-Identifier: Apache-2\\.0"
 # suite is stdlib `unittest` by design, because host tooling may not add a dependency and pytest is
 # a dependency: PT009 and PT027 want unittest assertions replaced with bare `assert`/pytest.raises,
 # and PT019 reads the `unittest.mock.patch` parameters that are injected positionally as fixtures.
+"scripts/test_battery_protocol.py" = ["INP001", "D102", "D103", "PT009", "PT019", "PT027"]
 "scripts/test_battery_report.py" = ["INP001", "D102", "D103", "PT009", "PT019", "PT027"]
 "scripts/test_device_smoke.py" = ["INP001", "D102", "D103", "PT009", "PT019", "PT027"]
 "scripts/test_device_qualification.py" = ["INP001", "D102", "D103", "PT009", "PT019", "PT027"]

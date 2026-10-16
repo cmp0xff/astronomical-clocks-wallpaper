@@ -776,6 +776,81 @@ class CorruptRecordTest(unittest.TestCase):
         # carries neither `power_source` nor `clk_tck` — would stop being reportable.
         report.check_measurement_identity([{"api_level": 36}, {"api_level": 36}])
 
+    def test_a_non_scalar_identity_value_is_refused(self) -> None:
+        # The identity check is a set per field, so the set is the comparison: a value it cannot hold
+        # cannot be shown to agree with any other, and one it can hold but no record writes — a
+        # boolean, which is an `int` in Python — would be compared as a build or a tick rate. A list
+        # made the set construction raise `TypeError: unhashable type` out of the caller as a
+        # traceback rather than the named refusal every other corrupt-record reader gives. Every
+        # identity field is covered, not only the one the defect was reported against, because they
+        # are all read by the same rule.
+        for identity_field in report.IDENTITY_FIELDS:
+            for value in ([], {}, set(), True):
+                with self.subTest(identity_field=identity_field, value=value):
+                    records = [{"phase": "resources", identity_field: value}]
+                    with self.assertRaises(device_layer.ProbeError) as raised:
+                        report.check_measurement_identity(records)
+                    self.assertIn(identity_field, str(raised.exception))
+
+    def test_a_non_finite_identity_value_is_refused(self) -> None:
+        # The state file is JSON Lines read with `json.loads`, which accepts `NaN` and `Infinity` by
+        # default, so a corrupt file really does reach here. Both are floats, and no identity field is
+        # written as one, so they are refused by the kind check — see below for the rule they fall
+        # under. Left at the wrong kind, `inf` would compare equal to itself and a set of them would
+        # be read as agreement, with `inf` printed as the identity the run was measured under.
+        for identity_field in report.IDENTITY_FIELDS:
+            for value in (float("nan"), float("inf"), float("-inf")):
+                with self.subTest(identity_field=identity_field, value=value):
+                    records = [{"phase": "resources", identity_field: value}]
+                    with self.assertRaises(device_layer.ProbeError) as raised:
+                        report.check_measurement_identity(records)
+                    self.assertIn(identity_field, str(raised.exception))
+        # The refusal must not reach a finite number, which is what every state file carries.
+        report.check_measurement_identity([{"phase": "resources", "clk_tck": 100, "api_level": 36}])
+
+    def test_an_identity_value_of_the_wrong_kind_is_refused(self) -> None:
+        # Each identity field is written as one kind of thing, and the report is fed a state file it
+        # did not write. A scalar of the other kind is a value no phase produces: read as an identity,
+        # it passes the gate and the report prints it as the identity the run was measured under —
+        # `API levels: not-an-api-level` — which is the complaint the check already makes about a set
+        # whose every value is `null`. The kinds are the writers' own, not the report's invention.
+        integer_fields = ("api_level", "clk_tck")
+        text_fields = tuple(field for field in report.IDENTITY_FIELDS if field not in integer_fields)
+        self.assertEqual(set(report.IDENTITY_FIELDS), set(integer_fields) | set(text_fields))
+        for identity_field in integer_fields:
+            for value in ("100", "36", "not-an-api-level", 3.0):
+                with self.subTest(identity_field=identity_field, value=value):
+                    records = [{"phase": "resources", identity_field: value}]
+                    with self.assertRaises(device_layer.ProbeError) as raised:
+                        report.check_measurement_identity(records)
+                    self.assertIn("not the integer this field is written as", str(raised.exception))
+        for identity_field in text_fields:
+            for value in (7, 100, 0.5):
+                with self.subTest(identity_field=identity_field, value=value):
+                    records = [{"phase": "resources", identity_field: value}]
+                    with self.assertRaises(device_layer.ProbeError) as raised:
+                        report.check_measurement_identity(records)
+                    self.assertIn("not the text this field is written as", str(raised.exception))
+        # And the table the rule reads is the writers' own, so it cannot drift away from them.
+        self.assertEqual(set(integer_fields), set(report.INTEGER_IDENTITY_FIELDS))
+
+    def test_the_kinds_the_phase_writers_use_are_still_accepted(self) -> None:
+        # The rule has to admit what the phases actually write, or the report stops reading its own
+        # state files: the two integers and the three strings of the record below, which is a record
+        # from the 2026-10-16 device pass. The `null` a pre-build record carries is admitted by this
+        # reader as well, and refused by the identity check above it when it is the only value the
+        # set holds — which is that check's decision, not this reader's.
+        record = {
+            "phase": "resources",
+            "device_id": "2ec5a940ef5f",
+            "apk_sha256": "a" * 64,
+            "api_level": 36,
+            "power_source": "simulated",
+            "clk_tck": 100,
+        }
+        report.check_measurement_identity([record, dict(record)])
+        self.assertIsNone(report.identity_value({"phase": "resources", "apk_sha256": None}, "apk_sha256"))
+
     def test_a_non_list_restore_problems_is_refused(self) -> None:
         # A failed restore is the one thing on a record that says the device was left changed, and
         # reading a string where the phases write a list as "no problems" would let the report exit

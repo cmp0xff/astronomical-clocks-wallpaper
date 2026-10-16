@@ -126,6 +126,12 @@ MIN_PAIRED_SAMPLES: Final = 4
 # deliberately not one of them: a harness revision that changes only documentation or the report's
 # own aggregation does not change how a window was measured, and the reports say when that happened.
 IDENTITY_FIELDS: Final = ("device_id", "apk_sha256", "api_level", "power_source", "clk_tck")
+# The identity fields the phases write as integers; the other three are text. The reader below checks
+# the kind against this, because the report is fed a state file it did not write: a scalar of the
+# *other* kind — `"clk_tck": "100"`, `"power_source": 7` — is a value no phase produces, and reading
+# it as an identity puts a value the run never measured at the head of the report's own verdicts. The
+# kinds are the writers' own, checked against the records of the 2026-10-16 device pass.
+INTEGER_IDENTITY_FIELDS: Final = ("api_level", "clk_tck")
 
 
 class Arm(StrEnum):
@@ -503,6 +509,62 @@ def duration_weighted_mean(samples: Sequence[CpuSample]) -> float:
     return sum(sample.cpu_pct * sample.duration_seconds for sample in samples) / total_seconds
 
 
+def identity_value(record: Mapping[str, object], identity_field: str) -> object:
+    """
+    Return one record's value for an identity field, refusing a value that is not a scalar.
+
+    The identity readers below all compare their field through a set, so the set *is* the
+    deduplication: a value it cannot hold cannot be compared with any other, and one it can hold but
+    no record writes — a boolean — would be compared as though it named a build or a tick rate.
+    Either way the field cannot be shown to agree, which is the only thing the checks are for, so
+    both are refused here rather than read.
+
+    It is refused here rather than at each set, because the refusal is not one site's business:
+    `check_measurement_identity` builds a set that raises `TypeError: unhashable type` out of a
+    traceback for a list, dict or set — not the named `ERROR` this module's readers promise for
+    state it did not write — and `phase_report` builds two more from `IDENTITY_FIELDS` whose
+    validity today rests only on that first check happening to run before them. Stating the rule
+    once means no site depends on call ordering to be correct.
+
+    What it admits is exactly what the phase writers put in these fields, because the report is fed a
+    state file it did not write. Each field is written as one kind of thing — `api_level` and
+    `clk_tck` are integers, `device_id`, `apk_sha256` and `power_source` are text, and any of them may
+    be `null` — so a scalar of the *other* kind is refused for the reason a `bool` is: it is a value
+    no record writes. `"clk_tck": "100"` and `"power_source": 7` are the cases, and admitting them
+    would let a corrupt state file pass the gate while the report printed the value as the identity
+    the run was measured under — the complaint the identity check already makes about a set whose
+    every value is `null`.
+
+    That check settles the non-finite case without a rule of its own: `NaN` and `inf` are floats, and
+    no identity field is written as one. It is not a hypothetical — the state file is JSON Lines read
+    with `json.loads`, which accepts `NaN` and `Infinity` by default, so a hand-edited file reaches
+    here with a float in an identity field.
+
+    `bool` is refused for the reason `finite_number` gives: it is an `int` in Python, so
+    `"clk_tck": true` would read as one tick and `"api_level": false` as API 0. It is, strictly, a
+    scalar, and that is exactly why it has to be named: nothing a record writes for an identity
+    field is a truth value. A null is admitted, because `"apk_sha256": null` is the legitimate
+    "unknown build" every pre-build record carries — refusing an unknown identity is the identity
+    check's decision, not this reader's.
+    """
+    value = record.get(identity_field)
+    if isinstance(value, bool) or (value is not None and not isinstance(value, str | int | float)):
+        detail = (
+            f"a {record.get('phase')!r} record's {identity_field} is {value!r}, which is not a scalar, "
+            "so it cannot be read as a measurement identity"
+        )
+        raise device_layer.ProbeError(detail)
+    expected = int if identity_field in INTEGER_IDENTITY_FIELDS else str
+    if value is not None and not isinstance(value, expected):
+        written_as = "integer" if expected is int else "text"
+        detail = (
+            f"a {record.get('phase')!r} record's {identity_field} is {value!r}, which is not the "
+            f"{written_as} this field is written as, so it cannot be read as a measurement identity"
+        )
+        raise device_layer.ProbeError(detail)
+    return value
+
+
 def check_measurement_identity(records: Sequence[Mapping[str, object]]) -> None:
     """
     Refuse a record set that mixes builds, API levels, power modes, or tick rates.
@@ -514,9 +576,14 @@ def check_measurement_identity(records: Sequence[Mapping[str, object]]) -> None:
     bound it. A field the record *does* carry with a null value is a value, not an absence — a record
     written before the APK was built carries `"apk_sha256": null`, meaning "unknown build", and that
     must not aggregate with a named one.
+
+    A value that is not a scalar of the kind the field is written as is neither compared nor skipped:
+    `identity_value` refuses it, because the set is the comparison, and a value the set cannot hold,
+    or holds without that value being an identity of that field, cannot be shown to agree with the
+    others.
     """
     for identity_field in IDENTITY_FIELDS:
-        values = {record.get(identity_field) for record in records if identity_field in record}
+        values = {identity_value(record, identity_field) for record in records if identity_field in record}
         if not values:
             continue
         if values == {None}:
@@ -854,7 +921,7 @@ def phase_report(records: Sequence[Mapping[str, object]], *, black_unavailable: 
     """Print the aggregate report and every unrun check it can see, returning its exit status."""
     check_measurement_identity(records)
     revisions = {str(record.get("revision")) for record in records}
-    api_levels = {record.get("api_level") for record in records}
+    api_levels = {identity_value(record, "api_level") for record in records}
     print(f"records: {len(records)}")
     print(f"source revisions: {', '.join(sorted(revisions))}")
     print(f"API levels: {', '.join(str(level) for level in sorted(api_levels, key=str))}")
@@ -862,7 +929,8 @@ def phase_report(records: Sequence[Mapping[str, object]], *, black_unavailable: 
         if identity_field == "api_level":
             continue
         values = sorted(
-            {record.get(identity_field) for record in records if record.get(identity_field) is not None}, key=str
+            {identity_value(record, identity_field) for record in records if record.get(identity_field) is not None},
+            key=str,
         )
         if values:
             print(f"{identity_field}: {', '.join(str(value) for value in values)}")
