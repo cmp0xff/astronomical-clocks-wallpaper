@@ -1126,14 +1126,29 @@ def read_apk_sha256(device: device_layer.AdbDevice) -> str:
     return digest
 
 
+# adb presents a wirelessly-debugged device under more than one selector. An explicit connection is
+# `host:port`; the devices adb discovers itself are published as mDNS service names shaped
+# `adb-<serial>-<suffix>._adb-tls-connect._tcp` (the older pairing form is `_adb._tcp`). Neither
+# names the hardware: the port and the service suffix belong to the transport and change with it, so
+# a digest of either splits one device's records or merges two devices'.
+TRANSPORT_SERVICE_MARKERS: Final = ("._adb-tls-connect._tcp", "._adb._tcp")
+
+
+def is_transport_selector(serial: str) -> bool:
+    """Return whether an adb serial is a transport selector rather than a hardware serial."""
+    if ":" in serial:
+        return True
+    return serial.startswith("adb-") and any(marker in serial for marker in TRANSPORT_SERVICE_MARKERS)
+
+
 def read_hardware_serial(device: device_layer.AdbDevice) -> str | None:
     """
     Read the device's own serial property, or None when no stable handle can be read.
 
-    This is the identity behind a transport address rather than a second opinion on a USB serial:
-    `adb devices` reports a wirelessly-debugged device as `host:port`, which is an endpoint of the
-    transport and not a property of the hardware. The serial property is the handle the device
-    itself reports, and it survives a reconnect that changes the port.
+    This is the identity behind a transport selector rather than a second opinion on a USB serial:
+    `adb devices` reports a wirelessly-debugged device as `host:port` or as an mDNS service name,
+    which are endpoints of the transport and not properties of the hardware. The serial property is
+    the handle the device itself reports, and it survives a reconnect that changes either.
     """
     for prop in ("ro.serialno", "ro.boot.serialno"):
         try:
@@ -1161,22 +1176,23 @@ def device_identity(device: device_layer.AdbDevice) -> str:
     one device from another while disclosing neither, and it is what stops two devices' records from
     aggregating into one verdict.
 
-    A `host:port` serial is adb's wireless-debugging *transport address*, not a device handle: the
-    port changes on every reconnect, and the address can be reused by another device. Hashing it
-    would make one physical device's records look like several devices' — which `report` refuses as
-    a mixed set — and two devices' records look like one. When the serial is an endpoint, the digest
-    is taken from the hardware serial the device reports; when that cannot be read, the record is
-    refused rather than stamped with an address that says nothing about the device.
+    A `host:port` serial or an `adb-…._adb-tls-connect._tcp` service name is adb's wireless-debugging
+    *transport selector*, not a device handle: the port and the service suffix change on every
+    reconnect, and an address can be reused by another device. Hashing either would make one
+    physical device's records look like several devices' — which `report` refuses as a mixed set —
+    and two devices' records look like one. When the serial is a selector, the digest is taken from
+    the hardware serial the device reports; when that cannot be read, the record is refused rather
+    than stamped with a selector that says nothing about the device.
     """
     serial = device.serial
     if not serial:
         detail = "the target device reported no serial, so a record cannot say which device it measured"
         raise device_layer.ProbeError(detail)
-    if ":" in serial:
+    if is_transport_selector(serial):
         hardware_serial = read_hardware_serial(device)
         if hardware_serial is None:
             detail = (
-                f"the target device was reached over the transport address {serial!r}, and its own "
+                f"the target device was reached over the transport selector {serial!r}, and its own "
                 "serial property could not be read, so a record cannot say which device it measured"
             )
             raise device_layer.ProbeError(detail)

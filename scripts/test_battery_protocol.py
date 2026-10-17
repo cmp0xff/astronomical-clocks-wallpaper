@@ -2092,6 +2092,38 @@ class MeasurementIdentityTest(unittest.TestCase):
         # Two devices behind the same endpoint (reused after a disconnect) are two identities.
         self.assertNotEqual(identify("192.0.2.5:37121", "R58M12345AB"), identify("192.0.2.5:37121", "R58M12345AC"))
 
+    def test_an_mdns_service_name_is_not_a_device_identity(self) -> None:
+        # adb's own discovery publishes the device as `adb-<serial>-<suffix>._adb-tls-connect._tcp`,
+        # which carries no `:`. The suffix belongs to the service advertisement, not to the device,
+        # so a digest of the service name splits one device's records across mDNS, USB and
+        # `host:port` connections. All three selectors must resolve to the hardware serial's digest.
+        def identify(selector: str, hardware_serial: str) -> str:
+            device = MagicMock()
+            device.serial = selector
+            device.run_adb.return_value = f"{hardware_serial}\n".encode()
+            return subject.device_identity(device)
+
+        usb = MagicMock()
+        usb.serial = "R58M12345AB"
+        expected = subject.device_identity(usb)
+        for selector in (
+            "adb-R58M12345AB-AbCdEf._adb-tls-connect._tcp",
+            "adb-R58M12345AB-AbCdEf._adb-tls-connect._tcp.",
+            "adb-R58M12345AB-ZyXwVu._adb._tcp",
+        ):
+            with self.subTest(selector=selector):
+                self.assertEqual(expected, identify(selector, "R58M12345AB"))
+        # A stale suffix for the same device is still the same device; a different device behind a
+        # reused service name is not.
+        self.assertEqual(
+            identify("adb-R58M12345AB-AbCdEf._adb-tls-connect._tcp", "R58M12345AB"),
+            identify("adb-R58M12345AB-ZyXwVu._adb-tls-connect._tcp", "R58M12345AB"),
+        )
+        self.assertNotEqual(
+            identify("adb-R58M12345AB-AbCdEf._adb-tls-connect._tcp", "R58M12345AB"),
+            identify("adb-R58M12345AB-AbCdEf._adb-tls-connect._tcp", "R58M12345AC"),
+        )
+
     def test_the_boot_serial_is_used_when_the_serial_property_is_empty(self) -> None:
         # The fallback is not cosmetic: a device that does not expose `ro.serialno` still answers
         # for `ro.boot.serialno`, and the identity behind a transport address is the same either way.
@@ -2104,16 +2136,18 @@ class MeasurementIdentityTest(unittest.TestCase):
         self.assertEqual(subject.device_identity(usb), identity)
 
     def test_a_transport_device_with_no_readable_serial_is_refused(self) -> None:
-        # An endpoint with no hardware serial behind it is not an identity: refusing is the only
-        # answer that does not stamp the record with an address that names no device.
-        for answers in ([b"\n", b"unknown\n"], [b"\n", b"\n"]):
-            with self.subTest(answers=answers):
-                device = MagicMock()
-                device.serial = "192.0.2.5:37121"
-                device.run_adb.side_effect = answers
-                with self.assertRaises(device_layer.ProbeError) as raised:
-                    subject.device_identity(device)
-                self.assertIn("serial property could not be read", str(raised.exception))
+        # A selector with no hardware serial behind it is not an identity: refusing is the only
+        # answer that does not stamp the record with an address that names no device. Both shapes of
+        # selector are covered, because the mDNS form carries no `:` and must not fall through.
+        for selector in ("192.0.2.5:37121", "adb-R58M12345AB-AbCdEf._adb-tls-connect._tcp"):
+            for answers in ([b"\n", b"unknown\n"], [b"\n", b"\n"]):
+                with self.subTest(selector=selector, answers=answers):
+                    device = MagicMock()
+                    device.serial = selector
+                    device.run_adb.side_effect = answers
+                    with self.assertRaises(device_layer.ProbeError) as raised:
+                        subject.device_identity(device)
+                    self.assertIn("serial property could not be read", str(raised.exception))
 
     def test_an_adb_failure_while_reading_the_serial_is_refused(self) -> None:
         device = MagicMock()
