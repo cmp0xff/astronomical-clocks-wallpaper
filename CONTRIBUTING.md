@@ -281,23 +281,34 @@ do not argue for one, unless the owner explicitly asks.
 
 ### Pull requests and Accountability Index
 
-Follow [.github/pull_request_template.md](.github/pull_request_template.md):
+Follow [.github/pull_request_template.md](.github/pull_request_template.md). The
+body describes the change as it now stands, for a reviewer reading it for the
+first time; how it got there is recorded in commit bodies and discussion threads,
+one link away.
 
+- Keep the visible text short. The Summary is two to four outcome bullets
+  describing the change as it now stands; when review changes the outcome, revise
+  those bullets. Do not add a bullet, paragraph, or section per push or review
+  round.
 - Add risk, compatibility, migration, or rollout details only when material.
 - Include a collapsible **Accountability Index** at the bottom: a linked table of
-  each commit with a brief what/why, links to discussion comments containing
-  review decisions, and a short caveats note. It indexes evidence; full rationale
-  belongs in commit bodies and discussion threads.
+  each commit with a one-line what (the commit subject serves) and a one-line why,
+  links to the discussion comments containing review decisions, and a short
+  caveats note. It indexes evidence; it is not the record. Do not copy into it
+  rationale that a commit body or thread reply already holds — link to it.
 - Update the index on every push and review round, in the same pass as the
   commit or reply: add one row for every commit pushed (the table must not stop
-  at the opening commits), and replace the "Review decisions" line with links to
-  every resolved discussion thread. Those rows cite the PR's own commits, which
+  at the opening commits). After a rebase, re-derive every row from the pushed
+  branch: the SHAs that named the old commits no longer name the commits the PR
+  carries. Keep the "Review decisions" line as one link per resolved finding,
+  each naming the commit that resolved it or marking it declined. A finding raised in a review body rather than a thread is linked
+  through the reply that records its verdict. Those rows cite the PR's own commits, which
   after the default [squash merge](#merge-method) remain on the PR head ref
   rather than in `main`'s ancestry; citing them by SHA is still correct, and the
   index is not expected to match `main` commit-for-commit. A table stuck at the
-  opening commits or a stale "none yet" line is itself a review finding. Link
-  evidence without copying extensive rationale. This project explicitly requires
-  this per-commit index, overriding the global default against one.
+  opening commits or a stale "none yet" line is itself a review finding. This
+  project explicitly requires this per-commit index, overriding the global
+  default against one.
 - Link out-of-band evidence the PR depends on — issue-body edits above all — from
   the index too. When the Summary or Verification rests on edited issue bodies,
   reference each edited issue so its audited state is traceable from the PR
@@ -315,6 +326,31 @@ Follow [.github/pull_request_template.md](.github/pull_request_template.md):
 This accountability policy is adapted from
 [cmp0xff's pinned guidance](https://github.com/cmp0xff/pandas-stubs/blob/f72b507f64c50427ad50595a7c615b0ac3552b61/AGENTS.md),
 with Android conventions replacing the upstream project's domain-specific rules.
+
+### Responding to review
+
+Review, human or automated, should converge on a mergeable change rather than
+run until a reviewer stops producing findings.
+
+- Before requesting a review or re-review, review the whole diff as it now
+  stands, not only the lines the last finding touched: a re-requested review
+  reads the whole diff again.
+- Answer every open finding from a round in one pass: batch accepted fixes into a
+  single push, fixing each finding's class across the diff rather than only the
+  reported instance, and answer declined findings in their verdict replies
+  without a commit.
+- Record each verdict in the thread, or, for a finding raised in a review body,
+  in one reply comment: accepted with the fixing commit, or declined with the
+  reason. Declining is a legitimate verdict — for example, hardening against
+  input no caller can produce, or tests beyond what
+  [test scope and proportionality](#test-scope-and-proportionality) supports.
+- Stop re-requesting automated review once it has returned "Needs a closer look"
+  three times on the pull request, counted in total rather than in a row. That
+  is Copilot's middle verdict, between "Changes recommended" and "Approval
+  recommended"; if the labels change, count the equivalent middle verdict.
+  Answer the last review's findings without re-requesting, record what remains
+  under Caveats, and leave the merge decision to the owner, who may ask for
+  further rounds.
 
 ## AI-assisted contributions
 
