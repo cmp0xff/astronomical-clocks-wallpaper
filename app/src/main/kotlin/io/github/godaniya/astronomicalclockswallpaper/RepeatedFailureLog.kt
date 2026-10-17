@@ -3,11 +3,11 @@ package io.github.godaniya.astronomicalclockswallpaper
 import android.util.Log
 
 /**
- * Bounds the log noise from a failure that recurs on every tick. A wallpaper ticks once a second for
- * weeks, so a persistent fault would otherwise emit tens of thousands of stack traces.
+ * Bounds the log noise from a failure that recurs on every tick. A wallpaper ticks on minute
+ * boundaries for weeks, so a persistent fault would otherwise emit thousands of stack traces.
  *
  * The first failure logs its stack trace, later ones only advance a counter, one summary is emitted
- * every [SUMMARY_EVERY] consecutive failures (about a minute at the 1 Hz tick), and the end of a
+ * every [SUMMARY_EVERY] consecutive failures (about an hour at the minute tick), and the end of a
  * sustained episode is reported so the fault's end is visible. A single transient failure is
  * deliberately silent on recovery, which keeps a clean frame free of log output.
  *

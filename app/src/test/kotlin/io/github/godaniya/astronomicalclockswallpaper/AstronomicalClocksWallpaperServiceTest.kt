@@ -5,9 +5,14 @@ import android.app.WallpaperInfo
 import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Insets
+import android.graphics.Rect
+import android.os.Build
 import android.os.Looper
+import android.os.SystemClock
 import android.service.wallpaper.WallpaperService
 import android.view.SurfaceView
+import android.view.WindowInsets
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotSame
@@ -20,8 +25,12 @@ import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import org.robolectric.util.ReflectionHelpers
+import org.robolectric.util.ReflectionHelpers.ClassParameter
+import java.time.Clock
 import java.time.Duration
 import java.time.Instant
+import java.time.ZoneOffset
 
 /** Verifies Android discovery, binding protection, metadata, service teardown, and tick scheduling. */
 @RunWith(RobolectricTestRunner::class)
@@ -251,9 +260,213 @@ class AstronomicalClocksWallpaperServiceTest {
         assertNull(service.debugClock.currentFixedInstant)
     }
 
+    // A launcher reports offsets continuously while it scrolls, and the next periodic tick can be a
+    // minute away. The engine coalesces a burst into one posted frame so the dial re-centres promptly,
+    // and rescheduling the tick must not drop that frame.
+    @Test
+    fun viewportOffsetsRedrawFrame() {
+        val service = controller.get()
+        val holder = ReadyFrameHolder(SurfaceView(service).holder, VIEWPORT_EXTENT, VIEWPORT_EXTENT)
+        val viewports = mutableListOf<DialViewport>()
+        val engine =
+            service.createEngine(
+                draw = { _, _, _, _, _, _, viewport -> viewports.add(viewport) },
+                holder = holder,
+                clock = fixedClock(),
+            )
+        val looper = shadowOf(Looper.getMainLooper())
+
+        engine.onVisibilityChanged(true)
+        assertEquals(1, viewports.size)
+        looper.idle()
+        val scheduledTick = looper.nextScheduledTaskTime
+
+        engine.onOffsetsChanged(0.75f, 0f, 0f, 0f, X_OFFSET_FIRST, 0)
+        engine.onOffsetsChanged(0.5f, 0f, 0f, 0f, X_OFFSET_LAST, 0)
+        assertEquals("a burst draws once the handler runs, not synchronously", 1, viewports.size)
+
+        looper.idle()
+        assertEquals(2, viewports.size)
+        assertEquals((-X_OFFSET_LAST).toFloat(), viewports.last().left)
+        assertEquals("the tick survives the coalesced redraw", scheduledTick, looper.nextScheduledTaskTime)
+
+        engine.onDestroy()
+        holder.release()
+    }
+
+    // Insets change the usable rectangle the dial is placed in, so the cached viewport must reach the
+    // screen before the next minute boundary too.
+    @Test
+    fun viewportInsetsRedrawFrame() {
+        val service = controller.get()
+        val holder = ReadyFrameHolder(SurfaceView(service).holder, VIEWPORT_EXTENT, VIEWPORT_EXTENT)
+        val viewports = mutableListOf<DialViewport>()
+        val engine =
+            service.createEngine(
+                draw = { _, _, _, _, _, _, viewport -> viewports.add(viewport) },
+                holder = holder,
+                clock = fixedClock(),
+            )
+        val looper = shadowOf(Looper.getMainLooper())
+
+        engine.onVisibilityChanged(true)
+        looper.idle()
+        val scheduledTick = looper.nextScheduledTaskTime
+
+        engine.onApplyWindowInsets(insets(Rect(0, TOP_INSET, 0, 0)))
+        looper.idle()
+
+        assertEquals(2, viewports.size)
+        assertEquals(TOP_INSET.toFloat(), viewports.last().top)
+        assertEquals(scheduledTick, looper.nextScheduledTaskTime)
+
+        engine.onDestroy()
+        holder.release()
+    }
+
+    @Test
+    fun viewportChangeIgnoredHidden() {
+        val service = controller.get()
+        val holder = ReadyFrameHolder(SurfaceView(service).holder, VIEWPORT_EXTENT, VIEWPORT_EXTENT)
+        val viewports = mutableListOf<DialViewport>()
+        val engine =
+            service.createEngine(
+                draw = { _, _, _, _, _, _, viewport -> viewports.add(viewport) },
+                holder = holder,
+                clock = fixedClock(),
+            )
+        val looper = shadowOf(Looper.getMainLooper())
+
+        engine.onOffsetsChanged(0.5f, 0f, 0f, 0f, X_OFFSET_LAST, 0)
+        looper.idle()
+
+        assertEquals(0, viewports.size)
+        assertEquals(Duration.ZERO, looper.nextScheduledTaskTime)
+
+        engine.onDestroy()
+        holder.release()
+    }
+
+    // onSurfaceDestroyed leaves the engine visible but without a surface, so a viewport change in the
+    // gap is only cached. The surface-recreation frame then carries that cached viewport.
+    @Test
+    fun viewportChangeIgnoredNoSurface() {
+        val service = controller.get()
+        val holder = ReadyFrameHolder(SurfaceView(service).holder, VIEWPORT_EXTENT, VIEWPORT_EXTENT)
+        val viewports = mutableListOf<DialViewport>()
+        val engine =
+            service.createEngine(
+                draw = { _, _, _, _, _, _, viewport -> viewports.add(viewport) },
+                holder = holder,
+                clock = fixedClock(),
+            )
+        val looper = shadowOf(Looper.getMainLooper())
+
+        engine.onVisibilityChanged(true)
+        looper.idle()
+        engine.onSurfaceDestroyed(holder)
+
+        engine.onApplyWindowInsets(insets(Rect(0, TOP_INSET, 0, 0)))
+        looper.idle()
+        assertEquals(1, viewports.size)
+        assertEquals(Duration.ZERO, looper.nextScheduledTaskTime)
+
+        engine.onSurfaceChanged(holder, SURFACE_FORMAT, VIEWPORT_EXTENT, VIEWPORT_EXTENT)
+        assertEquals(2, viewports.size)
+        assertEquals(TOP_INSET.toFloat(), viewports.last().top)
+
+        engine.onDestroy()
+        holder.release()
+    }
+
+    // stopTicking cancels every message this engine scheduled, so a redraw queued just before
+    // destruction must not draw afterwards.
+    @Test
+    fun viewportChangeAfterDestroy() {
+        val service = controller.get()
+        val holder = ReadyFrameHolder(SurfaceView(service).holder, VIEWPORT_EXTENT, VIEWPORT_EXTENT)
+        val viewports = mutableListOf<DialViewport>()
+        val engine =
+            service.createEngine(
+                draw = { _, _, _, _, _, _, viewport -> viewports.add(viewport) },
+                holder = holder,
+                clock = fixedClock(),
+            )
+        val looper = shadowOf(Looper.getMainLooper())
+
+        engine.onVisibilityChanged(true)
+        engine.onOffsetsChanged(0.5f, 0f, 0f, 0f, X_OFFSET_LAST, 0)
+        engine.onDestroy()
+        looper.idle()
+
+        assertEquals(1, viewports.size)
+        assertEquals(Duration.ZERO, looper.nextScheduledTaskTime)
+
+        holder.release()
+    }
+
+    // 12:34:56.789 leaves 3_211 ms in the minute. Deriving the delay from the looper alone would let a
+    // constant 60_000 ms delay pass, so this pins the boundary within a millisecond: no frame at
+    // 3_210 ms, one frame at 3_211 ms.
+    @Test
+    fun tickWaitsForMinuteBoundary() {
+        val service = controller.get()
+        val holder = ReadyFrameHolder(SurfaceView(service).holder, VIEWPORT_EXTENT, VIEWPORT_EXTENT)
+        var draws = 0
+        val engine =
+            service.createEngine(
+                draw = { _, _, _, _ -> draws++ },
+                holder = holder,
+                clock = fixedClock(),
+            )
+        val looper = shadowOf(Looper.getMainLooper())
+
+        engine.onVisibilityChanged(true)
+        looper.idle()
+        assertEquals(1, draws)
+        val scheduledDelay = looper.nextScheduledTaskTime.toMillis() - SystemClock.uptimeMillis()
+        assertEquals(MILLIS_TO_BOUNDARY, scheduledDelay)
+
+        looper.idleFor(Duration.ofMillis(MILLIS_TO_BOUNDARY - 1))
+        assertEquals(1, draws)
+        looper.idleFor(Duration.ofMillis(1))
+        assertEquals(2, draws)
+
+        engine.onDestroy()
+        holder.release()
+    }
+
+    private fun fixedClock(): Clock = Clock.fixed(Instant.parse("2026-01-15T12:34:56.789Z"), ZoneOffset.UTC)
+
+    private fun insets(rect: Rect): WindowInsets {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val builder = WindowInsets.Builder()
+            builder.setInsetsIgnoringVisibility(
+                WindowInsets.Type.systemBars(),
+                Insets.of(rect.left, rect.top, rect.right, rect.bottom),
+            )
+            return builder.build()
+        }
+        return ReflectionHelpers.callConstructor(
+            WindowInsets::class.java,
+            ClassParameter.from(Rect::class.java, rect),
+        )
+    }
+
     private companion object {
         const val SURFACE_FORMAT = 1
         const val SURFACE_WIDTH = 200
         const val SURFACE_HEIGHT = 200
+
+        // Large enough that the display-sized window still has slack to scroll over in Robolectric's
+        // default 320-pixel-wide display.
+        const val VIEWPORT_EXTENT = 1000
+
+        // Negative because the reported offset is the scroll: the engine negates it to get the
+        // window origin inside the surface.
+        const val X_OFFSET_FIRST = -150
+        const val X_OFFSET_LAST = -100
+        const val TOP_INSET = 24
+        const val MILLIS_TO_BOUNDARY = 3_211L
     }
 }

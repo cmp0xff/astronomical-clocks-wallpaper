@@ -250,7 +250,7 @@ subtraction would report a 360-degree disagreement instead of the 0.0052 degrees
 the first call costs about 15 ms while the engine's classes initialise. Measured on 2026-09-29
 with Temurin 21.0.12.1 on macOS on ten cores, by warming 2000 calls and then averaging 1000. No
 committed test measures it, so it is an observation rather than a bound. The wallpaper redraws
-about once a second, so neither figure is a battery concern. The rotation matrix the star path
+about once a minute, so neither figure is a battery concern. The rotation matrix the star path
 needs is already built once per call rather than once per star.
 
 ## What is not verified here

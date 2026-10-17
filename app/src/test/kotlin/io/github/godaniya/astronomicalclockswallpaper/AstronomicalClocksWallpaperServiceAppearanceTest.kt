@@ -2,6 +2,7 @@ package io.github.godaniya.astronomicalclockswallpaper
 
 import android.content.res.Configuration
 import android.os.Looper
+import android.os.SystemClock
 import android.service.wallpaper.WallpaperService
 import android.view.SurfaceView
 import org.junit.After
@@ -57,7 +58,9 @@ class AstronomicalClocksWallpaperServiceAppearanceTest {
     }
 
     private fun tick() {
-        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(1))
+        val looper = shadowOf(Looper.getMainLooper())
+        val delay = (looper.nextScheduledTaskTime.toMillis() - SystemClock.uptimeMillis()).coerceAtLeast(1L)
+        looper.idleFor(Duration.ofMillis(delay))
     }
 
     @Test
@@ -122,7 +125,7 @@ class AstronomicalClocksWallpaperServiceAppearanceTest {
 
     // Copilot review discussion_r4177344106: onSurfaceDestroyed cancels the loop but leaves the
     // engine visible, so a night-mode change arriving in that gap must not redraw onto the released
-    // surface. Before the fix this ran a tick whose finally re-armed the per-second loop, so even the
+    // surface. Before the fix this ran a tick whose finally re-armed the periodic loop, so even the
     // later tick kept rendering; both checks must stay at zero.
     @Test
     fun nightChangeWithoutSurface() {

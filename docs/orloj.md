@@ -205,7 +205,8 @@ bearing against the outer Roman numeral scale, and an extra arm would clutter th
 Each engine listens for location, layer, appearance and display-composition changes, maintains one
 immutable settings snapshot, and draws each frame from one instant. Updates take effect on the next
 visible tick. Hidden engines do not start rendering, and destroyed engines unregister all four
-preference listeners. Rendering stays at one frame per second while visible.
+preference listeners. Rendering stays at one frame per civil minute while visible, plus one coalesced
+frame when the launcher scrolls the surface or the window insets change.
 
 ## Palette contrast
 

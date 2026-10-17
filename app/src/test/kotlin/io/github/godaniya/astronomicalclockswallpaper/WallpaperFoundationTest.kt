@@ -2,6 +2,7 @@ package io.github.godaniya.astronomicalclockswallpaper
 
 import android.content.Context
 import android.os.Looper
+import android.os.SystemClock
 import android.service.wallpaper.WallpaperService
 import android.util.Log
 import android.view.SurfaceView
@@ -213,7 +214,9 @@ class WallpaperFoundationTest {
     }
 
     private fun tick() {
-        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(1))
+        val looper = shadowOf(Looper.getMainLooper())
+        val delay = (looper.nextScheduledTaskTime.toMillis() - SystemClock.uptimeMillis()).coerceAtLeast(1L)
+        looper.idleFor(Duration.ofMillis(delay))
     }
 
     private data class TestFrame(val clock: ClockState, val geometry: DialGeometry?, val layers: DialLayers)

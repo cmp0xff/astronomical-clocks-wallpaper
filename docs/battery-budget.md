@@ -35,8 +35,14 @@ resource budgets and avoid degrading battery life:
 | **B2: Wake Locks, Alarms & Jobs** | **0 wake locks**, 0 pending alarms of any kind, **0 JobScheduler jobs** | `dumpsys power`, `dumpsys alarm` and `dumpsys jobscheduler`, attributed by the app's UID and by package — each matched as a whole token, so one uid or one package name cannot be matched by a prefix or a substring of another — and each dump's own census line must be present **and must account for every entry the dump enumerates**: the count of enumerated entries must equal the declared count, so an unparsable or truncated probe is an error rather than a count of zero |
 | **B3: Hidden CPU Utilization** | **≤ 0.1% of one core** over ≥ 10 min | `/proc/<pid>/stat` deltas over a screen-off duration whose display state is sampled throughout |
 | **B4: Visible Screen-On Drain** | **≤ 12.0123% relative increase in mean discharge rate** vs the stock baseline — the committed noise floor, not the 5% provisional | The fuel-gauge charge counter (`dumpsys battery` `Charge counter`, µAh) read at both ends of each window, its delta over the window expressed as a mean current in µA, compared live against stock. A/B/A/B alternating runs of ≥ 15 minutes against stock `ImageWallpaper`; the paired 95% upper bound must also stay below the threshold. A black static wallpaper is the secondary baseline, required only where the device permits setting one |
-| **B5: Visible CPU Utilization** | **≤ 3% of one core** at 1 Hz over ≥ 15 min | `/proc/<pid>/stat` process ticks during a visible home-screen window |
+| **B5: Visible CPU Utilization** | **≤ 3% of one core** over ≥ 15 min while visible | `/proc/<pid>/stat` process ticks during a visible home-screen window |
 | **B6: Memory Stability** | **≤ 6144 kB** total-PSS growth, the `--max-pss-growth-kb` limit the qualification harness is run with (it requires that limit per run and has no default), set to this value in the recorded 2026-10-07 passes | `dumpsys meminfo` PSS sampling across a ≥ 30-minute window |
+
+B5 states a CPU budget, not a redraw cadence. The ≤ 3% threshold is unchanged; the cadence a window
+measures is whatever the recorded build ships, and each record's `apk_sha256` identifies that build.
+The former "at 1 Hz" wording described the cadence then shipped. The current visible cadence is one
+frame per civil minute, plus one coalesced frame when the launcher scrolls the surface or the window
+insets change.
 
 `scripts/battery_protocol.py` implements B2–B6 as separate bounded subcommands. The five measuring
 phases — `resources`, `hidden`, `visible`, `pilot`, and `memory` — each write one or more records

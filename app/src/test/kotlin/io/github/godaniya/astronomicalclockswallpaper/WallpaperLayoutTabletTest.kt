@@ -163,7 +163,7 @@ class WallpaperLayoutTabletTest {
         )
         engine.onVisibilityChanged(true)
         assertEquals(1, frameCount())
-        assertTicksOncePerSecond(looper = looper, frameCount = frameCount)
+        assertTicksOncePerMinute(looper = looper, frameCount = frameCount)
     }
 
     private fun assertUnfoldedPhase(
@@ -182,7 +182,7 @@ class WallpaperLayoutTabletTest {
         )
 
         assertEquals(4, frameCount())
-        assertTicksOncePerSecond(looper = looper, frameCount = frameCount)
+        assertTicksOncePerMinute(looper = looper, frameCount = frameCount)
 
         val unfoldedViewport = requireNotNull(viewport())
         assertEquals(TabletSurfaces.FOLDABLE_UNFOLDED.width.toFloat(), unfoldedViewport.right, TOLERANCE)
@@ -209,25 +209,25 @@ class WallpaperLayoutTabletTest {
             TabletSurfaces.FOLDABLE_FOLDED.height,
         )
         assertEquals(7, frameCount())
-        assertTicksOncePerSecond(looper = looper, frameCount = frameCount)
+        assertTicksOncePerMinute(looper = looper, frameCount = frameCount)
         val recovered = requireNotNull(requireNotNull(viewport()).resolve(DialDisplaySettings()))
         val expectedRadius = TabletSurfaces.FOLDABLE_FOLDED.width * DialViewport.RADIUS_FRACTION
         assertEquals(expectedRadius, recovered.radius, TOLERANCE)
     }
 
-    private fun assertTicksOncePerSecond(looper: ShadowLooper, frameCount: () -> Int) {
+    private fun assertTicksOncePerMinute(looper: ShadowLooper, frameCount: () -> Int) {
         val delay = looper.nextScheduledTaskTime.toMillis() - SystemClock.uptimeMillis()
-        assertEquals(1000L, delay)
+        assertTrue("delay must be within 1 minute", delay in 1L..60_000L)
 
         val beforeCount = frameCount()
-        looper.idleFor(Duration.ofMillis(999))
+        looper.idleFor(Duration.ofMillis(delay - 1))
         assertEquals("Frame count must not increment before tick interval", beforeCount, frameCount())
 
         looper.idleFor(Duration.ofMillis(1))
-        assertEquals("Frame count must increment exactly at 1 second mark", beforeCount + 1, frameCount())
+        assertEquals("Frame count must increment exactly at 1 minute mark", beforeCount + 1, frameCount())
 
-        looper.idleFor(Duration.ofSeconds(1))
-        assertEquals("Frame count must increment on subsequent 1 second tick", beforeCount + 2, frameCount())
+        looper.idleFor(Duration.ofMinutes(1))
+        assertEquals("Frame count must increment on subsequent 1 minute tick", beforeCount + 2, frameCount())
     }
 
     private fun assertDialFitsWithinDimensions(width: Int, height: Int) {

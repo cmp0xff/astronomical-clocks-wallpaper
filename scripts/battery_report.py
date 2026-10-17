@@ -536,7 +536,7 @@ def duration_weighted_mean(samples: Sequence[CpuSample]) -> float:
     A mean over the windows counts a 60-minute window the same as a 15-minute one, which is not the
     quantity the budget is stated in: three 15-minute windows at 1% beside one 60-minute window at 8%
     is 2.75% counted per window and 5% over the time the readings came from. The criterion is a rate —
-    CPU at 1 Hz over at least 15 minutes — so the aggregate has to be the one that estimates a rate
+    visible CPU over at least 15 minutes — so the aggregate has to be the one that estimates a rate
     from windows of different lengths, and the unweighted mean does not.
     """
     total_seconds = sum(sample.duration_seconds for sample in samples)

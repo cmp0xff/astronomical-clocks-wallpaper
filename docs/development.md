@@ -214,7 +214,7 @@ qualification harnesses explicit.
 | Lint `AndroidGradlePluginVersion` | Lint suggests Gradle 9.7.1 over 9.6.1 and, after catalog migration, AGP 9.4.1/9.3.3 over 9.3.2. Keep the selected detekt toolchain family and existing AGP pin; network-discovered upgrade suggestions must not change the agreed toolchain during maintenance. Review upgrades separately. | Only `gradle/wrapper/gradle-wrapper.properties` and the AGP pin in `gradle/libs.versions.toml`, via `app/lint.xml` |
 | Lint `NewerVersionAvailable` | The check live-queries Maven Central on every run, so it errors the hermetic gate the moment a dependency ships a newer release (Robolectric 4.16.1 → 4.17 did exactly this). Upgrades are reviewed deliberately instead of on CI's clock. | All modules, via `app/lint.xml` |
 | Lint `GradleDependency` | Same network-discovered-upgrade category as `NewerVersionAvailable`; keeping it active would reintroduce the same non-hermetic failure. | All modules, via `app/lint.xml` |
-| detekt `TooGenericExceptionCaught` | `runTick` catches `Exception` to keep the wallpaper tick loop alive across unexpected drawing exceptions while letting VM `Error` propagate. | Only `ClockEngine.runTick`, annotated in source |
+| detekt `TooGenericExceptionCaught` | `drawFrameSafely` catches `Exception` to keep the wallpaper tick loop and viewport redraws alive across unexpected drawing exceptions while letting VM `Error` propagate. | Only `ClockEngine.drawFrameSafely`, annotated in source |
 | detekt `TooGenericExceptionCaught` | `dialGeometryOrNull` catches `RuntimeException` around `dialGeometry` to fall back to the 24-hour civil dial rather than blanking the frame on geometry calculation failures. | Only `ClockEngine.dialGeometryOrNull`, annotated in source |
 | Lint `UnspecifiedRegisterReceiverFlag` | `registerDebugReceiver` calls the 2-argument `registerReceiver` on API < 33 when `RECEIVER_EXPORTED` is unavailable; lint requires annotating the API 33+ branch guard. | Only `AstronomicalClocksWallpaperService.registerDebugReceiver`, annotated in source |
 | detekt `TooManyFunctions` | `ClockEngine` keeps platform lifecycle, appearance/display callbacks, layout diagnostics and the tick loop together so rendering retains its lifecycle guards. Splitting solely for the function budget would separate those contracts. | Only `AstronomicalClocksWallpaperService.ClockEngine`, annotated in source |
@@ -263,8 +263,9 @@ without adding a permission library or background-location permission.
 
 Robolectric tests use API 26 and API 36 environments. They are JVM simulations and do not establish
 physical-device, lit lock-screen, or actual wallpaper surface behavior. API 37 compilation and Android
-Lint additionally check against the selected target. The `ClockEngine` schedules one redraw per whole
-second while visible and cancels the pending tick when hidden or destroyed. Each engine caches
+Lint additionally check against the selected target. The `ClockEngine` schedules one redraw per civil
+minute while visible, plus one coalesced draw when the viewport or window insets change, and cancels
+the pending tick when hidden or destroyed. Each engine caches
 its saved location and dial-layer choices, listens for preference changes until destruction, and uses the new snapshot
 on its next visible frame. Each frame resolves civil time from one clock instant in the saved
 zone, falling back to the current phone zone only when no usable location is saved.

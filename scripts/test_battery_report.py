@@ -449,7 +449,7 @@ class ReportTest(unittest.TestCase):
         self.assertTrue(any(line.startswith("B5 visible CPU (mean)") and "FAIL" in line for line in lines))
 
     def test_b5_weights_each_window_by_its_length(self) -> None:
-        # B5 is a rate — CPU at 1 Hz over at least 15 minutes — so the aggregate has to estimate one.
+        # B5 is a rate — visible CPU over at least 15 minutes — so the aggregate has to estimate one.
         # Three 15-minute windows at 1% of one core beside one 60-minute window at 8% is 2.75% counted
         # per window, which passed the 3% budget, and 5% over the time the readings came from, which is
         # what the device was doing across the run.

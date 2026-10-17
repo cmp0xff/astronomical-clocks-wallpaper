@@ -287,7 +287,7 @@ class AstronomicalClocksWallpaperService : WallpaperService() {
         // ready holders also mark it available for the internal frame-test seam.
         private var isSurfaceAvailable = frameHolder?.surface?.isValid == true
 
-        // Both of these faults recur once a second while they last, so they log the first occurrence
+        // Both of these faults recur on every tick while they last, so they log the first occurrence
         // and a periodic summary rather than a stack trace per tick.
         private val renderFailureLog =
             RepeatedFailureLog(
@@ -303,7 +303,16 @@ class AstronomicalClocksWallpaperService : WallpaperService() {
 
         private val wallpaperFrame = WallpaperFrame()
 
+        // Stable runnables so a queued tick and a queued viewport redraw can be cancelled
+        // individually: rescheduling the tick must not drop a redraw a viewport change requested.
+        // Assigned in init rather than inline because a construction-initializer lambda would be
+        // analysed as reading the properties runTick touches before they are initialized.
+        private val tickRunnable: Runnable
+        private val viewportRedrawRunnable: Runnable
+
         init {
+            tickRunnable = Runnable { runTick() }
+            viewportRedrawRunnable = Runnable { redrawForViewport() }
             // Keep a strong listener reference for this engine's lifetime. Updates only replace the
             // cached snapshot; hidden engines must not acquire a surface or schedule a tick. The
             // engine itself is registered with activeEngines by createEngine, which owns every
@@ -379,6 +388,7 @@ class AstronomicalClocksWallpaperService : WallpaperService() {
         override fun onApplyWindowInsets(insets: WindowInsets) {
             super.onApplyWindowInsets(insets)
             viewport.insets(insets)
+            requestViewportRedraw()
         }
 
         override fun onOffsetsChanged(
@@ -390,6 +400,7 @@ class AstronomicalClocksWallpaperService : WallpaperService() {
             yPixelOffset: Int,
         ) {
             viewport.offsets(xPixels = xPixelOffset, yPixels = yPixelOffset)
+            requestViewportRedraw()
         }
 
         override fun onSurfaceDestroyed(holder: SurfaceHolder) {
@@ -427,34 +438,67 @@ class AstronomicalClocksWallpaperService : WallpaperService() {
         }
 
         // Draws a frame and posts the next tick. Safe to call repeatedly: scheduleNextTick clears any
-        // pending callback first, so the loop is never double-scheduled. Handled argument/state
-        // failures return from drawFrame normally; unexpected exceptions are contained to preserve the
-        // tick loop, while severe VM errors still propagate.
-        @Suppress("TooGenericExceptionCaught")
+        // pending tick first, so the loop is never double-scheduled. A queued viewport redraw is
+        // dropped because this frame already resolves the latest viewport.
         private fun runTick() {
-            if (isDestroyed || !isEngineVisible || !isSurfaceAvailable) return
+            if (!canDraw()) return
+            handler.removeCallbacks(viewportRedrawRunnable)
             try {
-                drawFrame()
-                renderFailureLog.recordSuccess()
-            } catch (e: Exception) {
-                renderFailureLog.recordFailure(e)
+                drawFrameSafely()
             } finally {
                 scheduleNextTick()
             }
         }
 
-        // The handler is dedicated to ticks, so cancelling all messages stops the loop.
+        // Viewport callbacks can arrive in bursts (a scrolling launcher reports offsets on every
+        // movement) and run on the framework's callback thread path. Coalesce them into one posted
+        // draw so the dial re-centres promptly instead of waiting for the next minute boundary,
+        // without drawing synchronously from the callback.
+        private fun requestViewportRedraw() {
+            if (!canDraw()) return
+            handler.removeCallbacks(viewportRedrawRunnable)
+            if (!handler.post(viewportRedrawRunnable)) {
+                Log.w(
+                    TAG,
+                    "requestViewportRedraw: post returned false; looper exiting or message queue shutting down",
+                )
+            }
+        }
+
+        // Draws only the frame a viewport change affects; the periodic loop stays owned by runTick.
+        private fun redrawForViewport() {
+            if (!canDraw()) return
+            drawFrameSafely()
+        }
+
+        // Handled argument/state failures return from drawFrame normally; unexpected exceptions are
+        // contained to preserve the tick loop, while severe VM errors still propagate.
+        @Suppress("TooGenericExceptionCaught")
+        private fun drawFrameSafely() {
+            try {
+                drawFrame()
+                renderFailureLog.recordSuccess()
+            } catch (e: Exception) {
+                renderFailureLog.recordFailure(e)
+            }
+        }
+
+        private fun canDraw(): Boolean = !isDestroyed && isEngineVisible && isSurfaceAvailable
+
+        // The handler carries both the tick and any queued viewport redraw, so cancelling all
+        // messages stops everything this engine scheduled.
         private fun stopTicking() {
             handler.removeCallbacksAndMessages(null)
         }
 
         private fun scheduleNextTick() {
-            handler.removeCallbacksAndMessages(null)
-            val millisInSecond = Math.floorMod(clock.millis(), MILLIS_PER_SECOND)
+            handler.removeCallbacks(tickRunnable)
+            val millisInMinute = Math.floorMod(clock.millis(), MILLIS_PER_MINUTE)
+            val delayMillis = (MILLIS_PER_MINUTE - millisInMinute).coerceAtLeast(1L)
             val isScheduled =
                 handler.postDelayed(
-                    Runnable { runTick() },
-                    MILLIS_PER_SECOND - millisInSecond,
+                    tickRunnable,
+                    delayMillis,
                 )
             if (!isScheduled) {
                 Log.w(
@@ -559,6 +603,7 @@ class AstronomicalClocksWallpaperService : WallpaperService() {
         const val EXTRA_RESET = "reset"
 
         private const val MILLIS_PER_SECOND = 1000L
+        private const val MILLIS_PER_MINUTE = 60_000L
         private const val SECONDS_PER_MINUTE = 60L
         private const val SECONDS_PER_HOUR = 3600L
         private val minSupportedInstant: Instant = Instant.ofEpochMilli(Long.MIN_VALUE)

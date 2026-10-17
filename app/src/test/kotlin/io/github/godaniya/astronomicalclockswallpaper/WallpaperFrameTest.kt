@@ -294,7 +294,7 @@ class WallpaperFrameTest {
     private fun assertNextFrameSucceeds() {
         val looper = shadowOf(Looper.getMainLooper())
         val delay = looper.nextScheduledTaskTime.toMillis() - SystemClock.uptimeMillis()
-        assertTrue("a later tick must remain scheduled", delay in 1L..1000L)
+        assertTrue("a later tick must remain scheduled", delay in 1L..60_000L)
         val previousLocks = holder.lockAttempts
         val previousDraws = drawnCanvases.size
         val previousPosts = holder.postedCanvases.size

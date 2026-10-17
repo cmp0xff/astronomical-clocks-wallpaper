@@ -2,6 +2,7 @@ package io.github.godaniya.astronomicalclockswallpaper
 
 import android.content.Context
 import android.os.Looper
+import android.os.SystemClock
 import android.service.wallpaper.WallpaperService
 import android.view.SurfaceView
 import org.junit.Assert.assertEquals
@@ -52,7 +53,9 @@ class WallpaperDisplayTest {
             second.onVisibilityChanged(false)
             val changed = DialDisplaySettings(size = 50, horizontal = 0, vertical = 100, brightness = 80)
             DialDisplayStore(service).save(changed)
-            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(1))
+            val looper = shadowOf(Looper.getMainLooper())
+            val delay = (looper.nextScheduledTaskTime.toMillis() - SystemClock.uptimeMillis()).coerceAtLeast(1L)
+            looper.idleFor(Duration.ofMillis(delay))
             assertEquals(initialFirst + 1, firstFrames.size)
             assertEquals(changed, firstFrames.last().display)
             assertEquals(initialSecond, secondFrames.size)
@@ -62,7 +65,7 @@ class WallpaperDisplayTest {
             first.onVisibilityChanged(true)
             val stopped = firstFrames.size
             DialDisplayStore(service).save(DialDisplaySettings())
-            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(1))
+            looper.idleFor(Duration.ofMinutes(1))
             assertEquals(stopped, firstFrames.size)
             first.onSurfaceChanged(firstHolder, 1, 200, 300)
             assertEquals(DialDisplaySettings(), firstFrames.last().display)

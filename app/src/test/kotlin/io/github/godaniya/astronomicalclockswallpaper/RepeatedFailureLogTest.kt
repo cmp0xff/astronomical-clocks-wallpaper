@@ -13,7 +13,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.shadows.ShadowLog
 
-/** Verifies the tick-loop failure log stays bounded when a fault repeats every second. */
+/** Verifies the tick-loop failure log stays bounded when a fault repeats on every tick. */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [26, 36])
 class RepeatedFailureLogTest {
