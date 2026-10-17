@@ -10,6 +10,7 @@ import struct
 import subprocess
 import sys
 import unittest
+from collections.abc import Callable
 from types import ModuleType
 from typing import Final
 from unittest.mock import MagicMock, Mock, patch
@@ -25,8 +26,23 @@ from device_test_fixtures import (
     FRAME_WIDTH,
     circular_difference_deg,
     hand_frame,
+    install_no_real_sleep_guard,
     palette_frame,
 )
+
+_module_cleanups: list[Callable[[], None]] = []
+
+
+def setUpModule() -> None:
+    """Enforce that host tests run without real wall-clock sleeps."""
+    _module_cleanups.append(install_no_real_sleep_guard())
+
+
+def tearDownModule() -> None:
+    """Restore time.sleep after the test module finishes."""
+    while _module_cleanups:
+        _module_cleanups.pop()()
+
 
 NUMERAL_GLYPH_OUTER_RADIUS: Final = 1.254
 

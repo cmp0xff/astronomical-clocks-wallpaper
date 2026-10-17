@@ -8,6 +8,7 @@ import struct
 import subprocess
 import sys
 import unittest
+from collections.abc import Callable
 from types import ModuleType
 from typing import Final
 from unittest.mock import MagicMock, patch
@@ -20,8 +21,23 @@ from device_test_fixtures import (
     FRAME_WIDTH,
     circular_difference_deg,
     hand_frame,
+    install_no_real_sleep_guard,
     palette_frame,
 )
+
+_module_cleanups: list[Callable[[], None]] = []
+
+
+def setUpModule() -> None:
+    """Enforce that host tests run without real wall-clock sleeps."""
+    _module_cleanups.append(install_no_real_sleep_guard())
+
+
+def tearDownModule() -> None:
+    """Restore time.sleep after the test module finishes."""
+    while _module_cleanups:
+        _module_cleanups.pop()()
+
 
 NUMERAL_GLYPH_OUTER_RADIUS: Final = 1.254
 
@@ -41,13 +57,20 @@ LIGHT_HAND_RGB: Final = (78, 52, 27)
 class SmokeHarnessHardeningTest(unittest.TestCase):
     """The smoke harness's own false-pass paths, closed alongside the qualification ones."""
 
+    @patch.object(device_layer.time, "sleep")
     @patch.object(device_layer, "read_keyguard_locked", return_value=False)
     @patch.object(device_layer, "read_screen_on", return_value=True)
     @patch.object(device_layer, "read_display_size", return_value=("1080x2408", None))
     @patch.object(device_layer, "count_service_log_messages", return_value=0)
     @patch.object(device_layer, "run_adb")
     def test_restore_fails_when_the_clock_reset_is_never_logged(
-        self, _run_adb: MagicMock, _count: MagicMock, _size: MagicMock, _screen: MagicMock, _keyguard: MagicMock
+        self,
+        _run_adb: MagicMock,
+        _count: MagicMock,
+        _size: MagicMock,
+        _screen: MagicMock,
+        _keyguard: MagicMock,
+        _sleep: MagicMock,
     ) -> None:
         # `am broadcast` exits 0 even when nothing consumes it, so an unlogged reset is not a reset.
         with contextlib.redirect_stderr(io.StringIO()):
@@ -96,12 +119,18 @@ class SmokeHarnessHardeningTest(unittest.TestCase):
             ["run_restore_command", "confirm_virtual_clock_reset", "sleep_screen"],
         )
 
+    @patch.object(device_smoke.time, "sleep")
     @patch.object(device_layer, "detect_hand_angle", return_value=1.0)
     @patch.object(device_layer, "capture_frame", return_value=(2, 2, bytes(16)))
     @patch.object(device_layer, "read_display_size", return_value=("1080x2408", None))
     @patch.object(device_layer, "run_adb")
     def test_recreation_reports_an_override_that_never_took_effect(
-        self, _run_adb: MagicMock, _size: MagicMock, _capture: MagicMock, _angle: MagicMock
+        self,
+        _run_adb: MagicMock,
+        _size: MagicMock,
+        _capture: MagicMock,
+        _angle: MagicMock,
+        _sleep: MagicMock,
     ) -> None:
         with contextlib.redirect_stdout(io.StringIO()):
             recreation = device_smoke.step_recreate_surface(device_layer.AdbDevice("device"), None, "1080x2000")

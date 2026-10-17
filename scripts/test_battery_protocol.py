@@ -15,6 +15,27 @@ from unittest.mock import MagicMock, patch
 import battery_protocol as subject
 import battery_report as report
 import device_layer
+from device_test_fixtures import install_no_real_sleep_guard
+
+_module_cleanups: list[Callable[[], None]] = []
+_temp_directories: list[tempfile.TemporaryDirectory[str]] = []
+
+
+def setUpModule() -> None:
+    """Enforce that host tests run without real wall-clock sleeps or git dependencies."""
+    _module_cleanups.append(install_no_real_sleep_guard())
+    patcher = patch.object(subject, "read_source_revision", return_value="test-revision")
+    patcher.start()
+    _module_cleanups.append(patcher.stop)
+
+
+def tearDownModule() -> None:
+    """Restore time.sleep, patched revision, and clean up temporary directories."""
+    while _module_cleanups:
+        _module_cleanups.pop()()
+    while _temp_directories:
+        _temp_directories.pop().cleanup()
+
 
 # A `dumpsys battery` dump in the shape the test device actually prints, decoys included. Three of
 # them carry a value under a similar name — `Max charging voltage`, `Capacity level`, and the
@@ -111,9 +132,16 @@ ON_CHARGER_POWER_LINES = (
 )
 
 
+def make_temp_dir() -> Path:
+    """Return a managed temporary directory that is automatically cleaned up in tearDownModule."""
+    temp_dir = tempfile.TemporaryDirectory()
+    _temp_directories.append(temp_dir)
+    return Path(temp_dir.name)
+
+
 def recorder() -> subject.Recorder:
     """Return a recorder bound to a throwaway state directory, for the phases that persist to one."""
-    return subject.Recorder(Path(tempfile.mkdtemp()))
+    return subject.Recorder(make_temp_dir())
 
 
 class ParseBatteryOutputTest(unittest.TestCase):
@@ -583,7 +611,7 @@ class LoadRecordsTest(unittest.TestCase):
 
     def state(self, *lines: str) -> Path:
         """Write the given lines to a fresh state file and return its directory."""
-        directory = Path(tempfile.mkdtemp())
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
         (directory / subject.RECORD_FILE_NAME).write_text("\n".join(lines) + "\n", encoding="utf-8")
         return directory
 
@@ -607,14 +635,14 @@ class LoadRecordsTest(unittest.TestCase):
 
     def test_a_missing_state_file_names_the_path(self) -> None:
         with self.assertRaises(device_layer.ProbeError) as raised:
-            subject.load_records(Path(tempfile.mkdtemp()))
+            subject.load_records(Path(self.enterContext(tempfile.TemporaryDirectory())))
         self.assertIn(subject.RECORD_FILE_NAME, str(raised.exception))
 
     def test_a_state_file_that_is_not_utf8_is_named_not_a_traceback(self) -> None:
         # An append interrupted mid-character leaves a partial UTF-8 sequence, and `read_text` raises
         # `UnicodeDecodeError` on it. That is the same corrupt state file the JSON branch names,
         # failing one step earlier — and it used to fail as a traceback rather than a named refusal.
-        directory = Path(tempfile.mkdtemp())
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
         (directory / subject.RECORD_FILE_NAME).write_bytes(b'{"phase": "hidden", "note": "\xff\xfe"}')
         with self.assertRaises(device_layer.ProbeError) as raised:
             subject.load_records(directory)
@@ -1268,7 +1296,7 @@ class AbortedRestoreTest(unittest.TestCase):
         device.read_process_cpu_clock_ticks.return_value = 100
         device.run_adb.return_value = b"36\n"
         device.read_installed_apk_sha256.return_value = "a" * 64
-        state_dir = Path(tempfile.mkdtemp())
+        state_dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
         sink = subject.Recorder(state_dir)
         with (
             patch.object(subject, "DeviceStateSnapshot"),
@@ -1295,7 +1323,7 @@ class AbortedRestoreTest(unittest.TestCase):
         # read as a phase that ran.
         device = MagicMock()
         device.read_process_cpu_clock_ticks.return_value = 100
-        state_dir = Path(tempfile.mkdtemp())
+        state_dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
         with (
             patch.object(subject, "DeviceStateSnapshot"),
             patch.object(subject, "read_power_source_lines", return_value=ON_BATTERY_POWER_LINES),
@@ -1318,7 +1346,7 @@ class AbortedRestoreTest(unittest.TestCase):
         device.read_process_cpu_clock_ticks.return_value = 100
         device.run_adb.return_value = b"36\n"
         device.read_installed_apk_sha256.return_value = "a" * 64
-        state_dir = Path(tempfile.mkdtemp())
+        state_dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
         with (
             patch.object(subject, "DeviceStateSnapshot"),
             patch.object(subject, "read_power_source_lines", return_value=ON_BATTERY_POWER_LINES),
@@ -1345,7 +1373,7 @@ class AbortedRestoreTest(unittest.TestCase):
         device.read_keyguard_locked.return_value = False
         device.read_home_in_front.return_value = True
         device.read_installed_apk_sha256.return_value = "a" * 64
-        state_dir = Path(tempfile.mkdtemp())
+        state_dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
         with (
             patch.object(subject, "DeviceStateSnapshot"),
             patch.object(subject, "read_power_source_lines", return_value=ON_BATTERY_POWER_LINES),
@@ -1377,7 +1405,7 @@ class AbortedRestoreTest(unittest.TestCase):
         device.read_installed_apk_sha256.return_value = "a" * 64
         # A `dumpsys meminfo` that carried no TOTAL line, which is the third phase's own refusal.
         unparsable = subject.BatterySample(0.0, 1, 100, 4000, 1.0, None)
-        state_dir = Path(tempfile.mkdtemp())
+        state_dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
         with (
             patch.object(subject, "DeviceStateSnapshot"),
             patch.object(subject, "read_power_source_lines", return_value=ON_BATTERY_POWER_LINES),
@@ -1635,6 +1663,7 @@ class RestoreTest(unittest.TestCase):
             airplane_mode=0,
             stay_on=1,
             screen_on=True,
+            sleep=lambda _: None,
         )
         with patch.object(subject, "read_int_setting", return_value=None):
             problems = snapshot.restore()
@@ -1655,6 +1684,7 @@ class RestoreTest(unittest.TestCase):
             airplane_mode=0,
             stay_on=1,
             screen_on=True,
+            sleep=lambda _: None,
         )
         with patch.object(subject, "read_int_setting", side_effect=subprocess.CalledProcessError(1, "settings get")):
             problems = snapshot.restore()
@@ -1674,6 +1704,7 @@ class RestoreTest(unittest.TestCase):
             airplane_mode=0,
             stay_on=None,
             screen_on=True,
+            sleep=lambda _: None,
         )
         with patch.object(
             subject, "read_unsettable_int_setting", side_effect=subprocess.CalledProcessError(1, "settings get")
@@ -1698,6 +1729,7 @@ class RestoreTest(unittest.TestCase):
             airplane_mode=0,
             stay_on=None,
             screen_on=True,
+            sleep=lambda _: None,
         )
         problems = snapshot.restore()
         self.assertTrue(any("stay-awake restore could not be verified" in problem for problem in problems))
@@ -1751,6 +1783,7 @@ class RestoreTest(unittest.TestCase):
             airplane_mode=0,
             stay_on=None,
             screen_on=False,
+            sleep=lambda _: None,
         )
         with patch.object(subject, "read_int_setting", return_value=None):
             problems = snapshot.restore()
@@ -1773,6 +1806,7 @@ class RestoreTest(unittest.TestCase):
             airplane_mode=0,
             stay_on=1,
             screen_on=True,
+            sleep=lambda _: None,
         )
         problems = snapshot.restore()
         self.assertGreaterEqual(len(problems), 5)
@@ -1792,6 +1826,7 @@ class RestoreTest(unittest.TestCase):
             airplane_mode=1,
             stay_on=1,
             screen_on=True,
+            sleep=lambda _: None,
         )
         restored_values = {
             "screen_brightness": 35,
@@ -1944,7 +1979,7 @@ class ReportCommandRefusalTest(unittest.TestCase):
         # `main` instead — the one corrupt-record path that escaped as a crash, and reachable only
         # through this subcommand. No device is faked: `report` returns before
         # `select_target_serial`, so a test that had to patch one would be the regression.
-        directory = Path(tempfile.mkdtemp())
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
         state_file = directory / subject.RECORD_FILE_NAME
         state_file.write_text('{"phase": "resources", "device_id": []}\n', encoding="utf-8")
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as stderr:
@@ -1959,7 +1994,7 @@ class ReportCommandRefusalTest(unittest.TestCase):
         # default, so a hand-edited state file carries it into the report as a float. The record
         # carries nothing but the one field, so the identity rule is the only rule that can refuse it
         # — it is a float, and no identity field is written as one.
-        directory = Path(tempfile.mkdtemp())
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
         state_file = directory / subject.RECORD_FILE_NAME
         state_file.write_text('{"phase": "resources", "clk_tck": NaN}\n', encoding="utf-8")
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as stderr:
@@ -2535,7 +2570,7 @@ class VisibleHomeStateTest(unittest.TestCase):
         device = self.device()
         device.read_home_in_front.return_value = False
         with self.assertRaises(device_layer.ProbeError) as raised:
-            subject.ensure_visible_home(device)
+            subject.ensure_visible_home(device, sleep=lambda _: None)
         self.assertIn("another package is in front", str(raised.exception))
 
     def test_an_unreadable_foreground_package_is_refused(self) -> None:
@@ -2543,7 +2578,7 @@ class VisibleHomeStateTest(unittest.TestCase):
         device = self.device()
         device.read_home_in_front.return_value = None
         with self.assertRaises(device_layer.ProbeError) as raised:
-            subject.ensure_visible_home(device)
+            subject.ensure_visible_home(device, sleep=lambda _: None)
         self.assertIn("could not be read", str(raised.exception))
 
     def test_the_home_screen_is_read_back_until_it_is_in_front(self) -> None:
