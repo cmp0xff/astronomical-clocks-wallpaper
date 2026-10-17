@@ -133,10 +133,25 @@ class NoiseFloorTest(unittest.TestCase):
             report.two_sigma_noise_floor([100.0, 101.0, 99.0])
 
 
+def resources_record(**overrides: object) -> dict[str, object]:
+    """Build one current-shape resources record, carrying the all-type wake-lock coverage stamp."""
+    record: dict[str, object] = {
+        "phase": "resources",
+        "wake_locks": 0,
+        "wake_lock_coverage": report.WAKE_LOCK_COVERAGE,
+        "alarms": 0,
+        "jobs": 0,
+        "revision": "rev",
+        "api_level": 36,
+    }
+    record.update(overrides)
+    return record
+
+
 def full_pass_records() -> list[dict[str, object]]:
     """Build a record set in which every criterion is measured and passes."""
     records: list[dict[str, object]] = [
-        {"phase": "resources", "wake_locks": 0, "alarms": 0, "jobs": 0, "revision": "rev", "api_level": 36},
+        resources_record(),
         {"phase": "hidden", "cpu_pct": 0.05, "duration_seconds": 604.0, "revision": "rev", "api_level": 36},
         {"phase": "memory", "pss_growth_kb": 992, "duration_seconds": 1800.0, "revision": "rev", "api_level": 36},
     ]
@@ -177,30 +192,63 @@ class ReportTest(unittest.TestCase):
         )
 
     def test_zero_wake_locks_alarms_and_jobs_pass(self) -> None:
-        records = [{"phase": "resources", "wake_locks": 0, "alarms": 0, "jobs": 0, "revision": "rev", "api_level": 36}]
+        records = [resources_record()]
         lines = self.lines(records)
         for label in ("B2 wake locks", "B2 alarms", "B2 jobs"):
             self.assertTrue(any(line.startswith(label) and "PASS" in line for line in lines))
 
     def test_a_held_wake_lock_fails(self) -> None:
-        records = [{"phase": "resources", "wake_locks": 1, "alarms": 0, "jobs": 0, "revision": "rev", "api_level": 36}]
+        records = [resources_record(wake_locks=1)]
         lines = self.lines(records)
         self.assertTrue(any(line.startswith("B2 wake locks") and "FAIL" in line for line in lines))
 
     def test_a_held_job_fails(self) -> None:
-        records = [{"phase": "resources", "wake_locks": 0, "alarms": 0, "jobs": 2, "revision": "rev", "api_level": 36}]
+        records = [resources_record(jobs=2)]
         lines = self.lines(records)
         self.assertTrue(any(line.startswith("B2 jobs") and "FAIL" in line for line in lines))
 
     def test_the_b2_census_is_a_maximum_across_every_resources_record(self) -> None:
         # The state file is append-only, so a later clean rerun must not hide an earlier dirty one.
-        records = [
-            {"phase": "resources", "wake_locks": 3, "alarms": 0, "jobs": 1, "revision": "rev", "api_level": 36},
-            {"phase": "resources", "wake_locks": 0, "alarms": 0, "jobs": 0, "revision": "rev", "api_level": 36},
-        ]
+        records = [resources_record(wake_locks=3, jobs=1), resources_record()]
         lines = self.lines(records)
         self.assertTrue(any(line.startswith("B2 wake locks") and "FAIL" in line for line in lines))
         self.assertTrue(any(line.startswith("B2 jobs") and "FAIL" in line for line in lines))
+
+    def test_a_legacy_partial_only_wake_lock_count_is_not_measured(self) -> None:
+        # `wake_locks` meant `PARTIAL_WAKE_LOCK` alone before the probe widened to the census. The
+        # count is a real measurement of the narrower criterion, so the report does not refuse it —
+        # but it cannot bound a zero-wake-locks-of-any-type budget in either direction, and passing
+        # it would report a budget nothing measured.
+        records = [{"phase": "resources", "wake_locks": 0, "alarms": 0, "jobs": 0, "revision": "rev", "api_level": 36}]
+        lines = self.lines(records)
+        self.assertTrue(any(line.startswith("B2 wake locks: NOT MEASURED") for line in lines))
+        self.assertTrue(any(line.startswith("B2 alarms: PASS") for line in lines))
+        self.assertTrue(any(line.startswith("B2 jobs: PASS") for line in lines))
+
+    def test_a_legacy_partial_only_count_cannot_hide_behind_a_covered_one(self) -> None:
+        # A mixed set is bounded by the records that measured the all-type census. The legacy count
+        # is ignored rather than treated as a violation: it is not this budget's measurement, and
+        # the covered record is the evidence the row rests on.
+        records = [
+            {"phase": "resources", "wake_locks": 5, "alarms": 0, "jobs": 0, "revision": "rev", "api_level": 36},
+            resources_record(),
+        ]
+        lines = self.lines(records)
+        self.assertTrue(any(line.startswith("B2 wake locks: PASS") for line in lines))
+
+    def test_a_covered_wake_lock_count_still_fails(self) -> None:
+        records = [resources_record(wake_locks=1)]
+        lines = self.lines(records)
+        self.assertTrue(any(line.startswith("B2 wake locks: FAIL") for line in lines))
+
+    def test_a_coverage_stamp_that_is_not_a_string_is_refused(self) -> None:
+        # The stamp is a classifier the report compares against one value, and a value of the wrong
+        # type is corrupt state rather than a narrower measurement: reading it as "not measured"
+        # would silently drop the record behind a readable one.
+        records = [{"phase": "resources", "wake_locks": 0, "wake_lock_coverage": True, "alarms": 0, "jobs": 0}]
+        with self.assertRaises(device_layer.ProbeError) as raised:
+            report.report_lines(records)
+        self.assertIn("wake_lock_coverage", str(raised.exception))
 
     def test_hidden_cpu_is_checked_against_its_budget(self) -> None:
         under = [{"phase": "hidden", "cpu_pct": 0.05, "duration_seconds": 604.0, "revision": "rev", "api_level": 36}]
@@ -757,10 +805,13 @@ class CorruptRecordTest(unittest.TestCase):
 
     def test_a_field_no_record_carries_is_still_not_bounded(self) -> None:
         # The refusal above must not extend to an absent field: a revision that never recorded one
-        # has nothing to say about it, and a report over its records has to keep working.
-        records = [{"phase": "resources", "wake_locks": 0, "alarms": 0, "jobs": 0}]
+        # has nothing to say about it, and a report over its records has to keep working. The
+        # wake-lock row is the one this record measured, so it is the one that passes.
+        records = [{"phase": "resources", "wake_locks": 0, "wake_lock_coverage": "all-types"}]
         lines = [verdict.line for verdict in report.report_lines(records)]
         self.assertTrue(any(line.startswith("B2 wake locks: PASS") for line in lines))
+        self.assertTrue(any(line.startswith("B2 alarms: NOT MEASURED") for line in lines))
+        self.assertTrue(any(line.startswith("B2 jobs: NOT MEASURED") for line in lines))
 
     def test_a_wholly_unknown_identity_is_refused(self) -> None:
         # A set whose every record says "unknown build" is homogeneous and still cannot name what it

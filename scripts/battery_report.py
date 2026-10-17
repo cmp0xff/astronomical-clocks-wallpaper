@@ -52,6 +52,14 @@ MAX_HIDDEN_CPU_PCT: Final = 0.1
 PROVISIONAL_MAX_VISIBLE_DELTA_PCT: Final = 5.0
 PROVISIONAL_MAX_VISIBLE_CPU_PCT: Final = 3.0
 MAX_PSS_GROWTH_KB: Final = 6144
+# The coverage a `resources` record's wake-lock count was measured with. The budget is zero wake
+# locks *of any type*, so a count bounds it only when the probe reconciled every `<TYPE>_WAKE_LOCK`
+# entry against the dump's census. An earlier revision enumerated `PARTIAL_WAKE_LOCK` alone and
+# recorded that count under the same `wake_locks` key; those records are real measurements of the
+# narrower criterion, but they are not measurements of this budget, so the record carries the
+# coverage it actually had and `report` can tell the two apart. A record written before the stamp
+# existed is not refused — it is simply not measured for this row.
+WAKE_LOCK_COVERAGE: Final = "all-types"
 
 # Committed before the final run from the pilot's observed noise floors, per the document's own
 # anti-tuning rule; `report` reads these two constants, so a change here is what "committing the
@@ -357,6 +365,35 @@ def numeric_values(
         if key not in record:
             continue
         values.append(finite_number(record[key], what=f"a {phase} record's `{key}`", non_negative=non_negative))
+    return values
+
+
+def wake_lock_values(records: Sequence[Mapping[str, object]]) -> list[float]:
+    """
+    Return the wake-lock counts that can bound the all-type budget.
+
+    Every `resources` record's count is still read through `finite_number`, so a count that is
+    present and unreadable is refused wherever it appears — including on a record that does not carry
+    a coverage stamp, which is the same corrupt-state refusal `numeric_values` makes for the alarms
+    and jobs rows. Only the counts whose record says it enumerated every lock type are *returned*:
+    a partial-only census measures a narrower criterion, and its number cannot stand for the all-type
+    count in either direction. A set holding only those records reports the row as NOT MEASURED
+    rather than passing a budget nothing measured; a set that mixes them bounds the budget with the
+    records that did measure it and ignores the ones that did not.
+    """
+    values: list[float] = []
+    for record in records:
+        if record.get("phase") != "resources" or "wake_locks" not in record:
+            continue
+        count = finite_number(record["wake_locks"], what="a resources record's `wake_locks`", non_negative=True)
+        if "wake_lock_coverage" not in record:
+            continue
+        coverage = record["wake_lock_coverage"]
+        if not isinstance(coverage, str):
+            detail = f"a resources record carries wake_lock_coverage={coverage!r}, which is not a string"
+            raise device_layer.ProbeError(detail)
+        if coverage == WAKE_LOCK_COVERAGE:
+            values.append(count)
     return values
 
 
@@ -833,7 +870,11 @@ def report_lines(records: Sequence[Mapping[str, object]], *, black_unavailable: 
     # A count and a percentage of one core are non-negative, so `-1` is a corrupt reading rather than a
     # comfortably passing one: it sorts under B2's zero budget and under B3's 0.1% alike, so an
     # otherwise clean set carrying one would exit zero over a value the device cannot have produced.
-    for label, key in (("B2 wake locks", "wake_locks"), ("B2 alarms", "alarms"), ("B2 jobs", "jobs")):
+    # The wake-lock row is bounded only by records that measured the all-type census; see
+    # `wake_lock_values` for why a partial-only count is not evidence for this budget.
+    wake_locks = wake_lock_values(measured)
+    verdicts.append(check_budget("B2 wake locks", max(wake_locks) if wake_locks else None, 0.0, ""))
+    for label, key in (("B2 alarms", "alarms"), ("B2 jobs", "jobs")):
         values = numeric_values(measured, "resources", key, non_negative=True)
         verdicts.append(check_budget(label, max(values) if values else None, 0.0, ""))
 
