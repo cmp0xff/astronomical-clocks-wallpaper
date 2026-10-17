@@ -27,7 +27,8 @@ graph TD
     Dev --> V2["dependencies.md<br/>Licenses & provenance"]
 
     Testing --> T1["device-testing.md<br/>Living guide & test matrix"]
-    Testing --> T2["testing/reports/*<br/>Modular verification reports"]
+    Testing --> T2["visuals.md<br/>Reviewed visuals & gallery"]
+    Testing --> T3["testing/reports/*<br/>Modular verification reports"]
 ```
 
 ---
@@ -78,6 +79,8 @@ Reusable procedures, diagnostic commands, acceptance test matrices, and historic
 
 - [**Physical-Device Testing Guide**](device-testing.md) (`device-testing.md`):
   Living canonical guide covering device privacy policies, ADB wireless and USB connections, install and launch procedures, state diagnostic commands, lifecycle state transitions, virtual time manipulation (`DEBUG_SET_TIME`), automated smoke testing (`scripts/device_smoke.py`), and the categorized Standard Acceptance Test Matrix.
+- [**Reviewed Wallpaper Visuals & Gallery**](visuals.md) (`visuals.md`):
+  Curated gallery of representative wallpaper screenshots across Northern and Southern hemisphere projections, dark and light appearances, evidence classification rules (physical-device vs. host Canvas exports), review and refresh ownership, and CI non-replacement policy.
 - [**Verification Reports Directory**](testing/reports/) (`testing/reports/`):
   Dated historical verification reports, discoverable through the directory listing. New reports
   belong in their own PR and do not require an entry in this hub or the living device guide.

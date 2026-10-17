@@ -331,7 +331,7 @@ golden baselines are deferred because Android displays and screenshot pipelines 
 firmware-dependent colour transforms and font-shaping antialiasing, so literal byte-for-byte image
 comparisons produce false positives across environments (see [device-testing.md](device-testing.md)).
 Representative PNGs for visual inspection are explicitly exported under `app/build/reports/orloj` with
-`./gradlew exportRepresentativeImages`.
+`./gradlew exportRepresentativeImages`, and a curated set of reviewed captures is maintained in [visuals.md](visuals.md).
 
 Run `./gradlew qualityGate :app:assembleDebug` and `scripts/verify-apk.sh`. Physical-device home and
 lit-lock-screen correctness for the Sun marker (#27) are documented in [2026-10-04-feat-27-sun-marker.md](testing/reports/2026-10-04-feat-27-sun-marker.md);
