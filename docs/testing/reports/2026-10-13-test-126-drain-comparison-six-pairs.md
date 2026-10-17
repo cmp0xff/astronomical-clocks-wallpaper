@@ -7,7 +7,9 @@ results are filled in by a later commit that follows the run.
 
 Test build: local debug `app-debug.apk`, APK SHA-256
 `3ef8bf795587aff1488e2e073b3cc3bf70eb7620df821cb4bfa3d953fda3dc4d` — the same artifact the
-[2026-10-13 pass](2026-10-13-test-126-drain-comparison-on-battery.md) used. The installed package was
+[2026-10-13 pass](2026-10-13-test-126-drain-comparison-on-battery.md) used. Physical device running
+Android 16 (API 36): the records carry one `api_level` across all thirteen (see the identity row
+below), and this run installed the same APK digest as that pass. The installed package was
 re-hashed on the device for this run rather than assumed: `pm path` resolved to
 `/data/app/~~VrvjbyHIc2ahZwCsRqNY_g==/io.github.godaniya.astronomicalclockswallpaper.debug-ZSJePfa4MHD3X14YSQrvew==/base.apk`,
 whose `sha256sum` is the same digest. Vendor, model, serial, and firmware build are withheld per the
@@ -131,9 +133,10 @@ smaller divisor across them, so the quantum this device reports at is 4.5 mAh ra
 the 2026-10-13 report carried before this pass measured it. That is 2.3%–6.2% of a single window's
 delta, which is the same order
 as the threshold the criterion is judged against. It is a property of the gauge and it applies to both
-arms of a pair, so the paired difference is far less exposed to it than an absolute rate would be —
-but any reading of a single window carries it, and the per-window rates below should be read with that
-in mind.
+arms of a pair, but the two arms' readings are rounded independently rather than together: their
+errors add in the pair difference instead of cancelling, so the paired difference is not less exposed
+to the quantum than an absolute rate is. Any reading of a single window carries it, and so does the
+paired difference, which should be read with that in mind.
 
 ## Verdicts
 
@@ -169,11 +172,12 @@ came in at 18.254% of the baseline mean, against the 24.819% the 2026-10-13 pass
 what the pre-registration projected the pair count from, and the reason six pairs were enough.
 
 **It does not settle whether B4's threshold and its statistic belong together.** The threshold was
-committed from a single arm's 2σ; the criterion is judged on the paired 95% upper bound, which is the
-narrower of the two. This run passed, but a pass at a favourable point estimate says nothing about that
-mismatch: at the σ_d measured here (18.254%), six pairs leave a 19.16% margin, so the budget is
-certified only if the live arm measures about 7% better than stock, and a device at parity would need
-roughly twelve — the first count whose margin, 11.60%, fits inside 12.0123%. It is the
+committed from a single arm's 2σ; the criterion is judged on the paired 95% upper bound. The two are
+not on one scale and neither bounds the other: at this run's σ_d (18.254%), six pairs leave a 19.16%
+margin, wider than the 12.0123% single-arm band. A pass at a favourable point estimate therefore
+says nothing about that mismatch: the budget is certified only if the live arm measures about 7%
+better than stock, and a device at parity would need roughly twelve — the first count whose margin,
+11.60%, fits inside 12.0123%. It is the
 pre-registration's wider projected σ_d of 24.819% that gives the harder 14% and nineteen, which is why
 six pairs were fixed before the run rather than chosen after it. The pair count is stated
 here rather than acted on, because re-specifying B4 is a decision for the criterion's owner and not
