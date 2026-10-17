@@ -132,23 +132,30 @@ Use this procedure when a refresh trigger in §4 applies. Record the APK SHA-256
    shasum -a 256 app/build/outputs/apk/debug/app-debug.apk
    adb install -r app/build/outputs/apk/debug/app-debug.apk
    ```
-2. **Back up before changing device state**: copy every preference file the procedure can overwrite, record which files were absent, and record the launcher page and device settings that step 8 restores. The backups contain private coordinates, so keep them outside Git.
+2. **Back up before changing device state**: list the preference directory first, then copy only the files that exist, and record the launcher page and device settings that step 8 restores. The backups contain private coordinates, so keep them outside Git.
    ```sh
    mkdir -p wallpaper-pass-backup
-   adb exec-out run-as io.github.godaniya.astronomicalclockswallpaper.debug \
-     cat shared_prefs/observing_location.xml > wallpaper-pass-backup/observing_location.xml
-   adb exec-out run-as io.github.godaniya.astronomicalclockswallpaper.debug \
-     cat shared_prefs/appearance_settings.xml > wallpaper-pass-backup/appearance_settings.xml
-   adb exec-out run-as io.github.godaniya.astronomicalclockswallpaper.debug \
-     cat shared_prefs/dial_display.xml > wallpaper-pass-backup/dial_display.xml
-   adb exec-out run-as io.github.godaniya.astronomicalclockswallpaper.debug \
-     cat shared_prefs/dial_settings.xml > wallpaper-pass-backup/dial_settings.xml
+   adb shell run-as io.github.godaniya.astronomicalclockswallpaper.debug \
+     ls shared_prefs/ > wallpaper-pass-backup/prefs-list.txt
+   grep -qx 'observing_location.xml' wallpaper-pass-backup/prefs-list.txt \
+     && adb exec-out run-as io.github.godaniya.astronomicalclockswallpaper.debug \
+       cat shared_prefs/observing_location.xml > wallpaper-pass-backup/observing_location.xml
+   grep -qx 'appearance_settings.xml' wallpaper-pass-backup/prefs-list.txt \
+     && adb exec-out run-as io.github.godaniya.astronomicalclockswallpaper.debug \
+       cat shared_prefs/appearance_settings.xml > wallpaper-pass-backup/appearance_settings.xml
+   grep -qx 'dial_display.xml' wallpaper-pass-backup/prefs-list.txt \
+     && adb exec-out run-as io.github.godaniya.astronomicalclockswallpaper.debug \
+       cat shared_prefs/dial_display.xml > wallpaper-pass-backup/dial_display.xml
+   grep -qx 'dial_settings.xml' wallpaper-pass-backup/prefs-list.txt \
+     && adb exec-out run-as io.github.godaniya.astronomicalclockswallpaper.debug \
+       cat shared_prefs/dial_settings.xml > wallpaper-pass-backup/dial_settings.xml
+   head -1 wallpaper-pass-backup/*.xml
    adb shell settings get global sysui_demo_allowed
    adb shell settings get global stay_on_while_plugged_in
    adb shell settings get system screen_off_timeout
    adb shell settings get system screen_off_pocket
    ```
-   An empty output means the file did not exist; record that so step 8 deletes it instead of writing an empty file. Note the current launcher page and page count as well.
+   `adb exec-out` merges the remote stderr into stdout, so a missing file would otherwise be written into the backup as `cat: ... No such file or directory`. The `grep -qx` guard prevents that; a file absent from `prefs-list.txt` is recorded as absent and step 8 deletes it. Every copied file must begin with `<?xml` — if `head -1` shows anything else, or any other backup command fails, stop before seeding. Note the current launcher page and page count as well.
 3. **Prepare a clean surface**: add or swipe to a blank home-screen page, clear and collapse the notification shade, and attempt demo mode. If the OEM ignores demo mode, verify that no notification content is visible and record the limitation as in §2.1.
 4. **Seed each state** while the app process is alive, then let the framework restart it:
    ```sh
@@ -158,13 +165,15 @@ Use this procedure when a refresh trigger in §4 applies. Record the APK SHA-256
      tee shared_prefs/appearance_settings.xml < appearance_settings.xml
    adb shell run-as io.github.godaniya.astronomicalclockswallpaper.debug \
      tee shared_prefs/dial_display.xml < dial_display.xml
+   adb shell run-as io.github.godaniya.astronomicalclockswallpaper.debug \
+     rm shared_prefs/dial_settings.xml
    adb shell run-as io.github.godaniya.astronomicalclockswallpaper.debug kill "$(adb shell pidof io.github.godaniya.astronomicalclockswallpaper.debug)"
    ```
    `observing_location.xml` holds one string key `location`, for example
    `{"version":1,"latitude":50.08,"longitude":14.42,"source":"MANUAL","zoneId":"Europe/Prague"}`.
    `appearance_settings.xml` holds `appearance` = `DARK` or `LIGHT`.
    `dial_display.xml` holds integer `size`, `horizontal`, `vertical`, and `brightness`.
-   Delete `observing_location.xml` for the unconfigured state.
+   Delete `observing_location.xml` for the unconfigured state. Deleting the already-backed-up `dial_settings.xml` makes the restarted process use the enabled defaults for the Sun, Moon, and zodiac layers; otherwise a saved choice to hide a layer would silently change the captured baseline. Step 8 restores the original file.
 5. **Fix the virtual instant** and confirm the service log:
    ```sh
    adb shell am broadcast -a io.github.godaniya.astronomicalclockswallpaper.DEBUG_SET_TIME \
