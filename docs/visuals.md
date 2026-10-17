@@ -132,8 +132,25 @@ Use this procedure when a refresh trigger in §4 applies. Record the APK SHA-256
    shasum -a 256 app/build/outputs/apk/debug/app-debug.apk
    adb install -r app/build/outputs/apk/debug/app-debug.apk
    ```
-2. **Prepare a clean surface**: add or swipe to a blank home-screen page, clear and collapse the notification shade, and attempt demo mode. If the OEM ignores demo mode, verify that no notification content is visible and record the limitation as in §2.1.
-3. **Seed each state** while the app process is alive, then let the framework restart it:
+2. **Back up before changing device state**: copy every preference file the procedure can overwrite, record which files were absent, and record the launcher page and device settings that step 8 restores. The backups contain private coordinates, so keep them outside Git.
+   ```sh
+   mkdir -p wallpaper-pass-backup
+   adb exec-out run-as io.github.godaniya.astronomicalclockswallpaper.debug \
+     cat shared_prefs/observing_location.xml > wallpaper-pass-backup/observing_location.xml
+   adb exec-out run-as io.github.godaniya.astronomicalclockswallpaper.debug \
+     cat shared_prefs/appearance_settings.xml > wallpaper-pass-backup/appearance_settings.xml
+   adb exec-out run-as io.github.godaniya.astronomicalclockswallpaper.debug \
+     cat shared_prefs/dial_display.xml > wallpaper-pass-backup/dial_display.xml
+   adb exec-out run-as io.github.godaniya.astronomicalclockswallpaper.debug \
+     cat shared_prefs/dial_settings.xml > wallpaper-pass-backup/dial_settings.xml
+   adb shell settings get global sysui_demo_allowed
+   adb shell settings get global stay_on_while_plugged_in
+   adb shell settings get system screen_off_timeout
+   adb shell settings get system screen_off_pocket
+   ```
+   An empty output means the file did not exist; record that so step 8 deletes it instead of writing an empty file. Note the current launcher page and page count as well.
+3. **Prepare a clean surface**: add or swipe to a blank home-screen page, clear and collapse the notification shade, and attempt demo mode. If the OEM ignores demo mode, verify that no notification content is visible and record the limitation as in §2.1.
+4. **Seed each state** while the app process is alive, then let the framework restart it:
    ```sh
    adb shell run-as io.github.godaniya.astronomicalclockswallpaper.debug \
      tee shared_prefs/observing_location.xml < observing_location.xml
@@ -148,13 +165,13 @@ Use this procedure when a refresh trigger in §4 applies. Record the APK SHA-256
    `appearance_settings.xml` holds `appearance` = `DARK` or `LIGHT`.
    `dial_display.xml` holds integer `size`, `horizontal`, `vertical`, and `brightness`.
    Delete `observing_location.xml` for the unconfigured state.
-4. **Fix the virtual instant** and confirm the service log:
+5. **Fix the virtual instant** and confirm the service log:
    ```sh
    adb shell am broadcast -a io.github.godaniya.astronomicalclockswallpaper.DEBUG_SET_TIME \
      --es instant 2026-10-04T15:15:36Z
    adb logcat -d -t 200 | grep 'Debug clock fixed to instant'
    ```
    The debug clock lives in the app process, so re-send the broadcast after every process restart.
-5. **Capture** the blank page: `adb exec-out screencap -p > docs/visuals/<stem>.png`.
-6. **Inspect every PNG** before accepting it: the site, appearance, and offset must match the filename, the dial must be fully visible, and no personal content may appear. A wrong state is a recapture, not a relabel.
-7. **Restore**: write back the saved preference files (delete any file that did not exist), restart the service, return to the original launcher page, remove any page added for the pass, reset the debug clock (`--ez reset true`), and restore demo-mode and screen settings. Verify each by readback.
+6. **Capture** the blank page: `adb exec-out screencap -p > docs/visuals/<stem>.png`.
+7. **Inspect every PNG** before accepting it: the site, appearance, and offset must match the filename, the dial must be fully visible, and no personal content may appear. A wrong state is a recapture, not a relabel.
+8. **Restore** from the backup: write back the saved preference files, delete any file recorded as absent, restart the service, return to the original launcher page and page count, reset the debug clock (`--ez reset true`), and restore the demo-mode, stay-on, timeout, and pocket settings recorded in step 2. Verify each by readback.
