@@ -156,11 +156,19 @@ its duration.
 | 2026-10-13 | B4 against the black baseline | no black windows recorded, and this pass declares the reason | **NOT MEASURED (DEVICE-LIMITED)**, declared to the report rather than inferred from the missing windows: setting a static wallpaper rewrites the home image and this production build has no root, so the black baseline could be neither backed up nor restored |
 | 2026-10-13 | B1 hidden frames | not measured by this protocol | OUT OF SCOPE — #125 criterion 1, whose producer-trace evidence landed separately in [the 2026-10-12 pass](2026-10-12-test-125-hidden-frames-and-reboot.md) |
 
-`python3 scripts/battery_protocol.py --state build/reports/battery report` prints these verdicts and
+`python3 scripts/battery_protocol.py --state build/reports/battery report --black-unavailable
+"setting a static wallpaper rewrites the home image and this production build has no root, so it could
+be neither backed up nor restored"` prints the table's verdicts, with the one difference below, and
 **exits 1**: the run is a failed acceptance, and the command that reports it now fails with it. The
-device-limited black row is the one absence that does not gate, and it is declared:
-`report --black-unavailable "setting a static wallpaper rewrites the home image and this production
-build has no root, so it could be neither backed up nor restored"`.
+device-limited black row is the one absence that does not gate, and the flag is what declares it;
+without the flag the same state file reports the missing black baseline as an unmeasured criterion
+and fails on it too.
+
+Replaying the same state file with the current reporter adds `B2 wake locks: NOT MEASURED`: these
+records predate the coverage stamp added when the probe widened from `PARTIAL_WAKE_LOCK` to every
+lock type, so the B2 wake-lock row above is the historical partial-lock result under the revision
+that measured it, not the current all-type verdict. Its count and every other measurement are
+unchanged.
 
 ## What the comparison does and does not establish
 

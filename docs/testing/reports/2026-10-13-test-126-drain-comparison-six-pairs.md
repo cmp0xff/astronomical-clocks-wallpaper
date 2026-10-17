@@ -144,7 +144,7 @@ paired difference, which should be read with that in mind.
 | --- | --- | --- | --- |
 | 2026-10-14 | **B4, relative increase against stock** | **−30.775%** point estimate; **95% CI upper bound −11.615%**; 6 pairs, df 5, t 2.571, σ_d 97676 uA (18.254% of the 535099 uA baseline mean), margin 19.16% | **PASS.** Both of B4's lines are inside the committed 12.0123% threshold, and the upper bound is inside it with 23.6 points to spare. The live wallpaper drew less than the stock baseline in **every one of the six pairs**, by between 17577 uA and 262890 uA |
 | 2026-10-14 | **B5, visible CPU** | mean **4.3391%** of one core over the six live windows, worst 4.4219% | **FAIL** against the 3% budget. Every one of the six live windows is above it on its own (4.2540%, 4.4219%, 4.3125%, 4.3128%, 4.3172%, 4.4164%), so the verdict does not rest on the mean |
-| 2026-10-14 | B2 | 0 wake locks, 0 alarms, 0 jobs | **PASS** |
+| 2026-10-14 | B2 | 0 partial wake locks, 0 alarms, 0 jobs | **PASS on the partial-lock criterion**, which is what the probe at this revision measured (see the identity row above). The count says nothing about wake locks of other types, and today's reporter applies the all-type budget only to records that carry a coverage stamp, so it reports this row as NOT MEASURED for these records rather than passing them under the wider budget |
 | 2026-10-14 | B4 against the black baseline | no black windows recorded, and this pass declares the reason | **NOT MEASURED (DEVICE-LIMITED)**, declared to the report rather than inferred from the missing windows: setting a static wallpaper rewrites the home image and this production build has no root, so the black baseline could be neither backed up nor restored, and it would also destroy the stock baseline this comparison is measured against |
 | 2026-10-14 | B3, B6 | no hidden or memory window in this pass | **NOT MEASURED.** Their measurements stand in the earlier reports and were not re-run here |
 
@@ -154,6 +154,12 @@ be neither backed up nor restored"` prints these verdicts and exits 1, on B5 and
 criteria. The device-limited black row is the one absence that does not gate, and it is a declaration:
 without that flag the same state file reports the missing black baseline as an unmeasured criterion
 and fails on it too.
+
+Replaying the same state file with the current reporter adds a fourth gating line,
+`B2 wake locks: NOT MEASURED`: these records predate the coverage stamp added when the probe widened
+from `PARTIAL_WAKE_LOCK` to every lock type, so the B2 row above is the historical partial-lock result
+under the revision that measured it, not the current all-type verdict. The counts and every other
+measurement it records are unchanged.
 
 ## What this establishes, and what it does not
 
