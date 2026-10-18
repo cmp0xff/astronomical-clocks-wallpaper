@@ -62,8 +62,16 @@ def circular_difference_deg(first: float, second: float) -> float:
     return abs((first - second + HALF_TURN_DEG) % FULL_TURN_DEG - HALF_TURN_DEG)
 
 
-class RealSleepForbiddenError(RuntimeError):
-    """Raised when production time.sleep is called inside the host test suite without a mock or fake."""
+class RealSleepForbiddenError(AssertionError):
+    """
+    Raised when production time.sleep is called inside the host test suite without a mock or fake.
+
+    AssertionError, not RuntimeError: the production handlers around the device work catch
+    RuntimeError and turn it into a recorded qualification failure, so a RuntimeError base would
+    let an unmocked sleep inside a phase pass as a device problem. No handler in scripts/ swallows
+    AssertionError — the phase handlers' `except Exception` clauses re-raise it — and unittest
+    reports it as a test failure, which is the guard's purpose.
+    """
 
     def __init__(self, seconds: object) -> None:
         """Record the attempted sleep duration in the error message."""

@@ -24,6 +24,7 @@ from device_test_fixtures import (
     BYTES_PER_PIXEL,
     FRAME_HEIGHT,
     FRAME_WIDTH,
+    RealSleepForbiddenError,
     circular_difference_deg,
     hand_frame,
     install_no_real_sleep_guard,
@@ -2058,6 +2059,18 @@ class HiddenFramesPhaseTest(unittest.TestCase):
         self.assertEqual([], results)
         self.assertTrue(any("producer trace failed" in failure for failure in failures))
         self.assertTrue(any("the atrace dump could not be read" in failure for failure in failures))
+
+    def test_a_real_sleep_in_the_producer_trace_escapes_instead_of_being_recorded(self) -> None:
+        # The guard must fail the suite, not be reported as a device problem. With the old
+        # RuntimeError base, measure_producer_window() caught it, appended a failure, and returned.
+        device = MagicMock()
+        device.capture_producer_window.side_effect = RealSleepForbiddenError(1.0)
+        results: list[tuple[str, str]] = []
+        failures: list[str] = []
+        with self.assertRaises(RealSleepForbiddenError):
+            qualification.measure_producer_window(device, 123, 20.0, results, failures, description="visible control")
+        self.assertEqual([], failures)
+        self.assertEqual([], results)
 
 
 class HandDetectionTest(unittest.TestCase):
