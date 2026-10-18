@@ -63,14 +63,14 @@ ignore = [
 notice-rgx = "# SPDX-License-Identifier: Apache-2\\.0"
 
 [tool.ruff.lint.per-file-ignores]
-# Both harnesses print their report to stdout; T201 has no third-party logger to convert to, and the
-# report is the deliverable. scripts/ is deliberately not an importable package, which is what
-# INP001 asks for.
-"scripts/battery_protocol.py" = ["T201", "INP001"]
-"scripts/battery_report.py" = ["T201", "INP001"]
-"scripts/device_layer.py" = ["T201", "INP001"]
-"scripts/device_qualification.py" = ["T201", "INP001"]
-"scripts/device_smoke.py" = ["T201", "INP001"]
+# The harnesses print their report to stdout; T201 has no third-party logger to convert to, and the
+# report is the deliverable. scripts/host/ is an importable package (so INP001 stays enabled there),
+# while the top-level CLI wrappers under scripts/ are deliberately not an importable package.
+"scripts/host/**/*.py" = ["T201"]
+"scripts/battery_protocol.py" = ["INP001"]
+"scripts/battery_report.py" = ["INP001"]
+"scripts/device_qualification.py" = ["INP001"]
+"scripts/device_smoke.py" = ["INP001"]
 # The split test modules are not packages either; their methods are described by their docstrings
 # and names rather than a per-method summary line. The PT rules are flake8-pytest-style: while these
 # existing unittest.TestCase modules await the #148 migration, PT009 and PT027 flag
@@ -104,5 +104,8 @@ all = "error"
 error-on-warning = true
 
 [tool.ty.environment]
-# Matches Ruff's target-version and the CI runner's python3.
+# Matches Ruff's target-version and the CI runner's python3. `extra-paths` matches Ruff's `src` so
+# `ty check scripts` resolves `host.*` imports the same way `python3 scripts/<wrapper>.py` and
+# `python3 -m unittest discover -s scripts` do.
 python-version = "3.12"
+extra-paths = ["scripts"]

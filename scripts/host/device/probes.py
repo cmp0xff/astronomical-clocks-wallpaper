@@ -1,56 +1,25 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Shared ADB device layer, dial geometry, and frame analysis for host harnesses.
+ADB command transport, system/window/process/site state probes, and the AdbDevice facade.
 
-Provides an object-oriented device abstraction (AdbDevice), dial inspection helpers,
-and shared constants used across host-side testing harnesses.
+Provides `AdbDevice`, `ProbeError`, and shared ADB inspection and control primitives.
 """
 
 import json
-import math
 import re
-import struct
 import subprocess
 import sys
 import time
 import xml.etree.ElementTree as ET
-from collections import Counter
-from collections.abc import Iterable, Iterator, Mapping, Sequence
-from dataclasses import dataclass
-from typing import Final, Self
-from uuid import uuid4
+from collections.abc import Mapping
+from typing import Final
 
-# Allowed deviation of the measured hand advance from the expected value.
-ANGLE_TOLERANCE_DEG: Final = 0.5
-
-# Expected civil-hand advance for the two virtual-time steps, in degrees on the 24-hour dial.
-EXPECTED_ADVANCE_30M_DEG: Final = 7.500
-EXPECTED_ADVANCE_12H_DEG: Final = 180.000
-
-# Action the debug build listens on to move or reset the wallpaper's virtual clock.
-DEBUG_ACTION: Final = "io.github.godaniya.astronomicalclockswallpaper.DEBUG_SET_TIME"
-PACKAGE_NAME: Final = "io.github.godaniya.astronomicalclockswallpaper.debug"
-SERVICE_NAME: Final = (
-    f"{PACKAGE_NAME}/io.github.godaniya.astronomicalclockswallpaper.AstronomicalClocksWallpaperService"
-)
-# The platform's own static wallpaper engine, read from this device's `dumpsys wallpaper` as both
-# `mDefaultWallpaperComponent` and `mImageWallpaper`. It is the component every static baseline in
-# `docs/battery-budget.md` is measured against, and naming it is what stops *another package's* live
-# service from being admitted as a baseline: `verify_arm` refuses everything that is neither this
-# app's service nor this engine. Which static *image* the engine carries is not decidable over ADB
-# and is not claimed here; only that the bound component is the platform's own.
-PLATFORM_STATIC_WALLPAPER: Final = "com.android.systemui/com.android.systemui.wallpapers.ImageWallpaper"
-SERVICE_LOG_TAG: Final = "AstronomicalClocksWallpaperService"
-DISPLAY_LOG_TAG: Final = "DialDisplay"
-
-DEBUG_CLOCK_RESET_EXTRAS: Final = ["--ez", "reset", "true"]
-DEBUG_CLOCK_RESET_MESSAGE: Final = "Debug clock reset to system UTC"
+from host import contract
+from host.device import frame, trace
 
 # Bound every ADB call: a stalled transport would otherwise block the run forever.
 ADB_TIMEOUT_SECONDS: Final = 30
 ADB_RESTORE_TIMEOUT_SECONDS: Final = 60
-# A trace dump moves the whole trace buffer over the transport, which a plain shell call cannot.
-ADB_TRACE_TIMEOUT_SECONDS: Final = 120
 
 # `adb shell` exits with the status of the command it ran, so a shell that cannot find that command
 # answers this status. It is how a device without `sha256sum` reports the tool's absence.
@@ -82,91 +51,12 @@ FOCUSED_APP_PATTERN: Final = re.compile(r"\bmFocusedApp=ActivityRecord\{[^}]*\}"
 FOCUS_COMPONENT_PATTERN: Final = re.compile(r"\b([A-Za-z][\w]*(?:\.[\w]+)+)/")
 SHA256_HEX_PATTERN: Final = re.compile(r"^[0-9a-f]{64}$")
 
-# DialStyle.kt pins the two civil-scale tones: RIM is 0x1C2C39 (dark) and LIGHT_RIM is 0xE8E2D2 (light).
-DARK_RIM_RGB: Final = (0x1C, 0x2C, 0x39)
-LIGHT_RIM_RGB: Final = (0xE8, 0xE2, 0xD2)
-
 # In /proc/<pid>/stat, fields after the closing parenthesis of comm:
 # index 11 is field 14 (utime) and index 12 is field 15 (stime).
 PROC_STAT_UTIME_INDEX: Final = 11
 PROC_STAT_STIME_INDEX: Final = 12
 PROC_STAT_MIN_FIELDS: Final = 13
 
-RIM_PROBE_RADIUS_FRACTION: Final = 0.40
-RIM_PROBE_BEARINGS_DEG: Final = tuple(range(15, 360, 30))
-
-# Mirror of DialRenderer.kt, the source of truth: that file's RIM_WIDTH (0.008f) and OUTER_RADIUS
-# (1.37f) give DialViewport.STROKED_EXTENT = 1 + RIM_WIDTH / 2 / OUTER_RADIUS. The outer rim is
-# stroked half a RIM_WIDTH beyond the reported dial radius, so the drawn disc reaches
-# radius * STROKED_EXTENT, not radius. A report can satisfy cx - radius >= 0 while that half stroke is
-# clipped - about 1.6 px at Size 115% on a 1080 px display.
-RIM_WIDTH: Final = 0.008
-OUTER_RADIUS: Final = 1.37
-STROKED_EXTENT: Final = 1 + RIM_WIDTH / 2 / OUTER_RADIUS
-
-# The diagnostic prints Float values, so an extent recomputed from the printed radius and the printed
-# centre differ by a few hundred-thousandths of a pixel. This absorbs that without hiding the
-# stroke-sized clipping the extent check exists to catch.
-EXTENT_TOLERANCE_PX: Final = 0.01
-
-HAND_SCAN_OUTER_FRACTION: Final = 0.43
-HAND_SCAN_INNER_FRACTION: Final = 0.08
-HAND_SCAN_STEP_PX: Final = 2
-PIXEL_STRIDE: Final = 4
-
-# Hand-ink bounds in RGB space.
-DARK_HAND_RGB_BOUNDS: Final = ((225, 255), (210, 255), (165, 215))
-LIGHT_HAND_RGB_BOUNDS: Final = ((55, 105), (35, 80), (15, 50))
-DARK_HAND_MIN_RED_MINUS_BLUE: Final = 20
-
-HAND_MIN_SAMPLES: Final = 20
-COARSE_BIN_COUNT: Final = 90
-COARSE_BIN_WIDTH_DEG: Final = 4.0
-REFINE_WEDGE_DEG: Final = 6.0
-FULL_TURN_DEG: Final = 360.0
-HALF_TURN_DEG: Final = FULL_TURN_DEG / 2
-
-# Mirror of CivilDialConstants.kt and ClockState.kt, the source of truth: ClockState derives the
-# 24-hour hand angle as (seconds_since_local_midnight / SECONDS_PER_DEGREE + MIDNIGHT_ANGLE_DEG) mod
-# 360, clockwise from screen up, so midnight is 180°, noon 0°, 06:00 270°, and 18:00 90° (pinned by
-# ClockStateTest.kt). detect_hand_angle returns that same convention, so no offset conversion is
-# needed here. The names are prefixed to keep them distinct from the Kotlin-origin constants mirrored.
-CIVIL_SECONDS_PER_DEGREE: Final = 240.0
-CIVIL_MIDNIGHT_ANGLE_DEG: Final = 180.0
-
-# The observing-site preference mirror. LocationStore.kt writes its record under this file and
-# key, and AstronomicalClocksWallpaperService renders each instant through the saved site's zone,
-# so the civil hand follows this zone and not the device's. Reading it lets a host harness derive
-# the zone its rollover instants must be expressed in. The path targets the debug package because
-# only a debuggable build can be read with `run-as`.
-LOCATION_PREFS_NAME: Final = "observing_location"
-LOCATION_PREFS_KEY: Final = "location"
-LOCATION_PREFS_PATH: Final = f"/data/data/{PACKAGE_NAME}/shared_prefs/{LOCATION_PREFS_NAME}.xml"
-
-# `run-as <pkg> cat <prefs>` exits non-zero both when the package or transport cannot be entered and
-# when the prefs file has never been written. Only the latter confirms the store holds no saved site,
-# so it is recognised by this strerror token naming that very path; an ENOENT about any other path is
-# a probe error, not an absence. The token is Android/locale dependent, so a miss raises a probe error
-# and fails the phase loudly — never a false "no saved site" that would silently fall back to the
-# device timezone and probe the wrong midnight.
-PREFS_FILE_ABSENT_MARKER: Final = "No such file or directory"
-
-# Mirror of LocationStore.kt and ObservingLocation.kt record validation, the source of truth.
-# LocationStore.load() ignores a record whose version is not the integral 1, whose latitude or
-# longitude is not an in-range JSON number, or whose source is not one of these names; the service
-# then renders the device zone. It renders the device zone for an absent or unbuildable zoneId as
-# well, and only the absent case is mirrored here (an unbuildable id is the phase's to reject; see
-# saved_record_zone_id). A harness that read a rejected record's zone would probe a civil midnight
-# the service never renders, so parse_saved_site_zone applies the same checks.
-LOCATION_RECORD_VERSION: Final = 1
-LOCATION_SOURCES: Final = frozenset({"CURRENT_COARSE", "MANUAL"})
-LOCATION_MAX_LATITUDE: Final = 90.0
-LOCATION_MAX_LONGITUDE: Final = 180.0
-
-MIN_BRIGHTNESS: Final = 80
-MAX_BRIGHTNESS: Final = 100
-
-SCREENCAP_HEADER_BYTES: Final = 16
 MIN_SPLIT_FIELDS: Final = 2
 # The home-screen wallpaper is the one the `mLastWallpaper` section names; the lock slot and the
 # desktop-file component are reported separately and must not be mistaken for it.
@@ -179,10 +69,6 @@ STATIC_WALLPAPER_COMPONENT_FIELD: Final = "mWallpaperComponent="
 # compares against — `SERVICE_NAME` and `PLATFORM_STATIC_WALLPAPER` — are written without the wrapper,
 # as `am` and `dumpsys activity service` take them.
 COMPONENT_INFO_WRAPPER: Final = re.compile(r"^ComponentInfo\{(.*)\}$")
-
-
-class ScreencapError(RuntimeError):
-    """A screencap that could not be decoded into a frame."""
 
 
 class ProbeError(RuntimeError):
@@ -276,7 +162,7 @@ def captured_text(match: re.Match[str], group: int) -> str:
     return str(match.group(group))
 
 
-def run_adb(args: Sequence[str], serial: str | None = None, timeout: int = ADB_TIMEOUT_SECONDS) -> bytes:
+def run_adb(args: list[str], serial: str | None = None, timeout: int = ADB_TIMEOUT_SECONDS) -> bytes:
     """Run one `adb` invocation and return its stdout, raising on a non-zero exit or a timeout."""
     cmd = ["adb"]
     if serial:
@@ -324,254 +210,6 @@ def select_target_serial(requested: str | None) -> str:
         print(f"Attached but not ready: {', '.join(inactive)}", file=sys.stderr)
     print("Pass --serial to choose one.", file=sys.stderr)
     sys.exit(1)
-
-
-@dataclass(frozen=True)
-class DialLayout:
-    """Resolved screen-space geometry and dimming from one visible debug engine."""
-
-    cx: float
-    cy: float
-    radius: float
-    brightness: int = 100
-
-
-class FramePixels(bytes):
-    """Captured pixels carrying the fresh diagnostic layout used for their analysis."""
-
-    layout: DialLayout
-
-    def __new__(cls, pixels: bytes, layout: DialLayout) -> Self:
-        """Associate captured bytes with their resolved placement."""
-        instance = super().__new__(cls, pixels)
-        instance.layout = layout
-        return instance
-
-
-def frame_layout(width: int, height: int, pixels: bytes) -> DialLayout:
-    """Use attached device diagnostics; plain bytes are centered host-only fixtures."""
-    if isinstance(pixels, FramePixels):
-        return pixels.layout
-    return DialLayout(width / 2.0, height / 2.0, HAND_SCAN_OUTER_FRACTION * min(width, height))
-
-
-def undim_rgb(rgb: tuple[int, int, int], brightness: int) -> tuple[int, int, int]:
-    """Reverse the renderer's quantized black overlay for ink classification."""
-    if brightness == MAX_BRIGHTNESS:
-        return rgb
-    alpha = int((MAX_BRIGHTNESS - brightness) * 255 / MAX_BRIGHTNESS)
-    red, green, blue = (min(255, round(channel * 255 / (255 - alpha))) for channel in rgb)
-    return red, green, blue
-
-
-def parse_dial_layout(output: str, token: str, width: int, height: int) -> DialLayout:
-    """Require one fresh, usable engine report matching the captured screen size."""
-    lines = [line for line in output.splitlines() if f"{DISPLAY_LOG_TAG}: DialLayout token={token} " in line]
-    if len(lines) != 1:
-        message = f"Expected one fresh visible dial layout, found {len(lines)}"
-        raise ScreencapError(message)
-    fields = dict(re.findall(r"(\w+)=([^ ]+)", lines[0]))
-    try:
-        layout = DialLayout(
-            float(fields["cx"]), float(fields["cy"]), float(fields["radius"]), int(fields["brightness"])
-        )
-        reported_size = (int(fields["width"]), int(fields["height"]))
-    except (KeyError, ValueError) as error:
-        message = "Unreadable or unusable dial layout"
-        raise ScreencapError(message) from error
-    extent = layout.radius * STROKED_EXTENT
-    if (
-        reported_size != (width, height)
-        or not all(math.isfinite(value) for value in (layout.cx, layout.cy, layout.radius))
-        or layout.radius <= 0
-        or not MIN_BRIGHTNESS <= layout.brightness <= MAX_BRIGHTNESS
-        or layout.cx - extent < -EXTENT_TOLERANCE_PX
-        or layout.cy - extent < -EXTENT_TOLERANCE_PX
-        or layout.cx + extent > width + EXTENT_TOLERANCE_PX
-        or layout.cy + extent > height + EXTENT_TOLERANCE_PX
-    ):
-        message = "Dial layout does not fit the captured screen"
-        raise ScreencapError(message)
-    return layout
-
-
-def read_dial_layout(serial: str | None, width: int, height: int) -> DialLayout:
-    """Request diagnostics without changing virtual time; reject ambiguity rather than guessing."""
-    token = uuid4().hex
-    run_adb(["shell", "am", "broadcast", "-a", DEBUG_ACTION, "--es", "diagnostics", token], serial=serial)
-    output = ""
-    for attempt in range(LOG_CONFIRM_ATTEMPTS):
-        output = run_adb(["logcat", "-d"], serial=serial).decode("utf-8", errors="replace")
-        if f"DialLayout token={token} " in output:
-            break
-        if attempt + 1 < LOG_CONFIRM_ATTEMPTS:
-            time.sleep(LOG_CONFIRM_INTERVAL_SECONDS)
-    return parse_dial_layout(output, token, width, height)
-
-
-def rim_probe_points(width: int, height: int, layout: DialLayout | None = None) -> Iterator[tuple[int, int]]:
-    """Sample points in the civil-scale annulus, in the dial's own bearing convention."""
-    resolved = layout or DialLayout(width / 2.0, height / 2.0, HAND_SCAN_OUTER_FRACTION * min(width, height))
-    cx, cy = resolved.cx, resolved.cy
-    radius = resolved.radius * RIM_PROBE_RADIUS_FRACTION / HAND_SCAN_OUTER_FRACTION
-    for bearing in RIM_PROBE_BEARINGS_DEG:
-        radians = math.radians(bearing)
-        x = round(cx + radius * math.sin(radians))
-        y = round(cy - radius * math.cos(radians))
-        if 0 <= x < width and 0 <= y < height:
-            yield x, y
-
-
-def modal_pixel_rgb(width: int, pixels: bytes, points: Iterable[tuple[int, int]]) -> tuple[int, int, int] | None:
-    """Return the RGB triple occurring most often among points, or None when there are none."""
-    counts = Counter(
-        (pixels[offset], pixels[offset + 1], pixels[offset + 2])
-        for offset in ((y * width + x) * PIXEL_STRIDE for x, y in points)
-    )
-    if not counts:
-        return None
-    return max(counts, key=counts.__getitem__)
-
-
-def nearest_rim_rgb(rgb: tuple[int, int, int]) -> tuple[int, int, int]:
-    """Return whichever pinned civil-scale literal is geometrically closer to the sampled colour."""
-    dark = sum((channel - target) ** 2 for channel, target in zip(rgb, DARK_RIM_RGB, strict=True))
-    light = sum((channel - target) ** 2 for channel, target in zip(rgb, LIGHT_RIM_RGB, strict=True))
-    return DARK_RIM_RGB if dark <= light else LIGHT_RIM_RGB
-
-
-def is_dark_palette(width: int, height: int, pixels: bytes) -> bool:
-    """Classify the visible palette from the civil scale's own rim tone."""
-    layout = frame_layout(width, height, pixels)
-    rgb = modal_pixel_rgb(width, pixels, rim_probe_points(width, height, layout))
-    return rgb is not None and nearest_rim_rgb(undim_rgb(rgb, layout.brightness)) == DARK_RIM_RGB
-
-
-def within_rgb_bounds(channels: tuple[int, int, int], bounds: tuple[tuple[int, int], ...]) -> bool:
-    """Report whether every RGB channel falls inside its inclusive bound pair."""
-    return all(low <= channel <= high for channel, (low, high) in zip(channels, bounds, strict=True))
-
-
-def is_dark_hand_pixel(red: int, green: int, blue: int) -> bool:
-    """Match DialStyle.HAND #F4E5B8 and its antialiased edge pixels on a dark plate."""
-    return within_rgb_bounds((red, green, blue), DARK_HAND_RGB_BOUNDS) and red - blue >= DARK_HAND_MIN_RED_MINUS_BLUE
-
-
-def is_light_hand_pixel(red: int, green: int, blue: int) -> bool:
-    """Match DialStyle.LIGHT_HAND #4E341B and its antialiased edge pixels on a light plate."""
-    return within_rgb_bounds((red, green, blue), LIGHT_HAND_RGB_BOUNDS) and red > green > blue
-
-
-def collect_hand_points(width: int, height: int, pixels: bytes, *, is_dark: bool) -> list[tuple[float, float]]:
-    """Collect the dial-centre offsets of every hand-ink pixel inside the dial region."""
-    layout = frame_layout(width, height, pixels)
-    cx, cy = layout.cx, layout.cy
-    max_radius = layout.radius
-    min_radius = layout.radius * HAND_SCAN_INNER_FRACTION / HAND_SCAN_OUTER_FRACTION
-    min_r_sq = min_radius * min_radius
-    max_r_sq = max_radius * max_radius
-
-    is_hand_pixel = is_dark_hand_pixel if is_dark else is_light_hand_pixel
-    row_stride = width * PIXEL_STRIDE
-    points: list[tuple[float, float]] = []
-    for y in range(int(cy - max_radius), int(cy + max_radius), HAND_SCAN_STEP_PX):
-        if y < 0 or y >= height:
-            continue
-        dy = y - cy
-        row_offset = y * row_stride
-        for x in range(int(cx - max_radius), int(cx + max_radius), HAND_SCAN_STEP_PX):
-            if x < 0 or x >= width:
-                continue
-            dx = x - cx
-            dist_sq = dx * dx + dy * dy
-            if min_r_sq <= dist_sq <= max_r_sq:
-                px = row_offset + x * PIXEL_STRIDE
-                rgb = undim_rgb((pixels[px], pixels[px + 1], pixels[px + 2]), layout.brightness)
-                if is_hand_pixel(*rgb):
-                    points.append((dx, dy))
-    return points
-
-
-def civil_hand_angle_deg(seconds_since_local_midnight: float) -> float:
-    """Return the absolute civil-hand angle for a local time, clockwise from the top of the dial."""
-    return (seconds_since_local_midnight / CIVIL_SECONDS_PER_DEGREE + CIVIL_MIDNIGHT_ANGLE_DEG) % FULL_TURN_DEG
-
-
-def signed_circular_difference_deg(first: float, second: float) -> float:
-    """Return first - second as the shortest signed angular difference, in the half-open [-180, 180)."""
-    return (first - second + HALF_TURN_DEG) % FULL_TURN_DEG - HALF_TURN_DEG
-
-
-def coarse_hand_angle(angles: Sequence[float]) -> float:
-    """Return the centre of the 4-degree bin holding the most hand pixels."""
-    bins = [0] * COARSE_BIN_COUNT
-    for angle in angles:
-        bins[int(angle // COARSE_BIN_WIDTH_DEG) % COARSE_BIN_COUNT] += 1
-    return (bins.index(max(bins)) + 0.5) * COARSE_BIN_WIDTH_DEG
-
-
-def refine_hand_angle(angles: Sequence[float], coarse_deg: float) -> float | None:
-    """Circular mean of the angles within the refine wedge of the coarse estimate, or None."""
-    sum_sin = 0.0
-    sum_cos = 0.0
-    kept = 0
-    for angle in angles:
-        delta = abs((angle - coarse_deg + HALF_TURN_DEG) % FULL_TURN_DEG - HALF_TURN_DEG)
-        if delta <= REFINE_WEDGE_DEG:
-            sum_sin += math.sin(math.radians(angle))
-            sum_cos += math.cos(math.radians(angle))
-            kept += 1
-    if kept < HAND_MIN_SAMPLES:
-        return None
-    return math.degrees(math.atan2(sum_sin, sum_cos)) % FULL_TURN_DEG
-
-
-def detect_hand_angle(width: int, height: int, pixels: bytes) -> float | None:
-    """Locate the civil hand and return its clockwise angle from the top of the dial."""
-    points = collect_hand_points(width, height, pixels, is_dark=is_dark_palette(width, height, pixels))
-    if len(points) < HAND_MIN_SAMPLES:
-        return None
-    angles = [math.degrees(math.atan2(dx, -dy)) % FULL_TURN_DEG for dx, dy in points]
-    return refine_hand_angle(angles, coarse_hand_angle(angles))
-
-
-def choose_recreate_size(physical: str | None, override: str | None) -> str:
-    """Return a `wm size` target that differs from the size in effect, so the resize cannot be a no-op."""
-    effective = override or physical
-    return "1080x1800" if effective == "1080x2000" else "1080x2000"
-
-
-def size_restore_command(override: str | None) -> list[str]:
-    """Return the `wm size` invocation that puts the display back to the size the run found."""
-    if override:
-        return ["shell", "wm", "size", override]
-    return ["shell", "wm", "size", "reset"]
-
-
-def decode_frame(raw: bytes) -> tuple[int, int, bytes]:
-    """Validate a screencap header and RGBA payload before using any pixels."""
-    if len(raw) < SCREENCAP_HEADER_BYTES:
-        message = "Failed to capture screencap; payload too small"
-        raise ScreencapError(message)
-    width, height, _, _ = struct.unpack("<IIII", raw[:SCREENCAP_HEADER_BYTES])
-    pixels = raw[SCREENCAP_HEADER_BYTES:]
-    expected_bytes = width * height * PIXEL_STRIDE
-    if width <= 0 or height <= 0 or len(pixels) != expected_bytes:
-        message = f"Unexpected screencap payload size: expected {expected_bytes} pixel bytes, got {len(pixels)}"
-        raise ScreencapError(message)
-    return width, height, pixels
-
-
-def capture_frame(serial: str | None = None) -> tuple[int, int, bytes]:
-    """Bracket the capture with fresh layout reports, rejecting a layout/surface change."""
-    width, height, _ = decode_frame(run_adb(["exec-out", "screencap"], serial=serial))
-    layout = read_dial_layout(serial, width, height)
-    actual_width, actual_height, pixels = decode_frame(run_adb(["exec-out", "screencap"], serial=serial))
-    confirmed = read_dial_layout(serial, actual_width, actual_height)
-    if (actual_width, actual_height) != (width, height) or confirmed != layout:
-        message = "Dial layout changed during capture; retry on a stable visible surface"
-        raise ScreencapError(message)
-    return width, height, FramePixels(pixels, layout)
 
 
 def read_display_size(serial: str) -> tuple[str | None, str | None]:
@@ -715,7 +353,7 @@ def read_installed_apk_sha256(serial: str) -> str | None:
     transport that drops all propagate `CalledProcessError`, so a caller cannot mistake a probe that
     failed for a device that has no installed build.
     """
-    paths = run_adb(["shell", "pm", "path", PACKAGE_NAME], serial=serial).decode("utf-8", errors="replace")
+    paths = run_adb(["shell", "pm", "path", contract.PACKAGE_NAME], serial=serial).decode("utf-8", errors="replace")
     base_apk = next(
         (
             line.split("package:", 1)[1].strip()
@@ -777,7 +415,7 @@ def read_night_mode(serial: str) -> str | None:
 def get_wallpaper_pid(serial: str) -> int | None:
     """Return the wallpaper process id, or None when the package has no live process."""
     try:
-        output = run_adb(["shell", "pidof", PACKAGE_NAME], serial=serial).decode().strip()
+        output = run_adb(["shell", "pidof", contract.PACKAGE_NAME], serial=serial).decode().strip()
     except subprocess.CalledProcessError as error:
         # `pidof` exits 1 both when nothing matches and when the transport itself failed; only a
         # failure that wrote to stderr is a transport error that must not be read as "no process".
@@ -820,213 +458,6 @@ def read_process_cpu_clock_ticks(serial: str) -> int | None:
     return int(value) if value.isdigit() and int(value) > 0 else None
 
 
-# --- Producer accounting for a hidden window (#125 criterion 1) --------------
-#
-# A frame count has to come from the wallpaper's own producer pipeline, not from its lifecycle
-# state: `mVisible=false` is what the framework was told, and a bounded CPU reading can still
-# contain rendered frames. `atrace` on the app's own process is the console this device exposes.
-# The window is always bracketed by a visible control, so a zero count inside it is distinguishable
-# from a trace that silently produced nothing: a control that finds no frames is an error, never a
-# zero, because a counter that was never read cannot evidence anything.
-
-TRACE_WINDOW_SECONDS: Final = 30.0
-TRACE_DISPLAY_SAMPLE_SECONDS: Final = 2.0
-# This probe holds a shared device for the whole window with an atrace running, so both durations are
-# bounded to the range a real measurement can lie in rather than trusted to be sane. The bound is
-# what makes the arithmetic total: within it `seconds / sample_seconds` is finite and well-scaled, so
-# it can neither overflow to inf — which `math.ceil` would turn into an OverflowError the caller does
-# not catch — nor underflow to 0.0, which would start a trace that takes no display reads and return
-# a window with no display evidence. The floor is the interval at which the count reaches the cap:
-# a 600 s window sampled every 0.1 s is exactly the 6000 reads this probe will make, so the read
-# count the loop can run to is bounded by construction, not by a check on a rounded quotient.
-MIN_TRACE_DURATION_SECONDS: Final = 0.1
-MAX_TRACE_WINDOW_SECONDS: Final = 600.0
-MAX_TRACE_SAMPLES: Final = 6000
-TRACE_CATEGORIES: Final = ("gfx", "view")
-# The text trace marks each event with a `B|<pid>|<name>` / `E|<pid>` pair, so only one half is
-# counted or every event would be doubled. The begin half carries the name and the end half is
-# emitted nameless, which is why the name is read from `B`; both were checked against a real trace
-# from this device rather than assumed.
-TRACE_MARK_PATTERN: Final = re.compile(r"tracing_mark_write:\s*B\|\s*(\d+)\|([^\s|]+)")
-# A produced frame is the buffer the producer hands to the consumer; the dequeue is recorded
-# alongside it because a draw that never commits shows up as a dequeue without a queue.
-PRODUCER_QUEUE_EVENT: Final = "queueBuffer"
-PRODUCER_TRACKED_EVENTS: Final = frozenset({PRODUCER_QUEUE_EVENT, "dequeueBuffer"})
-
-
-@dataclass(frozen=True)
-class ProducerWindow:
-    """
-    One bounded producer-trace window, with the display state sampled inside it.
-
-    `window_seconds` is the local monotonic span from the clock read before `atrace --async_start`
-    was issued to the return of the dump, so the trace ran inside it: the frame count describes a
-    window at least as wide as the duration asked for, and never one wider than this.
-    """
-
-    window_seconds: float
-    pid: int
-    event_counts: dict[str, int]
-    trace_lines: int
-    display_states: tuple[bool | None, ...]
-
-    @property
-    def frame_count(self) -> int:
-        """The number of frames the traced process handed to the consumer during the window."""
-        return self.event_counts.get(PRODUCER_QUEUE_EVENT, 0)
-
-    @property
-    def display_off_at_every_sample(self) -> bool:
-        """
-        Whether every sample taken inside the window found the display off.
-
-        This is a sequence of discrete reads, not a continuous record: a display that came on and
-        went off again between two samples would leave no trace here. The name says what the
-        evidence is so that a caller, and a report built from it, cannot read it as more.
-        """
-        return bool(self.display_states) and all(state is False for state in self.display_states)
-
-    @property
-    def display_on_at_every_sample(self) -> bool:
-        """
-        Whether every sample taken inside the window found the display on.
-
-        Discrete reads, with the same limitation as [display_off_at_every_sample].
-        """
-        return bool(self.display_states) and all(state is True for state in self.display_states)
-
-    @property
-    def display_unknown_samples(self) -> int:
-        """How many samples could not be read at all."""
-        return sum(1 for state in self.display_states if state is None)
-
-
-def parse_producer_events(trace_text: str, pid: int) -> dict[str, int]:
-    """Count one process's producer buffer events in an `atrace` text trace."""
-    return Counter(
-        name
-        for match in TRACE_MARK_PATTERN.finditer(trace_text)
-        if (captured_pid := captured_text(match, 1)).isdigit()
-        and int(captured_pid) == pid
-        and (name := captured_text(match, 2)) in PRODUCER_TRACKED_EVENTS
-    )
-
-
-def capture_producer_window(
-    serial: str,
-    pid: int,
-    *,
-    seconds: float = TRACE_WINDOW_SECONDS,
-    sample_seconds: float = TRACE_DISPLAY_SAMPLE_SECONDS,
-) -> ProducerWindow:
-    """
-    Trace a process's producer pipeline for a bounded window, sampling the display throughout.
-
-    The trace runs on the device while this loop samples the display state, so the record covers the
-    display *inside* the window rather than only at its endpoints. An unusable trace is raised: a
-    window with no usable trace is not a window in which nothing was drawn. Both durations must be
-    in [MIN_TRACE_DURATION_SECONDS, MAX_TRACE_WINDOW_SECONDS]. `seconds` paces the reads; the
-    returned window reports the local span the trace ran inside, measured, which those reads make at
-    least `seconds` wide. A window whose reads cannot be taken inside it is refused rather than
-    returned with samples that do not span its width.
-    """
-    # Non-finite values are named explicitly rather than left to the range test, which also excludes
-    # them (`nan` fails every comparison and `inf` exceeds the ceiling) but would bury the intent in
-    # comparison semantics. The range is what bounds the loop: with both durations in
-    # [MIN_TRACE_DURATION_SECONDS, MAX_TRACE_WINDOW_SECONDS] the quotient is finite and well-scaled,
-    # so it can neither overflow to inf nor underflow to 0.0, and the count is in
-    # [1, MAX_TRACE_SAMPLES] — the smallest ratio still rounds up to one read, and the largest
-    # (MAX_TRACE_WINDOW_SECONDS / MIN_TRACE_DURATION_SECONDS) is exactly the cap.
-    if not (
-        math.isfinite(seconds)
-        and math.isfinite(sample_seconds)
-        and MIN_TRACE_DURATION_SECONDS <= seconds <= MAX_TRACE_WINDOW_SECONDS
-        and MIN_TRACE_DURATION_SECONDS <= sample_seconds <= MAX_TRACE_WINDOW_SECONDS
-    ):
-        detail = (
-            f"a trace window needs finite durations between {MIN_TRACE_DURATION_SECONDS} and "
-            f"{MAX_TRACE_WINDOW_SECONDS:.0f} s but got seconds={seconds}, sample_seconds={sample_seconds}"
-        )
-        raise ProbeError(detail)
-    sample_count = math.ceil(seconds / sample_seconds)
-    start_command = ["shell", "atrace", "--async_start", "-a", str(pid)]
-    start_command.extend(TRACE_CATEGORIES)
-    try:
-        # The clock is read before the start call rather than after it: the trace is already active
-        # while `atrace --async_start` is in flight, so an anchor taken once it returns would leave
-        # that latency out of the schedule and out of the span reported below, which brackets the
-        # trace. The start is inside this guard, and on the trace timeout the dump and stop use, so a
-        # start that raises after the device has begun tracing cannot strand an active trace on a
-        # shared device with nothing to stop it.
-        started = time.monotonic()
-        run_adb(start_command, serial=serial, timeout=ADB_TRACE_TIMEOUT_SECONDS)
-        states: list[bool | None] = []
-        # The reads are paced against a monotonic deadline fixed when the trace starts, rather than
-        # by sleeping a fixed interval between them: a read slower than its interval then shortens
-        # the next sleep instead of pushing every later read out by its own latency, so read latency
-        # cannot accumulate across the window. A read that outlasts its own interval still pushes the
-        # reads after it, which is why the span is measured rather than assumed.
-        for index in range(sample_count):
-            deadline = started + min((index + 1) * sample_seconds, seconds)
-            remaining = deadline - time.monotonic()
-            if remaining > 0:
-                time.sleep(remaining)
-            elif index + 1 < sample_count and time.monotonic() >= started + seconds:
-                # The read count bounds how many reads are owed, not how long each may take: a read
-                # spends up to two adb timeouts, so a slow transport could hold `atrace` open for a
-                # multiple of the window's width. A read that would start after the window's own end
-                # is therefore not taken and the window is refused rather than returned with samples
-                # that do not span the width it was asked for. The last read is exempt because it is
-                # scheduled at that end and is the sample that closes the window, so the window can
-                # overrun by that one read at most — bounded in turn by its own adb timeouts.
-                overrun = time.monotonic() - (started + seconds)
-                detail = (
-                    f"the {seconds} s trace window could not take its display reads inside the "
-                    f"window: read {index + 1} of {sample_count} would have started {overrun:.1f} s "
-                    "after the window ended, so the samples would not span the width it was asked for"
-                )
-                raise ProbeError(detail)
-            states.append(read_screen_on(serial))
-        dump = run_adb(["shell", "atrace", "--async_dump"], serial=serial, timeout=ADB_TRACE_TIMEOUT_SECONDS)
-        # The display reads and this dump run inside the trace, so the trace covers at least
-        # `seconds`. Reporting the requested duration would advertise a window narrower than the one
-        # the frame count describes, so what is reported is the span measured locally here — the
-        # tightest bound available without reading the trace's own timestamps, since it opens before
-        # the start call and closes after the dump returns, and the trace lies inside it.
-        window_seconds = time.monotonic() - started
-    finally:
-        try:
-            run_adb(["shell", "atrace", "--async_stop"], serial=serial, timeout=ADB_TRACE_TIMEOUT_SECONDS)
-        except (subprocess.SubprocessError, OSError) as stop_error:
-            # A stop that failed fails the window: an unstopped trace keeps filling the buffer the
-            # next window's dump reads, which would attribute this window's frames to that one. It is
-            # reported before it is raised, because the failure the caller records will name the stop
-            # and nothing else will say the trace may still be running on the shared device.
-            print(
-                f"WARNING: atrace --async_stop failed and a trace may still be active: {error_detail(stop_error)}",
-                file=sys.stderr,
-            )
-            raise
-    trace_text = dump.decode("utf-8", errors="replace")
-    if "tracing_mark_write" not in trace_text:
-        # The check is on the buffer, not on the pid: a window in which the process drew nothing
-        # legitimately holds no marks of its own, while this one holds none from any process, which
-        # means the tracer captured nothing to count rather than that nothing was drawn. Reading the
-        # count out of it would be reading a counter that was never filled.
-        detail = (
-            f"the atrace window produced no mark lines at all, so it cannot evidence a frame count "
-            f"for pid {pid}; check that atrace is permitted on this build before reading the window"
-        )
-        raise ProbeError(detail)
-    return ProducerWindow(
-        window_seconds=window_seconds,
-        pid=pid,
-        event_counts=parse_producer_events(trace_text, pid),
-        trace_lines=len(trace_text.splitlines()),
-        display_states=tuple(states),
-    )
-
-
 def is_saved_coordinate_in_range(value: object, limit: float) -> bool:
     """Report whether value is a JSON number within ±limit, excluding JSON true/false (a Python int)."""
     return isinstance(value, (int, float)) and not isinstance(value, bool) and -limit <= value <= limit
@@ -1036,15 +467,15 @@ def saved_record_zone_id(record: Mapping[str, object]) -> str | None:
     """Return a record's stored zoneId when LocationStore.load() accepts the record, else None."""
     # json.loads rejects trailing data after the object, as Kotlin's parseRecord does.
     version = record.get("version")
-    if isinstance(version, bool) or not isinstance(version, int) or version != LOCATION_RECORD_VERSION:
+    if isinstance(version, bool) or not isinstance(version, int) or version != contract.LOCATION_RECORD_VERSION:
         return None
     if not (
-        is_saved_coordinate_in_range(record.get("latitude"), LOCATION_MAX_LATITUDE)
-        and is_saved_coordinate_in_range(record.get("longitude"), LOCATION_MAX_LONGITUDE)
+        is_saved_coordinate_in_range(record.get("latitude"), contract.LOCATION_MAX_LATITUDE)
+        and is_saved_coordinate_in_range(record.get("longitude"), contract.LOCATION_MAX_LONGITUDE)
     ):
         return None
     source = record.get("source")
-    if not isinstance(source, str) or source not in LOCATION_SOURCES:
+    if not isinstance(source, str) or source not in contract.LOCATION_SOURCES:
         return None
     zone_id = record.get("zoneId")
     # A stored zoneId is returned as-is, without testing that Python can build it. The store treats an
@@ -1066,7 +497,7 @@ def parse_saved_site_zone(prefs_xml: str) -> str | None:
     except ET.ParseError:
         return None
     for element in root.iter("string"):
-        if element.get("name") != LOCATION_PREFS_KEY:
+        if element.get("name") != contract.LOCATION_PREFS_KEY:
             continue
         raw = element.text
         if not raw:
@@ -1091,16 +522,16 @@ def read_saved_site_zone_id(serial: str) -> str | None:
     wallpaper never renders, whereas a false ProbeError only fails the phase loudly.
     """
     try:
-        output = run_adb(["shell", "run-as", PACKAGE_NAME, "cat", LOCATION_PREFS_PATH], serial=serial).decode(
-            "utf-8", errors="replace"
-        )
+        output = run_adb(
+            ["shell", "run-as", contract.PACKAGE_NAME, "cat", contract.LOCATION_PREFS_PATH], serial=serial
+        ).decode("utf-8", errors="replace")
     except subprocess.CalledProcessError as error:
         stderr = error.stderr
         if isinstance(stderr, bytes):
             stderr = stderr.decode("utf-8", errors="replace")
         # The absent-file strerror must name the prefs path itself; an ENOENT about any other path is
         # a probe error, not the store's "no saved site", so it must not reach the device-zone fallback.
-        if stderr and PREFS_FILE_ABSENT_MARKER in stderr and LOCATION_PREFS_PATH in stderr:
+        if stderr and contract.PREFS_FILE_ABSENT_MARKER in stderr and contract.LOCATION_PREFS_PATH in stderr:
             return None
         message = f"saved-site prefs probe failed: {error_detail(error)}"
         raise ProbeError(message) from error
@@ -1127,7 +558,7 @@ def read_wallpaper_visible(serial: str) -> bool | None:
     """Return any visible engine, all explicitly hidden engines, or an uncertain dump as True/False/None."""
     try:
         output = run_adb(
-            ["shell", "dumpsys", "activity", "service", SERVICE_NAME],
+            ["shell", "dumpsys", "activity", "service", contract.SERVICE_NAME],
             serial=serial,
         ).decode("utf-8", errors="replace")
     except (subprocess.SubprocessError, OSError) as error:
@@ -1165,7 +596,7 @@ def wake_screen(serial: str) -> bool:
         return False
 
 
-def run_restore_command(serial: str, command: Sequence[str]) -> bool:
+def run_restore_command(serial: str, command: list[str]) -> bool:
     """Run one restore command, reporting a failure without raising so the remaining ones still run."""
     try:
         run_adb(command, serial=serial, timeout=ADB_RESTORE_TIMEOUT_SECONDS)
@@ -1184,14 +615,14 @@ def count_service_log_messages(serial: str, message: str) -> int:
     dump, which would otherwise leave little room under the ADB timeout.
     """
     output = run_adb(["logcat", "-d"], serial=serial).decode("utf-8", errors="replace")
-    return sum(message in line and f"{SERVICE_LOG_TAG}: " in line for line in output.splitlines())
+    return sum(message in line and f"{contract.SERVICE_LOG_TAG}: " in line for line in output.splitlines())
 
 
-def send_debug_clock_broadcast(serial: str, extras: Sequence[str], expected_message: str) -> bool:
+def send_debug_clock_broadcast(serial: str, extras: list[str], expected_message: str) -> bool:
     """Send a debug-clock broadcast and report whether the service logged a new acceptance line."""
     before = count_service_log_messages(serial, expected_message)
     run_adb(
-        ["shell", "am", "broadcast", "-a", DEBUG_ACTION, *extras],
+        ["shell", "am", "broadcast", "-a", contract.DEBUG_ACTION, *extras],
         serial=serial,
         timeout=ADB_RESTORE_TIMEOUT_SECONDS,
     )
@@ -1206,7 +637,9 @@ def send_debug_clock_broadcast(serial: str, extras: Sequence[str], expected_mess
 def confirm_virtual_clock_reset(serial: str) -> bool:
     """Reset the virtual clock and report whether the service log confirmed it."""
     try:
-        confirmed = send_debug_clock_broadcast(serial, DEBUG_CLOCK_RESET_EXTRAS, DEBUG_CLOCK_RESET_MESSAGE)
+        confirmed = send_debug_clock_broadcast(
+            serial, contract.DEBUG_CLOCK_RESET_EXTRAS, contract.DEBUG_CLOCK_RESET_MESSAGE
+        )
     except (subprocess.SubprocessError, OSError) as error:
         print(f"WARNING: virtual-clock reset failed: {error_detail(error)}", file=sys.stderr)
         return False
@@ -1222,13 +655,13 @@ class AdbDevice:
         """Initialize an AdbDevice with the target device serial."""
         self.serial: Final = serial
 
-    def run_adb(self, args: Sequence[str], timeout: int = ADB_TIMEOUT_SECONDS) -> bytes:
+    def run_adb(self, args: list[str], timeout: int = ADB_TIMEOUT_SECONDS) -> bytes:
         """Run an adb invocation targeting this device serial."""
         return run_adb(args, serial=self.serial, timeout=timeout)
 
     def capture_frame(self) -> tuple[int, int, bytes]:
         """Capture one screencap frame from this device."""
-        return capture_frame(serial=self.serial)
+        return frame.capture_frame(serial=self.serial)
 
     def read_display_size(self) -> tuple[str | None, str | None]:
         """Read physical and override display sizes from `wm size`."""
@@ -1291,10 +724,25 @@ class AdbDevice:
         return read_wallpaper_visible(self.serial)
 
     def capture_producer_window(
-        self, pid: int, *, seconds: float = TRACE_WINDOW_SECONDS, sample_seconds: float = TRACE_DISPLAY_SAMPLE_SECONDS
-    ) -> ProducerWindow:
-        """Trace this device's producer pipeline for a bounded window, sampling the display."""
-        return capture_producer_window(self.serial, pid, seconds=seconds, sample_seconds=sample_seconds)
+        self,
+        pid: int,
+        *,
+        seconds: float | None = None,
+        sample_seconds: float | None = None,
+    ) -> "trace.ProducerWindow":
+        """
+        Trace this device's producer pipeline for a bounded window, sampling the display.
+
+        The defaults are resolved at call time and the return annotation is a string: `trace` imports
+        this module for transport, so a trace-first import leaves it partially initialized while this
+        class is defined, and touching its attributes there would fail.
+        """
+        return trace.capture_producer_window(
+            self.serial,
+            pid,
+            seconds=trace.TRACE_WINDOW_SECONDS if seconds is None else seconds,
+            sample_seconds=trace.TRACE_DISPLAY_SAMPLE_SECONDS if sample_seconds is None else sample_seconds,
+        )
 
     def sleep_screen(self) -> bool:
         """Put the screen to sleep."""
@@ -1318,7 +766,7 @@ class AdbDevice:
         """
         self.run_adb(["shell", "input", "keyevent", "KEYCODE_HOME"])
 
-    def run_restore_command(self, command: Sequence[str]) -> bool:
+    def run_restore_command(self, command: list[str]) -> bool:
         """Run one restore command on this device."""
         return run_restore_command(self.serial, command)
 
@@ -1326,7 +774,7 @@ class AdbDevice:
         """Count service-tagged logcat lines containing the given message."""
         return count_service_log_messages(self.serial, message)
 
-    def send_debug_clock_broadcast(self, extras: Sequence[str], expected_message: str) -> bool:
+    def send_debug_clock_broadcast(self, extras: list[str], expected_message: str) -> bool:
         """Send a debug-clock broadcast and verify the expected log message."""
         return send_debug_clock_broadcast(self.serial, extras, expected_message)
 

@@ -2,7 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tests for the host tooling parity check and runtime import audit."""
 
+import ast
 import contextlib
+import subprocess
+import sys
 import tempfile
 import unittest
 from collections.abc import Callable
@@ -318,12 +321,24 @@ class RuntimeImportAuditTest(unittest.TestCase):
         self.assertEqual(len(problems), 1)
         self.assertIn("numpy", problems[0])
 
-    def test_sibling_runtime_modules_pass(self) -> None:
+    def test_bare_sibling_import_is_reported(self) -> None:
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         paths = [
             self._write(root, "alpha.py", "import beta\n"),
             self._write(root, "beta.py", "from alpha import value\n"),
         ]
+        problems = subject.check_runtime_imports(paths)
+        self.assertEqual(len(problems), 2)
+        self.assertTrue(all("Non-stdlib" in problem for problem in problems))
+
+    def test_relative_imports_pass(self) -> None:
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        paths = [self._write(root, "alpha.py", "from . import beta\nfrom .beta import value\n")]
+        self.assertEqual(subject.check_runtime_imports(paths), [])
+
+    def test_absolute_host_import_passes(self) -> None:
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        paths = [self._write(root, "alpha.py", "from host import contract\nfrom host.device import probes\n")]
         self.assertEqual(subject.check_runtime_imports(paths), [])
 
     def test_parse_failure_is_reported(self) -> None:
@@ -332,6 +347,56 @@ class RuntimeImportAuditTest(unittest.TestCase):
         problems = subject.check_runtime_imports(paths)
         self.assertEqual(len(problems), 1)
         self.assertIn("cannot parse runtime harness", problems[0])
+
+
+class PackageInitializerTest(unittest.TestCase):
+    """Package initializers stay docstring-only, so importing one submodule loads no siblings."""
+
+    def test_every_package_initializer_has_no_imports(self) -> None:
+        root = Path(__file__).resolve().parent
+        initializers = sorted((root / "host").rglob("__init__.py"))
+        self.assertIn(root / "host" / "__init__.py", initializers)
+        self.assertGreaterEqual(len(initializers), 4)
+        for path in initializers:
+            with self.subTest(initializer=path.relative_to(root)):
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+                imports = [node for node in ast.walk(tree) if isinstance(node, (ast.Import, ast.ImportFrom))]
+                self.assertFalse(imports, f"{path.relative_to(root)} must not import")
+
+
+class TopLevelImportOrderTest(unittest.TestCase):
+    """Each package module imports first in a fresh interpreter, whatever order the graph is entered."""
+
+    def test_each_device_module_imports_first(self) -> None:
+        root = Path(__file__).resolve().parent.parent
+        for module in ("host.device.trace", "host.device.frame", "host.device.probes", "host.battery.cli"):
+            with self.subTest(module=module):
+                # S603: this runs the same interpreter with a fixed script; the module name is one of
+                # the literals above, and no shell is involved.
+                result = subprocess.run(  # noqa: S603
+                    [sys.executable, "-I", "-c", f"import sys; sys.path.insert(0, 'scripts'); import {module}"],
+                    cwd=root,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(0, result.returncode, result.stderr)
+
+
+class RuntimeSourcesTest(unittest.TestCase):
+    """The audit covers the four wrappers plus every module in the host package."""
+
+    def test_includes_wrappers_and_host_modules(self) -> None:
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        scripts = directory / "scripts"
+        (scripts / "host" / "battery").mkdir(parents=True)
+        (scripts / "host" / "__init__.py").write_text("", encoding="utf-8")
+        (scripts / "host" / "battery" / "probes.py").write_text("from . import stats\n", encoding="utf-8")
+        self.enterContext(contextlib.chdir(directory))
+        self.assertEqual(
+            subject.runtime_sources(),
+            [*subject.RUNTIME_SCRIPTS, Path("scripts/host/__init__.py"), Path("scripts/host/battery/probes.py")],
+        )
 
 
 class MainTest(unittest.TestCase):
@@ -354,14 +419,15 @@ class MainTest(unittest.TestCase):
         (directory / "pyproject.toml").write_text(PINNED_PYPROJECT, encoding="utf-8")
         (directory / ".pre-commit-config.yaml").write_text(PINNED_PRE_COMMIT, encoding="utf-8")
         scripts = directory / "scripts"
-        scripts.mkdir()
+        (scripts / "host" / "battery").mkdir(parents=True)
         for name in (
             "battery_protocol.py",
             "battery_report.py",
-            "device_layer.py",
             "device_qualification.py",
             "device_smoke.py",
         ):
             (scripts / name).write_text("import json\n", encoding="utf-8")
+        (scripts / "host" / "__init__.py").write_text("", encoding="utf-8")
+        (scripts / "host" / "battery" / "probes.py").write_text("from host import contract\n", encoding="utf-8")
         self.enterContext(contextlib.chdir(directory))
         self.assertIsNone(subject.main())

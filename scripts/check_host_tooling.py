@@ -3,7 +3,7 @@
 Host tooling consistency checks for the #146 developer environment.
 
 Verify that development pins match their pre-commit revisions and that the runtime harnesses import
-only the standard library and siblings. The pre-commit scanner handles the block-style ``repos:``
+only the standard library and the ``host`` package. The pre-commit scanner handles the block-style ``repos:``
 list used here, not YAML in general; the import audit is static.
 """
 
@@ -19,10 +19,11 @@ from typing import Final
 RUNTIME_SCRIPTS: Final = (
     Path("scripts/battery_protocol.py"),
     Path("scripts/battery_report.py"),
-    Path("scripts/device_layer.py"),
     Path("scripts/device_qualification.py"),
     Path("scripts/device_smoke.py"),
 )
+
+HOST_PACKAGE: Final = Path("scripts/host")
 
 HOOK_REPOSITORIES: Final = {
     "ruff": "https://github.com/astral-sh/ruff-pre-commit",
@@ -275,19 +276,27 @@ def check_pin_parity(pyproject_text: str, pre_commit_text: str) -> list[str]:
     return problems
 
 
+def runtime_sources() -> list[Path]:
+    """Return the CLI wrappers plus every module in the host package, resolved at call time."""
+    return [*RUNTIME_SCRIPTS, *sorted(HOST_PACKAGE.rglob("*.py"))]
+
+
 def _top_level_imports(tree: ast.AST) -> Iterator[str]:
-    """Yield the top-level module name of every import in ``tree``."""
+    """Yield the top-level module name of every absolute import in ``tree``."""
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             yield from (alias.name.split(".", 1)[0] for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            yield node.module.split(".", 1)[0]
+        elif isinstance(node, ast.ImportFrom):
+            if node.level > 0:
+                continue
+            if node.module:
+                yield node.module.split(".", 1)[0]
 
 
 def check_runtime_imports(paths: Sequence[Path]) -> list[str]:
     """Return every non-stdlib import in the runtime harnesses under ``paths``."""
     problems: list[str] = []
-    allowed = set(sys.stdlib_module_names) | {path.stem for path in paths}
+    allowed = set(sys.stdlib_module_names) | {"host"}
     for path in paths:
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -311,7 +320,7 @@ def main() -> None:
         message = f"cannot read host tooling configuration: {error}"
         raise SystemExit(message) from error
     problems = check_pin_parity(pyproject_text, pre_commit_text)
-    problems.extend(check_runtime_imports(RUNTIME_SCRIPTS))
+    problems.extend(check_runtime_imports(runtime_sources()))
     if problems:
         raise SystemExit("\n".join(problems))
 

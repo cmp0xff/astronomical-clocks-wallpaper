@@ -44,10 +44,11 @@ The former "at 1 Hz" wording described the cadence then shipped. The current vis
 frame per civil minute, plus one coalesced frame when the launcher scrolls the surface or the window
 insets change.
 
-`scripts/battery_protocol.py` implements B2–B6 as separate bounded subcommands. The five measuring
-phases — `resources`, `hidden`, `visible`, `pilot`, and `memory` — each write one or more records
-and print their own evidence; `report` writes none, reading the records the phases left and printing
-its verdicts over them. No single invocation, and above all no single window, blocks for hours.
+`scripts/battery_protocol.py` (wrapping `scripts/host/battery/`) implements B2–B6 as separate bounded
+subcommands. The five measuring phases — `resources`, `hidden`, `visible`, `pilot`, and `memory` —
+each write one or more records and print their own evidence; `report` (also callable via
+`scripts/battery_report.py`) writes none, reading the records the phases left and printing its
+verdicts over them. No single invocation, and above all no single window, blocks for hours.
 
 ## Methodology and Noise Floor Policy
 
@@ -129,7 +130,7 @@ its verdicts over them. No single invocation, and above all no single window, bl
    than re-read after it.
 
    The final threshold is the greater of the provisional value and the observed noise floor, and it is
-   committed — the constants in `scripts/battery_report.py` are changed and committed, and a dated
+   committed — the constants in `scripts/host/battery/stats.py` are changed and committed, and a dated
    report under `docs/testing/reports/` records the pilot's values — **before** the final run. A pilot
    whose discharge channel never moved emits **no floor at all** and marks that channel unmeasured:
    a zero half-width over a zero mean is not a quiet device, it is an unread gauge, and committing it
@@ -171,7 +172,7 @@ Retrieved 2026-10-12. Both anchors are quoted from primary documentation rather 
   very important that a wallpaper only use CPU while it is visible.*"
 - **Tooling** — [`adb` shell commands](https://developer.android.com/tools/adb#dumpsys): `dumpsys`
   for the service state, and the device's own `cmd battery` help for the unplug/reset commands.
-- **Statistics** — the two-sided 95% Student t critical values in `scripts/battery_report.py`
+- **Statistics** — the two-sided 95% Student t critical values in `scripts/host/battery/stats.py`
   come from the table in the NIST/SEMATECH e-Handbook of Statistical Methods, section 1.3.6.7.3
   ([`1.3.6.7.3`](https://www.itl.nist.gov/div898/handbook/eda/section3/eda3672.htm)) up to 30 degrees
   of freedom. Past the table the normal value 1.960 is **not** used — at 31 degrees of freedom it is
@@ -207,4 +208,4 @@ against — and the source revision, and the limits of what it measured:
 
 The reports are the record. A state file is working data and is reset between runs so that the
 pilot's windows cannot enter the final comparison; the floors the thresholds were committed from are
-carried in `scripts/battery_report.py` beside them.
+carried in `scripts/host/battery/stats.py` beside them.

@@ -13,10 +13,13 @@ import io
 import unittest
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
+from unittest.mock import patch
 
-import battery_report as report
-import device_layer
 from device_test_fixtures import install_no_real_sleep_guard
+from host.battery import cli as battery_cli
+from host.battery import report as battery_report
+from host.battery import stats as battery_stats
+from host.device import probes as device_probes
 
 _module_cleanups: list[Callable[[], None]] = []
 
@@ -68,34 +71,34 @@ class TCriticalTest(unittest.TestCase):
     """Checks the degrees-of-freedom-indexed t table and its tail."""
 
     def test_table_is_indexed_by_degrees_of_freedom(self) -> None:
-        self.assertAlmostEqual(12.706, report.t_critical_95(1))
-        self.assertAlmostEqual(4.303, report.t_critical_95(2))
-        self.assertAlmostEqual(3.182, report.t_critical_95(3))
-        self.assertAlmostEqual(2.776, report.t_critical_95(4))
+        self.assertAlmostEqual(12.706, battery_stats.t_critical_95(1))
+        self.assertAlmostEqual(4.303, battery_stats.t_critical_95(2))
+        self.assertAlmostEqual(3.182, battery_stats.t_critical_95(3))
+        self.assertAlmostEqual(2.776, battery_stats.t_critical_95(4))
 
     def test_table_reaches_thirty_degrees_of_freedom(self) -> None:
-        self.assertAlmostEqual(2.042, report.t_critical_95(30))
+        self.assertAlmostEqual(2.042, battery_stats.t_critical_95(30))
 
     def test_the_tail_is_expanded_rather_than_replaced_by_the_normal_value(self) -> None:
         # The two-sided 95% t at 31 degrees of freedom is 2.0395; returning the normal 1.960 there
         # would understate the interval by about 4%.
-        self.assertAlmostEqual(2.0395, report.t_critical_95(31), places=3)
-        self.assertAlmostEqual(2.0003, report.t_critical_95(60), places=3)
-        self.assertGreater(report.t_critical_95(31), report.NORMAL_T_CRITICAL_95)
+        self.assertAlmostEqual(2.0395, battery_stats.t_critical_95(31), places=3)
+        self.assertAlmostEqual(2.0003, battery_stats.t_critical_95(60), places=3)
+        self.assertGreater(battery_stats.t_critical_95(31), battery_stats.NORMAL_T_CRITICAL_95)
 
     def test_the_tail_tends_to_the_normal_value(self) -> None:
-        self.assertAlmostEqual(report.NORMAL_T_CRITICAL_95, report.t_critical_95(100_000), places=3)
-        self.assertGreater(report.t_critical_95(1000), report.NORMAL_T_CRITICAL_95)
+        self.assertAlmostEqual(battery_stats.NORMAL_T_CRITICAL_95, battery_stats.t_critical_95(100_000), places=3)
+        self.assertGreater(battery_stats.t_critical_95(1000), battery_stats.NORMAL_T_CRITICAL_95)
 
     def test_two_and_three_pairs_do_not_borrow_the_four_pair_value(self) -> None:
         # The old two-branch lookup returned 3.182 for every n below 5, which understates the
         # interval for two or three pairs.
-        self.assertNotAlmostEqual(3.182, report.t_critical_95(2))
-        self.assertNotAlmostEqual(3.182, report.t_critical_95(1))
+        self.assertNotAlmostEqual(3.182, battery_stats.t_critical_95(2))
+        self.assertNotAlmostEqual(3.182, battery_stats.t_critical_95(1))
 
     def test_refuses_a_sample_with_no_degrees_of_freedom(self) -> None:
-        with self.assertRaises(device_layer.ProbeError):
-            report.t_critical_95(0)
+        with self.assertRaises(device_probes.ProbeError):
+            battery_stats.t_critical_95(0)
 
 
 class PairedStatisticsTest(unittest.TestCase):
@@ -103,48 +106,48 @@ class PairedStatisticsTest(unittest.TestCase):
 
     def test_identical_pairs_have_no_increase(self) -> None:
         rates = [100.0, 102.0, 99.0, 101.0]
-        statistics = report.paired_statistics(rates, rates)
+        statistics = battery_stats.paired_statistics(rates, rates)
         self.assertAlmostEqual(0.0, statistics.relative_delta_pct)
         self.assertAlmostEqual(0.0, statistics.ci_95_upper_pct)
         self.assertEqual(3, statistics.degrees_of_freedom)
 
     def test_uniform_increase_has_a_zero_width_interval(self) -> None:
-        statistics = report.paired_statistics([100.0] * 4, [103.0] * 4)
+        statistics = battery_stats.paired_statistics([100.0] * 4, [103.0] * 4)
         self.assertAlmostEqual(3.0, statistics.relative_delta_pct)
         self.assertAlmostEqual(3.0, statistics.ci_95_upper_pct)
 
     def test_the_bound_uses_the_critical_value_for_the_actual_sample_count(self) -> None:
         baseline = [100.0] * 5
         treatment = [100.0, 100.0, 100.0, 100.0, 120.0]
-        statistics = report.paired_statistics(baseline, treatment)
+        statistics = battery_stats.paired_statistics(baseline, treatment)
         self.assertEqual(4, statistics.degrees_of_freedom)
         self.assertAlmostEqual(2.776, statistics.t_critical)
 
     def test_refuses_fewer_than_four_pairs(self) -> None:
-        with self.assertRaises(device_layer.ProbeError):
-            report.paired_statistics([100.0] * 3, [101.0] * 3)
+        with self.assertRaises(device_probes.ProbeError):
+            battery_stats.paired_statistics([100.0] * 3, [101.0] * 3)
 
     def test_refuses_mismatched_arms(self) -> None:
-        with self.assertRaises(device_layer.ProbeError):
-            report.paired_statistics([100.0] * 4, [101.0] * 5)
+        with self.assertRaises(device_probes.ProbeError):
+            battery_stats.paired_statistics([100.0] * 4, [101.0] * 5)
 
     def test_refuses_a_non_positive_baseline(self) -> None:
-        with self.assertRaises(device_layer.ProbeError):
-            report.paired_statistics([0.0] * 4, [1.0] * 4)
+        with self.assertRaises(device_probes.ProbeError):
+            battery_stats.paired_statistics([0.0] * 4, [1.0] * 4)
 
 
 class NoiseFloorTest(unittest.TestCase):
     """Checks the pilot's mean, sigma, and two-sigma half-width."""
 
     def test_reports_mean_sigma_and_two_sigma(self) -> None:
-        mean, deviation, half_width = report.two_sigma_noise_floor([100.0, 102.0, 98.0, 100.0])
+        mean, deviation, half_width = battery_stats.two_sigma_noise_floor([100.0, 102.0, 98.0, 100.0])
         self.assertAlmostEqual(100.0, mean)
         self.assertAlmostEqual(1.632993161855452, deviation)
         self.assertAlmostEqual(2 * deviation, half_width)
 
     def test_refuses_too_few_windows(self) -> None:
-        with self.assertRaises(device_layer.ProbeError):
-            report.two_sigma_noise_floor([100.0, 101.0, 99.0])
+        with self.assertRaises(device_probes.ProbeError):
+            battery_stats.two_sigma_noise_floor([100.0, 101.0, 99.0])
 
 
 def resources_record(**overrides: object) -> dict[str, object]:
@@ -152,7 +155,7 @@ def resources_record(**overrides: object) -> dict[str, object]:
     record: dict[str, object] = {
         "phase": "resources",
         "wake_locks": 0,
-        "wake_lock_coverage": report.WAKE_LOCK_COVERAGE,
+        "wake_lock_coverage": battery_stats.WAKE_LOCK_COVERAGE,
         "alarms": 0,
         "jobs": 0,
         "revision": "rev",
@@ -178,7 +181,7 @@ class ReportTest(unittest.TestCase):
 
     def lines(self, records: Sequence[Mapping[str, object]]) -> list[str]:
         """Render the report's verdicts to their text lines."""
-        return [verdict.line for verdict in report.report_lines(records)]
+        return [verdict.line for verdict in battery_report.report_lines(records)]
 
     def test_every_budget_is_not_measured_without_records(self) -> None:
         lines = self.lines([])
@@ -195,11 +198,11 @@ class ReportTest(unittest.TestCase):
             self.assertTrue(any(line.startswith(label) and "NOT MEASURED" in line for line in lines))
 
     def test_b1_is_declared_out_of_scope(self) -> None:
-        verdicts = report.report_lines([])
+        verdicts = battery_report.report_lines([])
         self.assertTrue(
             any(
                 verdict.label == "B1 hidden frames"
-                and verdict.status is report.VerdictStatus.OUT_OF_SCOPE
+                and verdict.status is battery_stats.VerdictStatus.OUT_OF_SCOPE
                 and "NOT MEASURED HERE" in verdict.line
                 for verdict in verdicts
             )
@@ -260,8 +263,8 @@ class ReportTest(unittest.TestCase):
         # type is corrupt state rather than a narrower measurement: reading it as "not measured"
         # would silently drop the record behind a readable one.
         records = [{"phase": "resources", "wake_locks": 0, "wake_lock_coverage": True, "alarms": 0, "jobs": 0}]
-        with self.assertRaises(device_layer.ProbeError) as raised:
-            report.report_lines(records)
+        with self.assertRaises(device_probes.ProbeError) as raised:
+            battery_report.report_lines(records)
         self.assertIn("wake_lock_coverage", str(raised.exception))
 
     def test_hidden_cpu_is_checked_against_its_budget(self) -> None:
@@ -287,14 +290,14 @@ class ReportTest(unittest.TestCase):
         for live, base in ((1200.0, 1000.0), (1400.0, 1000.0), (1600.0, 1000.0), (1800.0, 1000.0)):
             records.append(visible_record("A", live, cpu=1.0))
             records.append(visible_record("B", base, baseline="stock"))
-        paired = report.alternation_pairs(records)
-        statistics = report.paired_statistics(
-            [report.window_rate(base) for _, base in paired],
-            [report.window_rate(live) for live, _ in paired],
+        paired = battery_stats.alternation_pairs(records)
+        statistics = battery_stats.paired_statistics(
+            [battery_stats.window_rate(base) for _, base in paired],
+            [battery_stats.window_rate(live) for live, _ in paired],
         )
         # Per-pair differences 200, 400, 600 and 800 uA: mean 500, sample sd 258.198 uA.
         self.assertAlmostEqual(258.199, statistics.standard_deviation, places=2)
-        line = next(verdict.line for verdict in report.report_lines(records) if verdict.label == "B4 vs stock")
+        line = next(verdict.line for verdict in battery_report.report_lines(records) if verdict.label == "B4 vs stock")
         self.assertIn("sigma_d", line)
         self.assertIn("of the baseline", line)
 
@@ -382,10 +385,12 @@ class ReportTest(unittest.TestCase):
         # The committed B4 threshold is 12.0123%, raised from the 5% provisional by the pilot's own
         # noise floor, and every other B4 case in this file sits at 0% or above 20% — so a regression
         # that put the provisional value back would pass the whole suite. +8% discriminates.
-        self.assertEqual(12.0123, report.FINAL_MAX_VISIBLE_DELTA_PCT)
-        statuses = {(verdict.label, verdict.status) for verdict in report.report_lines(pairs(4, 1080.0, 1000.0))}
-        self.assertIn(("B4 vs stock point estimate", report.VerdictStatus.PASS), statuses)
-        self.assertIn(("B4 vs stock CI upper bound", report.VerdictStatus.PASS), statuses)
+        self.assertEqual(12.0123, battery_stats.FINAL_MAX_VISIBLE_DELTA_PCT)
+        statuses = {
+            (verdict.label, verdict.status) for verdict in battery_report.report_lines(pairs(4, 1080.0, 1000.0))
+        }
+        self.assertIn(("B4 vs stock point estimate", battery_stats.VerdictStatus.PASS), statuses)
+        self.assertIn(("B4 vs stock CI upper bound", battery_stats.VerdictStatus.PASS), statuses)
 
     def test_a_negative_point_estimate_and_interval_still_pass(self) -> None:
         # B4's verdict is a relative *increase*, and a decrease is the best result the criterion can
@@ -395,9 +400,9 @@ class ReportTest(unittest.TestCase):
         # the guard that keeps the two apart: live 900 uA against a stock 1000 uA is a -10% point
         # estimate and a -10% interval upper bound, and both must pass. It passes before and after the
         # refusals, which is the point of it.
-        statuses = {(verdict.label, verdict.status) for verdict in report.report_lines(pairs(4, 900.0, 1000.0))}
-        self.assertIn(("B4 vs stock point estimate", report.VerdictStatus.PASS), statuses)
-        self.assertIn(("B4 vs stock CI upper bound", report.VerdictStatus.PASS), statuses)
+        statuses = {(verdict.label, verdict.status) for verdict in battery_report.report_lines(pairs(4, 900.0, 1000.0))}
+        self.assertIn(("B4 vs stock point estimate", battery_stats.VerdictStatus.PASS), statuses)
+        self.assertIn(("B4 vs stock CI upper bound", battery_stats.VerdictStatus.PASS), statuses)
 
     def test_a_sequence_that_is_not_an_ab_alternation_is_refused(self) -> None:
         # The document names this refusal as the reason the pairing means anything: pairing the nth
@@ -411,8 +416,8 @@ class ReportTest(unittest.TestCase):
             visible_record("B", 1000.0, baseline="stock"),
             visible_record("B", 1000.0, baseline="stock"),
         ]
-        with self.assertRaises(device_layer.ProbeError) as raised:
-            report.alternation_pairs(records)
+        with self.assertRaises(device_probes.ProbeError) as raised:
+            battery_stats.alternation_pairs(records)
         self.assertIn("not an A/B alternation", str(raised.exception))
         lines = self.lines(records)
         self.assertTrue(any(line.startswith("B4 pairing") and "NOT MEASURED" in line for line in lines))
@@ -526,7 +531,7 @@ class ReportTest(unittest.TestCase):
         for duration in (float("inf"), float("nan"), float("-inf")):
             with self.subTest(duration=duration):
                 record = visible_record("A", 1000.0, cpu=1.0, duration=duration)
-                self.assertIsNotNone(report.short_window_reason(record))
+                self.assertIsNotNone(battery_report.short_window_reason(record))
                 lines = self.lines([record])
                 self.assertTrue(any(line.startswith("WINDOW DURATIONS: FAIL") for line in lines))
 
@@ -536,7 +541,7 @@ class ReportTest(unittest.TestCase):
         # It is refused as a value that is not a length of time instead, the same way `finite_number`
         # refuses it for the readings.
         record = visible_record("A", 1000.0, cpu=1.0, duration=True)
-        reason = report.short_window_reason(record)
+        reason = battery_report.short_window_reason(record)
         self.assertIsNotNone(reason)
         self.assertIn("not a length of time", str(reason))
         self.assertTrue(any(line.startswith("WINDOW DURATIONS: FAIL") for line in self.lines([record])))
@@ -554,21 +559,21 @@ class ReportTest(unittest.TestCase):
 
     def test_a_declared_device_limit_exempts_the_black_arm_and_quotes_the_reason(self) -> None:
         records = full_pass_records()
-        verdicts = report.report_lines(records, black_unavailable="the build has no root")
+        verdicts = battery_report.report_lines(records, black_unavailable="the build has no root")
         line = next(verdict.line for verdict in verdicts if verdict.label == "B4 vs black")
         self.assertIn("DEVICE-LIMITED", line)
         self.assertIn("the build has no root", line)
-        self.assertEqual(0, report.report_exit_code(verdicts))
+        self.assertEqual(0, battery_report.report_exit_code(verdicts))
 
     def test_an_undeclared_black_baseline_gates_the_report(self) -> None:
-        verdicts = report.report_lines(full_pass_records())
+        verdicts = battery_report.report_lines(full_pass_records())
         self.assertTrue(
             any(
-                verdict.label == "B4 vs black" and verdict.status is report.VerdictStatus.NOT_MEASURED
+                verdict.label == "B4 vs black" and verdict.status is battery_stats.VerdictStatus.NOT_MEASURED
                 for verdict in verdicts
             )
         )
-        self.assertEqual(1, report.report_exit_code(verdicts))
+        self.assertEqual(1, battery_report.report_exit_code(verdicts))
 
     def test_a_black_only_run_leaves_the_gated_comparison_unmeasured(self) -> None:
         records = [
@@ -584,60 +589,69 @@ class ReportExitCodeTest(unittest.TestCase):
     """Finding 5: the exit status comes from the verdicts, so a printed FAIL is non-zero."""
 
     def test_a_fully_measured_passing_report_exits_zero(self) -> None:
-        verdicts = report.report_lines(full_pass_records(), black_unavailable="the build has no root")
-        self.assertEqual(0, report.report_exit_code(verdicts))
+        verdicts = battery_report.report_lines(full_pass_records(), black_unavailable="the build has no root")
+        self.assertEqual(0, battery_report.report_exit_code(verdicts))
 
     def test_is_failure_agrees_with_the_exit_rule_on_every_status(self) -> None:
         # `is_failure` is the type's own answer to "should the report fail", and the exit code is built
         # from it: a status the two disagreed about would be a printed verdict whose text and exit
         # status parted company.
-        for status in report.VerdictStatus:
-            verdict = report.Verdict("a criterion", status, f"a criterion: {status.value}")
+        for status in battery_stats.VerdictStatus:
+            verdict = battery_stats.Verdict("a criterion", status, f"a criterion: {status.value}")
             self.assertEqual(
-                report.report_exit_code([verdict]),
+                battery_report.report_exit_code([verdict]),
                 1 if verdict.is_failure else 0,
                 msg=status,
             )
-        self.assertEqual(1, report.report_exit_code([report.Verdict("c", report.VerdictStatus.NOT_MEASURED, "c")]))
+        self.assertEqual(
+            1,
+            battery_report.report_exit_code(
+                [battery_stats.Verdict("c", battery_stats.VerdictStatus.NOT_MEASURED, "c")]
+            ),
+        )
 
     def test_a_fail_exits_non_zero(self) -> None:
-        verdicts = report.report_lines(pairs(4, 1200.0, 1000.0))
-        self.assertEqual(1, report.report_exit_code(verdicts))
+        verdicts = battery_report.report_lines(pairs(4, 1200.0, 1000.0))
+        self.assertEqual(1, battery_report.report_exit_code(verdicts))
 
     def test_an_unmeasured_criterion_exits_non_zero(self) -> None:
-        self.assertEqual(1, report.report_exit_code(report.report_lines([])))
+        self.assertEqual(1, battery_report.report_exit_code(battery_report.report_lines([])))
 
     def test_a_lone_out_of_scope_criterion_is_not_a_failure(self) -> None:
-        verdicts = [report.Verdict("B1 hidden frames", report.VerdictStatus.OUT_OF_SCOPE, "B1: not measured here")]
-        self.assertEqual(0, report.report_exit_code(verdicts))
+        verdicts = [
+            battery_stats.Verdict("B1 hidden frames", battery_stats.VerdictStatus.OUT_OF_SCOPE, "B1: not measured here")
+        ]
+        self.assertEqual(0, battery_report.report_exit_code(verdicts))
 
     def test_a_device_limited_criterion_is_recorded_but_does_not_gate(self) -> None:
         # The black baseline is required only where the device permits setting one, so its absence is
         # printed and carried by the verdict list without turning every run on this device into a
         # failure. It is emphatically not reported as a pass, which is what a silent omission did.
         verdicts = [
-            report.Verdict("B4 vs black", report.VerdictStatus.DEVICE_LIMITED, "B4 vs black: NOT MEASURED"),
-            report.Verdict("B4 vs stock", report.VerdictStatus.PASS, "B4 vs stock: PASS"),
+            battery_stats.Verdict(
+                "B4 vs black", battery_stats.VerdictStatus.DEVICE_LIMITED, "B4 vs black: NOT MEASURED"
+            ),
+            battery_stats.Verdict("B4 vs stock", battery_stats.VerdictStatus.PASS, "B4 vs stock: PASS"),
         ]
-        self.assertEqual(0, report.report_exit_code(verdicts))
+        self.assertEqual(0, battery_report.report_exit_code(verdicts))
         self.assertFalse(verdicts[0].is_failure)
-        self.assertIsNot(report.VerdictStatus.PASS, verdicts[0].status)
-        self.assertIsNot(report.VerdictStatus.NOT_MEASURED, verdicts[0].status)
+        self.assertIsNot(battery_stats.VerdictStatus.PASS, verdicts[0].status)
+        self.assertIsNot(battery_stats.VerdictStatus.NOT_MEASURED, verdicts[0].status)
 
     def test_a_stock_only_full_pass_exits_zero_once_the_black_arm_is_declared(self) -> None:
-        verdicts = report.report_lines(full_pass_records(), black_unavailable="the build has no root")
-        self.assertEqual(0, report.report_exit_code(verdicts))
+        verdicts = battery_report.report_lines(full_pass_records(), black_unavailable="the build has no root")
+        self.assertEqual(0, battery_report.report_exit_code(verdicts))
         self.assertTrue(
             any(
-                verdict.label == "B4 vs black" and verdict.status is report.VerdictStatus.DEVICE_LIMITED
+                verdict.label == "B4 vs black" and verdict.status is battery_stats.VerdictStatus.DEVICE_LIMITED
                 for verdict in verdicts
             )
         )
 
     def test_phase_report_returns_the_derived_status(self) -> None:
         with contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(0, report.phase_report(full_pass_records(), black_unavailable="no root"))
-            self.assertEqual(1, report.phase_report(pairs(4, 1200.0, 1000.0)))
+            self.assertEqual(0, battery_report.phase_report(full_pass_records(), black_unavailable="no root"))
+            self.assertEqual(1, battery_report.phase_report(pairs(4, 1200.0, 1000.0)))
 
 
 class NegativeDischargeRecordTest(unittest.TestCase):
@@ -650,7 +664,7 @@ class NegativeDischargeRecordTest(unittest.TestCase):
 
     def test_a_state_file_carrying_a_negative_rate_is_not_a_comparison(self) -> None:
         records = [visible_record("A", -1000.0, cpu=1.0), visible_record("B", 1000.0, baseline="stock")] * 4
-        lines = [verdict.line for verdict in report.report_lines(records)]
+        lines = [verdict.line for verdict in battery_report.report_lines(records)]
         self.assertTrue(any(line.startswith("B4 vs stock") and "NOT MEASURED" in line for line in lines))
         self.assertFalse(any(line.startswith("B4 vs stock point estimate") for line in lines))
 
@@ -671,16 +685,16 @@ class BaselineLabelTest(unittest.TestCase):
         failing = pairs(1, 9000.0, 1000.0, cpu=1.0)
         failing[1]["baseline"] = "unreadable"
         records = pairs(4, 1000.0, 1000.0, cpu=1.0) + failing
-        with self.assertRaises(device_layer.ProbeError) as raised:
-            report.report_lines(records)
+        with self.assertRaises(device_probes.ProbeError) as raised:
+            battery_report.report_lines(records)
         self.assertIn("unreadable", str(raised.exception))
 
     def test_an_absent_baseline_label_is_refused(self) -> None:
         failing = pairs(1, 9000.0, 1000.0, cpu=1.0)
         del failing[1]["baseline"]
         records = pairs(4, 1000.0, 1000.0, cpu=1.0) + failing
-        with self.assertRaises(device_layer.ProbeError) as raised:
-            report.report_lines(records)
+        with self.assertRaises(device_probes.ProbeError) as raised:
+            battery_report.report_lines(records)
         self.assertIn("baseline", str(raised.exception))
 
 
@@ -705,16 +719,16 @@ class PilotFlagTest(unittest.TestCase):
                 hot = [visible_record("A", 1000.0, cpu=10.0) for _ in range(4)]
                 for record in hot:
                     record["pilot"] = value
-                with self.assertRaises(device_layer.ProbeError) as raised:
-                    report.report_lines(records + hot)
+                with self.assertRaises(device_probes.ProbeError) as raised:
+                    battery_report.report_lines(records + hot)
                 self.assertIn("pilot", str(raised.exception))
 
     def test_a_non_boolean_pilot_flag_hides_no_b4_pair(self) -> None:
         failing = pairs(1, 9000.0, 1000.0, cpu=1.0)
         for record in failing:
             record["pilot"] = "false"
-        with self.assertRaises(device_layer.ProbeError) as raised:
-            report.report_lines(pairs(4, 1000.0, 1000.0, cpu=1.0) + failing)
+        with self.assertRaises(device_probes.ProbeError) as raised:
+            battery_report.report_lines(pairs(4, 1000.0, 1000.0, cpu=1.0) + failing)
         self.assertIn("pilot", str(raised.exception))
 
     def test_an_absent_pilot_flag_is_not_a_pilot(self) -> None:
@@ -723,7 +737,7 @@ class PilotFlagTest(unittest.TestCase):
         records = pairs(4, 1000.0, 1000.0, cpu=1.0)
         for record in records:
             del record["pilot"]
-        lines = [verdict.line for verdict in report.report_lines(records)]
+        lines = [verdict.line for verdict in battery_report.report_lines(records)]
         self.assertTrue(any(line.startswith("B4 vs stock point estimate") and "PASS" in line for line in lines))
         self.assertTrue(any(line.startswith("B5 visible CPU (mean)") and "PASS" in line for line in lines))
 
@@ -770,16 +784,16 @@ class CorruptRecordTest(unittest.TestCase):
             {"phase": "resources", "wake_locks": 0, "alarms": 0, "jobs": 0},
             {"phase": "resources", "wake_locks": "corrupt", "alarms": 0, "jobs": 0},
         ]
-        with self.assertRaises(device_layer.ProbeError) as raised:
-            report.report_lines(records)
+        with self.assertRaises(device_probes.ProbeError) as raised:
+            battery_report.report_lines(records)
         self.assertIn("wake_locks", str(raised.exception))
 
     def test_a_boolean_is_not_a_count(self) -> None:
         # `True` is an `int` in Python, so an unchecked reader takes `"wake_locks": true` for one
         # lock — or, worse here, for a value that sorts under the zero budget as `1` does not.
         records = [{"phase": "resources", "wake_locks": True, "alarms": 0, "jobs": 0}]
-        with self.assertRaises(device_layer.ProbeError):
-            report.report_lines(records)
+        with self.assertRaises(device_probes.ProbeError):
+            battery_report.report_lines(records)
 
     def test_a_negative_resource_count_is_refused(self) -> None:
         # A count of wake locks, alarms, or jobs cannot be negative, and one that is sorts under the
@@ -789,8 +803,8 @@ class CorruptRecordTest(unittest.TestCase):
             with self.subTest(key=key):
                 records = [{"phase": "resources", "wake_locks": 0, "alarms": 0, "jobs": 0}]
                 records[0][key] = -1
-                with self.assertRaises(device_layer.ProbeError) as raised:
-                    report.report_lines(records)
+                with self.assertRaises(device_probes.ProbeError) as raised:
+                    battery_report.report_lines(records)
                 self.assertIn(key, str(raised.exception))
 
     def test_a_non_finite_value_is_refused(self) -> None:
@@ -804,8 +818,8 @@ class CorruptRecordTest(unittest.TestCase):
                 "api_level": 36,
             }
         ]
-        with self.assertRaises(device_layer.ProbeError):
-            report.report_lines(records)
+        with self.assertRaises(device_probes.ProbeError):
+            battery_report.report_lines(records)
 
     def test_a_negative_hidden_cpu_is_refused(self) -> None:
         # The same case as the resource count, on B3: a percentage of one core cannot be negative, and
@@ -813,8 +827,8 @@ class CorruptRecordTest(unittest.TestCase):
         # `duration_seconds` to reach the reader at all, because a record dropped as short never
         # bounds its budget.
         records = [{"phase": "hidden", "cpu_pct": -1, "duration_seconds": 600.0, "apk_sha256": "a", "api_level": 36}]
-        with self.assertRaises(device_layer.ProbeError) as raised:
-            report.report_lines(records)
+        with self.assertRaises(device_probes.ProbeError) as raised:
+            battery_report.report_lines(records)
         self.assertIn("cpu_pct", str(raised.exception))
 
     def test_a_field_no_record_carries_is_still_not_bounded(self) -> None:
@@ -822,7 +836,7 @@ class CorruptRecordTest(unittest.TestCase):
         # has nothing to say about it, and a report over its records has to keep working. The
         # wake-lock row is the one this record measured, so it is the one that passes.
         records = [{"phase": "resources", "wake_locks": 0, "wake_lock_coverage": "all-types"}]
-        lines = [verdict.line for verdict in report.report_lines(records)]
+        lines = [verdict.line for verdict in battery_report.report_lines(records)]
         self.assertTrue(any(line.startswith("B2 wake locks: PASS") for line in lines))
         self.assertTrue(any(line.startswith("B2 alarms: NOT MEASURED") for line in lines))
         self.assertTrue(any(line.startswith("B2 jobs: NOT MEASURED") for line in lines))
@@ -832,14 +846,14 @@ class CorruptRecordTest(unittest.TestCase):
         # measured, so aggregating it produces a verdict whose subject is unnamed. The rule reads
         # each identity field, so one field is enough to refuse the set.
         records = [{"apk_sha256": None, "api_level": 36}, {"apk_sha256": None, "api_level": 36}]
-        with self.assertRaises(device_layer.ProbeError) as raised:
-            report.check_measurement_identity(records)
+        with self.assertRaises(device_probes.ProbeError) as raised:
+            battery_report.check_measurement_identity(records)
         self.assertIn("apk_sha256", str(raised.exception))
 
     def test_an_identity_field_no_record_carries_is_still_not_bounded(self) -> None:
         # The refusal above must not extend to an absent field, or the `resources` census — which
         # carries neither `power_source` nor `clk_tck` — would stop being reportable.
-        report.check_measurement_identity([{"api_level": 36}, {"api_level": 36}])
+        battery_report.check_measurement_identity([{"api_level": 36}, {"api_level": 36}])
 
     def test_a_non_scalar_identity_value_is_refused(self) -> None:
         # The identity check is a set per field, so the set is the comparison: a value it cannot hold
@@ -849,12 +863,12 @@ class CorruptRecordTest(unittest.TestCase):
         # traceback rather than the named refusal every other corrupt-record reader gives. Every
         # identity field is covered, not only the one the defect was reported against, because they
         # are all read by the same rule.
-        for identity_field in report.IDENTITY_FIELDS:
+        for identity_field in battery_report.IDENTITY_FIELDS:
             for value in ([], {}, set(), True):
                 with self.subTest(identity_field=identity_field, value=value):
                     records = [{"phase": "resources", identity_field: value}]
-                    with self.assertRaises(device_layer.ProbeError) as raised:
-                        report.check_measurement_identity(records)
+                    with self.assertRaises(device_probes.ProbeError) as raised:
+                        battery_report.check_measurement_identity(records)
                     self.assertIn(identity_field, str(raised.exception))
 
     def test_a_non_finite_identity_value_is_refused(self) -> None:
@@ -863,15 +877,15 @@ class CorruptRecordTest(unittest.TestCase):
         # written as one, so they are refused by the kind check — see below for the rule they fall
         # under. Left at the wrong kind, `inf` would compare equal to itself and a set of them would
         # be read as agreement, with `inf` printed as the identity the run was measured under.
-        for identity_field in report.IDENTITY_FIELDS:
+        for identity_field in battery_report.IDENTITY_FIELDS:
             for value in (float("nan"), float("inf"), float("-inf")):
                 with self.subTest(identity_field=identity_field, value=value):
                     records = [{"phase": "resources", identity_field: value}]
-                    with self.assertRaises(device_layer.ProbeError) as raised:
-                        report.check_measurement_identity(records)
+                    with self.assertRaises(device_probes.ProbeError) as raised:
+                        battery_report.check_measurement_identity(records)
                     self.assertIn(identity_field, str(raised.exception))
         # The refusal must not reach a finite number, which is what every state file carries.
-        report.check_measurement_identity([{"phase": "resources", "clk_tck": 100, "api_level": 36}])
+        battery_report.check_measurement_identity([{"phase": "resources", "clk_tck": 100, "api_level": 36}])
 
     def test_an_identity_value_of_the_wrong_kind_is_refused(self) -> None:
         # Each identity field is written as one kind of thing, and the report is fed a state file it
@@ -880,24 +894,24 @@ class CorruptRecordTest(unittest.TestCase):
         # `API levels: not-an-api-level` — which is the complaint the check already makes about a set
         # whose every value is `null`. The kinds are the writers' own, not the report's invention.
         integer_fields = ("api_level", "clk_tck")
-        text_fields = tuple(field for field in report.IDENTITY_FIELDS if field not in integer_fields)
-        self.assertEqual(set(report.IDENTITY_FIELDS), set(integer_fields) | set(text_fields))
+        text_fields = tuple(field for field in battery_report.IDENTITY_FIELDS if field not in integer_fields)
+        self.assertEqual(set(battery_report.IDENTITY_FIELDS), set(integer_fields) | set(text_fields))
         for identity_field in integer_fields:
             for value in ("100", "36", "not-an-api-level", 3.0):
                 with self.subTest(identity_field=identity_field, value=value):
                     records = [{"phase": "resources", identity_field: value}]
-                    with self.assertRaises(device_layer.ProbeError) as raised:
-                        report.check_measurement_identity(records)
+                    with self.assertRaises(device_probes.ProbeError) as raised:
+                        battery_report.check_measurement_identity(records)
                     self.assertIn("not the integer this field is written as", str(raised.exception))
         for identity_field in text_fields:
             for value in (7, 100, 0.5):
                 with self.subTest(identity_field=identity_field, value=value):
                     records = [{"phase": "resources", identity_field: value}]
-                    with self.assertRaises(device_layer.ProbeError) as raised:
-                        report.check_measurement_identity(records)
+                    with self.assertRaises(device_probes.ProbeError) as raised:
+                        battery_report.check_measurement_identity(records)
                     self.assertIn("not the text this field is written as", str(raised.exception))
         # And the table the rule reads is the writers' own, so it cannot drift away from them.
-        self.assertEqual(set(integer_fields), set(report.INTEGER_IDENTITY_FIELDS))
+        self.assertEqual(set(integer_fields), set(battery_report.INTEGER_IDENTITY_FIELDS))
 
     def test_the_kinds_the_phase_writers_use_are_still_accepted(self) -> None:
         # The rule has to admit what the phases actually write, or the report stops reading its own
@@ -913,16 +927,16 @@ class CorruptRecordTest(unittest.TestCase):
             "power_source": "simulated",
             "clk_tck": 100,
         }
-        report.check_measurement_identity([record, dict(record)])
-        self.assertIsNone(report.identity_value({"phase": "resources", "apk_sha256": None}, "apk_sha256"))
+        battery_report.check_measurement_identity([record, dict(record)])
+        self.assertIsNone(battery_report.identity_value({"phase": "resources", "apk_sha256": None}, "apk_sha256"))
 
     def test_a_non_list_restore_problems_is_refused(self) -> None:
         # A failed restore is the one thing on a record that says the device was left changed, and
         # reading a string where the phases write a list as "no problems" would let the report exit
         # zero over an explicitly recorded failure.
         records = [{"phase": "hidden", "restore_problems": "airplane mode was not restored"}]
-        with self.assertRaises(device_layer.ProbeError) as raised:
-            report.collect_restore_problems(records)
+        with self.assertRaises(device_probes.ProbeError) as raised:
+            battery_report.collect_restore_problems(records)
         self.assertIn("not a list", str(raised.exception))
 
     def test_an_explicit_null_restore_problems_is_refused(self) -> None:
@@ -932,10 +946,24 @@ class CorruptRecordTest(unittest.TestCase):
         # exit zero over restoration data it could not read. Absence is a membership test; a present
         # value has to be a list.
         records = [{"phase": "hidden", "restore_problems": None}]
-        with self.assertRaises(device_layer.ProbeError) as raised:
-            report.collect_restore_problems(records)
+        with self.assertRaises(device_probes.ProbeError) as raised:
+            battery_report.collect_restore_problems(records)
         self.assertIn("not a list", str(raised.exception))
 
     def test_an_absent_restore_problems_is_no_problem(self) -> None:
-        self.assertEqual([], report.collect_restore_problems([{"phase": "hidden"}]))
-        self.assertEqual(["x"], report.collect_restore_problems([{"phase": "hidden", "restore_problems": ["x"]}]))
+        self.assertEqual([], battery_report.collect_restore_problems([{"phase": "hidden"}]))
+        self.assertEqual(
+            ["x"], battery_report.collect_restore_problems([{"phase": "hidden", "restore_problems": ["x"]}])
+        )
+
+
+class MainReportForwardingTest(unittest.TestCase):
+    """The report wrapper forwards each parsed value as one `--option=value` token."""
+
+    def test_dash_prefixed_values_survive_forwarding(self) -> None:
+        # Two tokens (`--state`, `-reports`) make argparse read the second as an unknown option, so
+        # a dash-prefixed state directory or reason could not be forwarded at all.
+        argv = ["--state=-reports", "--black-unavailable=--reason"]
+        with patch.object(battery_cli, "main", return_value=0) as main:
+            self.assertEqual(battery_cli.main_report(argv), 0)
+        main.assert_called_once_with(["--state=-reports", "report", "--black-unavailable=--reason"])

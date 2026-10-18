@@ -127,8 +127,8 @@ cover `scripts/` only: the unit tests exercise parsing and decision helpers, and
 static checks connect to a device or establish Android lifecycle, rendering, battery, or CPU behavior.
 
 These development tools are never imported by the runtime harnesses (the
-[`scripts/check_host_tooling.py`](../scripts/check_host_tooling.py) AST audit verifies that the five
-runtime scripts import only the Python standard library and sibling runtime modules), and the Gradle
+[`scripts/check_host_tooling.py`](../scripts/check_host_tooling.py) AST audit verifies that the four
+wrappers and every module under `scripts/host/` import only the standard library and `host`), and the Gradle
 build and [`release.yml`](../.github/workflows/release.yml) do not read `pyproject.toml` or use `uv`:
 their verification scripts run system `python3` with only the standard library. Every rule the
 configuration relaxes is recorded below.
@@ -143,17 +143,25 @@ Ruff's width is declared, and it agrees with `.editorconfig`, the detekt config,
 stated above. Dropping it falls back to Ruff's default of 88 and reformats all maintained Python files away from
 the width the rest of the repository is written to.
 
-**No `__init__.py` in `scripts/`.** `scripts/` is a scripts directory, not a distribution package:
-it also holds `setup-android-sdk.sh` and `verify-apk.sh`, the harnesses are run as programs, and the
-test module imports them from the same directory that `unittest discover` and `pytest` (`pythonpath = ["scripts"]`) put on `sys.path`. A
-package would add no capability and would make one file importable as both `device_qualification`
-and `scripts.device_qualification` — two module objects with two sets of constants, so the suite's
-patch targets could silently address the wrong one. The `INP001` exception below records the
-mechanism.
+**No `__init__.py` in `scripts/`, runtime package under `scripts/host/`.** `scripts/` is a scripts
+directory, not a distribution package: it also holds `setup-android-sdk.sh` and `verify-apk.sh`, and
+`scripts/device_smoke.py`, `scripts/device_qualification.py`, `scripts/battery_protocol.py`, and
+`scripts/battery_report.py` are run directly as CLI programs. Under #147, the runtime implementation
+lives in the `scripts/host/` package (`host.contract`, `host.device.{probes,frame,trace}`,
+`host.battery.{stats,report,snapshot,probes,phases,cli}`, and
+`host.qualification.{checks,phases,smoke}`), while the top-level `scripts/*.py` entry points remain
+thin CLI wrappers. Both `python3 scripts/<wrapper>.py` and
+`python3 -I -m unittest discover -s scripts -p 'test_*.py'` place `scripts/` on `sys.path` natively;
+pytest does the same through `pythonpath = ["scripts"]` in `[tool.pytest.ini_options]`, so `host.*` is
+imported under one canonical module identity (`host.<subpackage>.<module>`) without `sys.path`
+mutation or an editable install, and `unittest.mock.patch` targets never split across duplicate
+module objects. The `INP001` exception below applies only to the top-level wrapper and test files in
+`scripts/`, while `INP001` stays enabled across `scripts/host/**/*.py`.
 
 The smoke and qualification suites are separate; synthetic RGBA fixtures live in
-`scripts/device_test_fixtures.py`. The qualification suite checks the duplicated constants
-only once both harnesses are present. None of this adds production shared-device helpers.
+`scripts/device_test_fixtures.py`. The qualification suite checks that shared constants live in a
+single canonical module across `host.contract`, `host.device.frame`, and `host.device.probes`. None
+of this adds production shared-device helpers.
 
 **Locked `[dependency-groups].dev`, stdlib-only runtime (#146 owner decision).** Runtime harnesses in
 `scripts/` remain strictly standard-library Python (`dependencies = []`, `[tool.uv] package = false`)
@@ -171,7 +179,7 @@ and `python3 -I -m unittest discover` both run the suite and `PT009`, `PT019`, a
 relaxed on those five files.
 
 **Parity and import checks in `scripts/check_host_tooling.py`.** The checker is development tooling,
-not one of the five runtime harnesses. Its pre-commit scanner strips comments with a quote-aware
+not one of the runtime harnesses. Its pre-commit scanner strips comments with a quote-aware
 scanner (`#` starts a comment only at column 0 or after whitespace, and a `#` inside a quoted scalar
 is preserved), associates each `rev:` with the sibling `repo:` at the same block-mapping column, and
 compares the complete revision string. That closes three silent passes: swapped ruff/ty revisions,
@@ -179,7 +187,8 @@ a version that only shares a prefix (`v0.16.100` for a `0.16.10` pin), and an ex
 appears only in a comment. The scanner is deliberately narrow and fails closed on flow-style
 `repos:`, inconsistent indentation, a revision before any repository, duplicate repositories or
 revisions, and a repository without a revision; `repo: local` is skipped because it legitimately has
-no revision. The same file runs the AST import audit. CI invokes it through `uv run --frozen` so
+no revision. The same file runs the AST import audit over the four CLI wrappers and every module
+under `scripts/host/`, allowing only the standard library and `host`. CI invokes it through `uv run --frozen` so
 `sys.stdlib_module_names` reflects the locked Python 3.12 environment rather than the host
 interpreter.
 
@@ -217,10 +226,12 @@ allowlist and one development-time tool.
 harness is renamed to `scripts/device_smoke.py` under #107 to avoid misleading pytest's default
 `*_test.py` collection pattern while preserving its standalone command-line entry point.
 
-**Consolidated ADB device layer.** #107 extracts `scripts/device_layer.py` with an object-oriented
-`AdbDevice` abstraction owning `serial` as constructor state, unifying the shared screencap decoders,
-dial geometry, and command primitives while keeping the distinct restore semantics between smoke and
-qualification harnesses explicit.
+**Consolidated ADB device layer and `host` package.** #107 extracted a shared `AdbDevice`
+abstraction owning `serial` as constructor state, and #147 splits the monolithic harness modules into
+focused subpackages under `scripts/host/`: `host.contract` (cross-language constants and dial/palette
+geometry), `host.device.{probes,frame,trace}` (ADB transport, screencap analysis, and `atrace`
+producer accounting), `host.battery.{stats,report,snapshot,probes,phases,cli}`, and
+`host.qualification.{checks,phases,smoke}`.
 
 ## Rule exceptions
 
@@ -247,13 +258,13 @@ qualification harnesses explicit.
 | detekt `TooManyFunctions` | `ClockEngine` keeps platform lifecycle, appearance/display callbacks, layout diagnostics and the tick loop together so rendering retains its lifecycle guards. Splitting solely for the function budget would separate those contracts. | Only `AstronomicalClocksWallpaperService.ClockEngine`, annotated in source |
 | Ruff `D203`, `D212` | Mutually exclusive pairs with the enabled rules: `D203` (one blank line before a class docstring) contradicts enabled `D211`, and `D212` (multi-line summary on the first line) conflicts with the `D213` layout used throughout `scripts/`. Exactly one rule of each pair can be enabled. | Ruff config, `scripts/` |
 | Ruff `D300` | Triple double quotes. The formatter preserves the one triple-single-quoted docstring (`scripts/test_device_qualification.py:576`) because converting it would introduce escapes, so enabling `D300` would flag formatter-stable output. | Ruff config, `scripts/` |
-| Ruff `COM812` | Trailing-comma missing. The formatter omits trailing commas in compact multi-line calls (`scripts/device_layer.py:101`), so enabling `COM812` makes Ruff emit its own formatter-conflict warning and 71 findings on formatter-stable code. | Ruff config, `scripts/` |
+| Ruff `COM812` | Trailing-comma missing. The formatter omits trailing commas in compact multi-line calls (`scripts/host/device/probes.py`), so enabling `COM812` makes Ruff emit its own formatter-conflict warning and findings on formatter-stable code. | Ruff config, `scripts/` |
 | Ruff formatter-conflict audit (2026-10-07) | The pinned toolchain was audited against Ruff's documented [formatter-conflict list](https://docs.astral.sh/ruff/formatter/#conflicting-lint-rules): every other listed rule (`W191`, `E111`, `E114`, `E117`, `D206`, `Q000`–`Q004`, `COM819`) was enabled in a temporary config and cleared both `ruff format --check` (no conflict warnings) and `ruff check` (0 findings), on the formatter-stable tree and on a formatting torture fixture (tabs, 2-space indentation, over-indentation, comment indentation, tab-indented docstring paragraph, trailing commas, mixed quotes, escaped quotes). ISC002 is not relaxed: its documented condition (`ISC001` disabled and `allow-multiline = false`) does not apply because `ISC001` stays enabled. The four rules above are the only Ruff ignores left; re-run the audit whenever the Ruff pin changes. | Ruff config, `scripts/` |
-| Ruff `T201` | Both harnesses and the device layer print output or diagnostic errors to stdout/stderr; there is no logger to convert to, and adding one would be a dependency. | `scripts/battery_protocol.py`, `scripts/battery_report.py`, `scripts/device_layer.py`, `scripts/device_qualification.py`, `scripts/device_smoke.py` |
-| Ruff `INP001` | `scripts/` deliberately has no `__init__.py`: the harnesses are run as scripts, and the test modules import them from the same directory, which `unittest discover` and `pytest` put on `sys.path`. | Every file in `scripts/` |
+| Ruff `T201` | The harnesses and the device layer print output or diagnostic errors to stdout/stderr; there is no logger to convert to, and adding one would be a dependency. | `scripts/host/**/*.py` |
+| Ruff `INP001` | `scripts/` deliberately has no `__init__.py` at its top level: the CLI wrappers are run as scripts, while `scripts/host/` is a proper package where `INP001` remains enabled. | Top-level wrapper, fixture, and test files in `scripts/*.py` |
 | Ruff `D102`, `D103` | Test methods and helpers in the suite are described by their names and their docstrings, not by a summary line restating the name. | `scripts/test_battery_protocol.py`, `scripts/test_battery_report.py`, `scripts/test_device_smoke.py`, `scripts/test_device_qualification.py`, `scripts/test_check_host_tooling.py` |
 | Ruff `PT009`, `PT019`, `PT027` | These flake8-pytest-style rules remain relaxed on the existing `unittest.TestCase` files until they are migrated under #148: `PT009` and `PT027` flag `assertEqual`/`assertRaises`, and `PT019` reads positionally injected `unittest.mock.patch` parameters as pytest fixtures. | `scripts/test_battery_protocol.py`, `scripts/test_battery_report.py`, `scripts/test_device_smoke.py`, `scripts/test_device_qualification.py`, `scripts/test_check_host_tooling.py` |
-| Ruff `S603` | `run_adb` is the one `subprocess.run` call in `device_layer.py`. It executes the developer's own `adb` from `PATH` with an argv built from literals and parsed device output, `check=True`, and no shell, so there is no untrusted input to validate. `S607` is not raised because the executable is not written at the call site. | `run_adb` in `scripts/device_layer.py`, annotated in source |
+| Ruff `S603` | `run_adb` executes the developer's own `adb` from `PATH` with an argv built from literals and parsed device output, `check=True`, and no shell, so there is no untrusted input to validate. `S607` is not raised because the executable is not written at the call site. The fresh-interpreter import-order test runs the same Python executable with a fixed script and a literal module name. | `run_adb` in `scripts/host/device/probes.py` and the import-order test, annotated in source |
 | Ruff `CPY001` (via `notice-rgx`) | The rule looks for a copyright line; this repository marks licensing with an SPDX identifier instead, and the Kotlin sources, the shell scripts, and the maintained Python files all use that form. | Ruff config, `scripts/` |
 
 Upstream defaults remain the starting point, including per-rule defaults for test documentation and
