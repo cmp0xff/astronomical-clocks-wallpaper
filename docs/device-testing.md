@@ -88,7 +88,7 @@ Renderer warnings fail the run. A logcat/ADB collection error is a failed check 
 and a failed report row; a successfully collected empty scan is inconclusive. Both outcomes retain
 the other measured rows and cleanup result. An empty scan establishes no successful rendering.
 Record device runs as standalone reports in `docs/testing/reports/` with source and APK attribution.
-Run host checks with `python3 -I -m unittest discover -s scripts -p 'test_*.py'`.
+Run host checks with `uv run --frozen pytest` (or `python3 -I -m unittest discover -s scripts -p 'test_*.py'`).
 
 This clock moves the civil hand and the astronomy together from one instant, so it shows that the
 marker follows the ephemeris but does not replace the independent ERFA comparison in the Sun and Moon

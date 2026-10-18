@@ -1,9 +1,38 @@
 # Host tooling. The Gradle build does not read this file, nothing here reaches the APK, and the
-# Android quality gate stays hermetic and independent of it.
+# Android quality gate and release workflow stay hermetic and independent of uv and the locked
+# development environment; their verification scripts use only the system python3 standard library.
 #
-# The scripts import nothing outside the standard library, so there is no dependency set to resolve
-# or lock and no lockfile here. CI runs Ruff, ty, and codespell from the exact versions pinned in
-# .github/workflows/build.yml, which are recorded in docs/dependencies.md.
+# Runtime harnesses in scripts/ remain standard-library only (`dependencies = []`,
+# `[tool.uv] package = false`). Host test and static-analysis tools are pinned in
+# `[dependency-groups].dev` and locked in `uv.lock`; CI and local workflows reproduce the
+# environment with `uv sync --frozen --group dev`. Provenance is recorded in docs/dependencies.md.
+
+[project]
+name = "astronomical-clocks-wallpaper-host"
+version = "0.0.0"
+description = "Host-only ADB verification and qualification harnesses for Astronomical Clock Wallpaper"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+dependencies = []
+
+[dependency-groups]
+dev = [
+  "codespell==2.4.3",
+  "pytest==9.1.1",
+  "pytest-cov==7.1.0",
+  "pytest-mock==3.17.0",
+  "pytest-subtests==0.15.0",
+  "ruff==0.16.10",
+  "ty==0.0.84",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["scripts"]
+python_files = ["test_*.py"]
+pythonpath = ["scripts"]
 
 [tool.ruff]
 line-length = 120
@@ -43,10 +72,10 @@ notice-rgx = "# SPDX-License-Identifier: Apache-2\\.0"
 "scripts/device_qualification.py" = ["T201", "INP001"]
 "scripts/device_smoke.py" = ["T201", "INP001"]
 # The split test modules are not packages either; their methods are described by their docstrings
-# and names rather than a per-method summary line. The PT rules are flake8-pytest-style, and this
-# suite is stdlib `unittest` by design, because host tooling may not add a dependency and pytest is
-# a dependency: PT009 and PT027 want unittest assertions replaced with bare `assert`/pytest.raises,
-# and PT019 reads the `unittest.mock.patch` parameters that are injected positionally as fixtures.
+# and names rather than a per-method summary line. The PT rules are flake8-pytest-style: while these
+# existing unittest.TestCase modules await the #148 migration, PT009 and PT027 flag
+# assertEqual/assertRaises and PT019 reads positionally injected unittest.mock.patch parameters as
+# pytest fixtures.
 "scripts/test_battery_protocol.py" = ["INP001", "D102", "D103", "PT009", "PT019", "PT027"]
 "scripts/test_battery_report.py" = ["INP001", "D102", "D103", "PT009", "PT019", "PT027"]
 "scripts/test_device_smoke.py" = ["INP001", "D102", "D103", "PT009", "PT019", "PT027"]
@@ -55,11 +84,16 @@ notice-rgx = "# SPDX-License-Identifier: Apache-2\\.0"
 # The shared test-only RGBA fixture helper is also a standalone scripts/ module.
 "scripts/device_test_fixtures.py" = ["INP001"]
 
+# The host tooling checker is dev tooling run as a script, and its tests follow the same unittest
+# conventions as the modules above until the #148 migration.
+"scripts/check_host_tooling.py" = ["INP001"]
+"scripts/test_check_host_tooling.py" = ["INP001", "D102", "D103", "PT009", "PT019", "PT027"]
+
 [tool.codespell]
 # Domain vocabulary and local identifiers that codespell's dictionary flags; see the 2026-10-07
-# scan in docs/development.md. `skip` keeps direct local runs off generated output.
+# scan in docs/development.md. `skip` keeps direct local runs off generated output and `.venv`.
 ignore-words-list = "precesses,Nome,positionOf,IST"
-skip = "build,app/build,.gradle,.kotlin,.ruff_cache"
+skip = "build,app/build,.gradle,.kotlin,.ruff_cache,.venv,.pytest_cache,htmlcov"
 
 [tool.ty.rules]
 # ty has no `strict` preset or `--strict` flag, so promoting every rule to an error is how strictness

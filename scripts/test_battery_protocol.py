@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from collections.abc import Callable
 from pathlib import Path
+from typing import Final
 from unittest.mock import MagicMock, patch
 
 import battery_protocol as subject
@@ -40,7 +41,7 @@ def tearDownModule() -> None:
 # A `dumpsys battery` dump in the shape the test device actually prints, decoys included. Three of
 # them carry a value under a similar name — `Max charging voltage`, `Capacity level`, and the
 # broadcast echoes of both `voltage` and `level` — which is what an unanchored pattern picks up.
-REALISTIC_BATTERY_DUMP = """\
+REALISTIC_BATTERY_DUMP: Final = """\
 Current Battery Service state:
   AC powered: false
   USB powered: true
@@ -65,17 +66,17 @@ Current Battery Service state:
   Capacity level: -1
 """
 
-SERVICE_COMPONENT = (
+SERVICE_COMPONENT: Final = (
     "ComponentInfo{io.github.godaniya.astronomicalclockswallpaper.debug/"
     "io.github.godaniya.astronomicalclockswallpaper.AstronomicalClocksWallpaperService}"
 )
-STOCK_COMPONENT = "ComponentInfo{com.android.systemui/com.android.systemui.wallpapers.ImageWallpaper}"
-BLACK_FRAME = (4, 4, bytes(4 * 4 * 4))
-WHITE_FRAME = (4, 4, bytes([0xFF] * (4 * 4 * 4)))
+STOCK_COMPONENT: Final = "ComponentInfo{com.android.systemui/com.android.systemui.wallpapers.ImageWallpaper}"
+BLACK_FRAME: Final = (4, 4, bytes(4 * 4 * 4))
+WHITE_FRAME: Final = (4, 4, bytes([0xFF] * (4 * 4 * 4)))
 
 # A `dumpsys jobscheduler` excerpt in the shape the test device prints it: the census line, one job
 # for the app under test, and jobs belonging to other packages that must not be counted.
-JOBSCHEDULER_DUMP = """\
+JOBSCHEDULER_DUMP: Final = """\
 Battery level: 94
 Registered 3 jobs:
   JOB #10123/42: abc1234 io.github.godaniya.astronomicalclockswallpaper.debug/\
@@ -109,7 +110,7 @@ def _window(*, cpu: float | None) -> subject.Window:
 # The four `powered:` fields `dumpsys battery` prints, all false: the device is on its own battery.
 # Every source is required, so a phase's power read is stubbed with the whole reading rather than one
 # line of it.
-ON_BATTERY_POWER_LINES = (
+ON_BATTERY_POWER_LINES: Final = (
     "AC powered: false",
     "USB powered: false",
     "Wireless powered: false",
@@ -119,12 +120,12 @@ ON_BATTERY_POWER_LINES = (
 
 # A digit run longer than `int()` will convert — it raises above about 4300 digits rather than
 # building the integer — which is what an unbounded `\d+` in a dump parser hands it.
-OVERSIZED_DIGITS = "9" * 5000
+OVERSIZED_DIGITS: Final = "9" * 5000
 
 
 # The same four fields with a charger on USB: the state that puts a window under the `cmd battery
 # unplug` override rather than leaving it on the device's own gauge.
-ON_CHARGER_POWER_LINES = (
+ON_CHARGER_POWER_LINES: Final = (
     "AC powered: false",
     "USB powered: true",
     "Wireless powered: false",
@@ -290,7 +291,7 @@ class ClkTckProbeTest(unittest.TestCase):
 
 # A `dumpsys power` excerpt in the shape the device prints it: the wake-lock census, one lock held by
 # the app under test, and one held by another UID that must not be counted.
-POWER_DUMP = """\
+POWER_DUMP: Final = """\
 POWER MANAGER (dumpsys power)
 
 Power Manager Service:
@@ -307,7 +308,7 @@ Display Power: state=ON
 # entry is a `<TYPE> #<n>: Alarm{...}` line whose last token is the package. The third entry is a
 # package whose name has this app's as a prefix, which is what an install of a `…debug2` build beside
 # this one puts in the list: it must not be counted as this app's alarm.
-ALARM_DUMP = """\
+ALARM_DUMP: Final = """\
 Current Alarm Manager state:
   Settings:
     version=2
@@ -324,7 +325,7 @@ io.github.godaniya.astronomicalclockswallpaper.debug2}
 # A `dumpsys power` whose only lock is of a type other than `PARTIAL_WAKE_LOCK`, which is the state
 # the test device was actually in: `Wake Locks: size=1` holding a `DOZE_WAKE_LOCK`. The census counts
 # that lock, so a probe that enumerates partial locks alone can never reconcile with it.
-POWER_DUMP_DOZE_LOCK = """\
+POWER_DUMP_DOZE_LOCK: Final = """\
 POWER MANAGER (dumpsys power)
 
 Power Manager Service:
@@ -340,7 +341,7 @@ Display Power: state=OFF
 # by indented continuation lines, the block is closed by a later section at the census's own indent,
 # and below that section there is a *second* censused list whose entries look exactly like the first
 # list's. The past-due entry names this app; nothing pending does, so the probe must report zero.
-ALARM_DUMP_WITH_SECTIONS = """\
+ALARM_DUMP_WITH_SECTIONS: Final = """\
 Current Alarm Manager state:
   Settings:
     version=2
@@ -363,7 +364,7 @@ io.github.godaniya.astronomicalclockswallpaper.debug}
 # not match. WorkManager keeps its jobs under `androidx.work.systemjobscheduler` and the sync adapters
 # under `SyncManager`, so an app that scheduled a worker had that worker's line dropped from the count
 # and "the app holds no jobs" could come from a dump that listed one.
-JOBSCHEDULER_DUMP_NAMESPACED = """\
+JOBSCHEDULER_DUMP_NAMESPACED: Final = """\
 Battery level: 94
 Registered 3 jobs:
   JOB #1000/29: 6a6e122 com.samsung.android.statsd/androidx.work.impl.background.systemjob.SystemJobService
@@ -377,7 +378,7 @@ androidx.work.impl.background.systemjob.SystemJobService
 # entry predicate, so it counts towards the census, and it cannot be attributed to any package: a
 # probe that only counted what it could parse would report the app's own jobs from a dump in which a
 # job it could not place had been silently dropped.
-JOBSCHEDULER_DUMP_UNATTRIBUTABLE = """\
+JOBSCHEDULER_DUMP_UNATTRIBUTABLE: Final = """\
 Battery level: 94
 Registered 2 jobs:
   JOB #1000/29: 6a6e122 com.samsung.android.statsd/androidx.work.impl.background.systemjob.SystemJobService
@@ -745,9 +746,9 @@ class PowerSourceProbeTest(unittest.TestCase):
         # remains is false, so this device is discharging": the reading is incomplete, and the arm the
         # window is recorded against depends on it.
         complete = ["AC powered: false", "USB powered: false", "Wireless powered: false", "Dock powered: false"]
-        for dropped in range(len(complete)):
-            partial = [line for index, line in enumerate(complete) if index != dropped]
-            with self.subTest(dropped=complete[dropped]), self.assertRaises(device_layer.ProbeError):
+        for dropped, dropped_line in enumerate(complete):
+            partial = complete[:dropped] + complete[dropped + 1 :]
+            with self.subTest(dropped=dropped_line), self.assertRaises(device_layer.ProbeError):
                 subject.power_lines_show_battery(partial)
 
     def test_a_truncated_battery_dump_is_refused_before_the_mode_is_chosen(self) -> None:

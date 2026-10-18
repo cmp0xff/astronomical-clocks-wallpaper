@@ -18,6 +18,7 @@ import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from itertools import pairwise
 from typing import Final
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -692,39 +693,36 @@ def rollover_instants(zone: ZoneInfo) -> list[str]:
 
 def expected_rollover_angles_deg(zone: ZoneInfo, instants: list[str]) -> list[float]:
     """Return each UTC instant's absolute civil-hand angle in the zone, clockwise from the top."""
-    angles: list[float] = []
-    for instant in instants:
-        local = datetime.fromisoformat(instant).astimezone(zone)
-        angles.append(device_layer.civil_hand_angle_deg(local.hour * 3600 + local.minute * 60 + local.second))
-    return angles
+    return [
+        device_layer.civil_hand_angle_deg(local.hour * 3600 + local.minute * 60 + local.second)
+        for local in (datetime.fromisoformat(instant).astimezone(zone) for instant in instants)
+    ]
 
 
 def evaluate_rollover(
-    zone: ZoneInfo, instants: list[str], angles: list[float], zone_id: str
+    zone: ZoneInfo, instants: list[str], angles: Sequence[float], zone_id: str
 ) -> tuple[list[float], list[float], list[str]]:
     """Return (expected absolute angles, circular residuals, problems) for one civil-midnight sweep."""
     expected = expected_rollover_angles_deg(zone, instants)
     residuals = [
         device_layer.signed_circular_difference_deg(angle, want) for angle, want in zip(angles, expected, strict=True)
     ]
-    problems: list[str] = []
-    for instant, residual in zip(instants, residuals, strict=True):
+    problems = [
         # Compare the raw residual: rounding to ANGLE_REPORT_DECIMALS first would accept a residual
-        # just above the boundary (0.5004° rounds to 0.500°), widening the tolerance beyond its stated
-        # 0.5°. The test stays strict, so a residual of exactly the tolerance passes.
-        if abs(residual) > device_layer.ANGLE_TOLERANCE_DEG:
+        # just above the boundary (0.5004° rounds to 0.500°), widening the stated 0.5° tolerance.
+        f"Midnight rollover at {instant} (zone {zone_id}) hand angle residual {residual:+.3f}° "
+        f"exceeds the {device_layer.ANGLE_TOLERANCE_DEG}° tolerance"
+        for instant, residual in zip(instants, residuals, strict=True)
+        if abs(residual) > device_layer.ANGLE_TOLERANCE_DEG
+    ]
+    for instant, (previous_expected, expected_angle), (previous_angle, angle) in zip(
+        instants[1:], pairwise(expected), pairwise(angles), strict=True
+    ):
+        # Only gaps wider than the probe jitter can order adjacent samples; the 20-second pair is a bracket.
+        if expected_angle - previous_expected > device_layer.ANGLE_TOLERANCE_DEG and angle < previous_angle:
             problems.append(
-                f"Midnight rollover at {instant} (zone {zone_id}) hand angle residual {residual:+.3f}° "
-                f"exceeds the {device_layer.ANGLE_TOLERANCE_DEG}° tolerance"
-            )
-    for index in range(1, len(angles)):
-        # Only gaps wider than the probe jitter can order adjacent samples: the 20-second pair sits
-        # 0.083° apart, below the tolerance, so it is checked as a bracket, not ordered against itself.
-        discriminable = expected[index] - expected[index - 1] > device_layer.ANGLE_TOLERANCE_DEG
-        if discriminable and angles[index] < angles[index - 1]:
-            problems.append(
-                f"Midnight rollover did not advance monotonically at {instants[index]} "
-                f"({angles[index - 1]:.3f}° -> {angles[index]:.3f}°) in zone {zone_id}"
+                f"Midnight rollover did not advance monotonically at {instant} "
+                f"({previous_angle:.3f}° -> {angle:.3f}°) in zone {zone_id}"
             )
     return expected, residuals, problems
 
@@ -948,7 +946,7 @@ def read_device_baseline(requested_serial: str | None) -> DeviceBaseline:
     )
 
 
-def print_check_report(results: list[tuple[str, str]]) -> None:
+def print_check_report(results: Sequence[tuple[str, str]]) -> None:
     """Print the results table a device report is assembled from."""
     print("\n=======================================================")
     print("              PHYSICAL-DEVICE CHECK REPORT             ")
@@ -961,7 +959,7 @@ def print_check_report(results: list[tuple[str, str]]) -> None:
     print("=======================================================\n")
 
 
-def finish_run(results: list[tuple[str, str]], failures: list[str], *, log_scan_inconclusive: bool) -> None:
+def finish_run(results: Sequence[tuple[str, str]], failures: list[str], *, log_scan_inconclusive: bool) -> None:
     """Print the report and exit non-zero when any check failed."""
     print_check_report(results)
     if failures:

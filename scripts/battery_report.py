@@ -358,14 +358,11 @@ def numeric_values(
     through rather than decided here, because it is a property of the field and not of the phase: B2's
     counts and B3's percentage ask for it, and B6's signed growth does not.
     """
-    values: list[float] = []
-    for record in records:
-        if record.get("phase") != phase:
-            continue
-        if key not in record:
-            continue
-        values.append(finite_number(record[key], what=f"a {phase} record's `{key}`", non_negative=non_negative))
-    return values
+    return [
+        finite_number(record[key], what=f"a {phase} record's `{key}`", non_negative=non_negative)
+        for record in records
+        if record.get("phase") == phase and key in record
+    ]
 
 
 def wake_lock_values(records: Sequence[Mapping[str, object]]) -> list[float]:
@@ -438,7 +435,7 @@ def alternation_pairs(
     if len(sequence) % 2 != 0 or arms != expected:
         detail = f"the visible windows are not an A/B alternation: recorded arms {arms}"
         raise device_layer.ProbeError(detail)
-    return [(sequence[index], sequence[index + 1]) for index in range(0, len(sequence), 2)]
+    return list(zip(sequence[::2], sequence[1::2], strict=True))
 
 
 def window_rate(record: Mapping[str, object]) -> float:
@@ -829,11 +826,13 @@ def b4_baseline_verdicts(
                 f"{statistics.standard_deviation / statistics.mean_baseline * 100:.3f}% of the baseline)",
             )
         )
-        for label, value in (
-            ("point estimate", statistics.relative_delta_pct),
-            ("CI upper bound", statistics.ci_95_upper_pct),
-        ):
-            verdicts.append(check_budget(f"B4 vs {baseline} {label}", value, FINAL_MAX_VISIBLE_DELTA_PCT, "%"))
+        verdicts.extend(
+            check_budget(f"B4 vs {baseline} {label}", value, FINAL_MAX_VISIBLE_DELTA_PCT, "%")
+            for label, value in (
+                ("point estimate", statistics.relative_delta_pct),
+                ("CI upper bound", statistics.ci_95_upper_pct),
+            )
+        )
     return verdicts
 
 

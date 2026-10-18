@@ -1,6 +1,6 @@
-# Local convenience hooks; CI stays authoritative and runs the same pinned tools directly.
-# The Ruff hooks mirror CI's `scripts/` scope; ty's `--isolated` keeps uv from creating a
-# `uv.lock`/`.venv` here (the scripts have no dependencies to lock).
+# Local convenience hooks; CI stays authoritative and runs the same pinned tools from uv.lock.
+# Hook revisions must match `[dependency-groups].dev` in pyproject.toml (checked in CI); ty's
+# `--isolated` keeps pre-commit from mutating `.venv` or `uv.lock` during hook runs.
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.16.10

@@ -14,7 +14,8 @@ import subprocess
 import sys
 import time
 import xml.etree.ElementTree as ET
-from collections.abc import Iterable, Iterator, Sequence
+from collections import Counter
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Final, Self
 from uuid import uuid4
@@ -292,12 +293,7 @@ def run_adb(args: Sequence[str], serial: str | None = None, timeout: int = ADB_T
 def list_devices() -> dict[str, str]:
     """Map every serial `adb devices` reports to its state, dropping the header line."""
     output = run_adb(["devices"]).decode("utf-8")
-    devices: dict[str, str] = {}
-    for line in output.splitlines()[1:]:
-        parts = line.split()
-        if len(parts) >= MIN_SPLIT_FIELDS:
-            devices[parts[0]] = parts[1]
-    return devices
+    return {parts[0]: parts[1] for line in output.splitlines()[1:] if len(parts := line.split()) >= MIN_SPLIT_FIELDS}
 
 
 def select_target_serial(requested: str | None) -> str:
@@ -428,11 +424,10 @@ def rim_probe_points(width: int, height: int, layout: DialLayout | None = None) 
 
 def modal_pixel_rgb(width: int, pixels: bytes, points: Iterable[tuple[int, int]]) -> tuple[int, int, int] | None:
     """Return the RGB triple occurring most often among points, or None when there are none."""
-    counts: dict[tuple[int, int, int], int] = {}
-    for x, y in points:
-        offset = (y * width + x) * PIXEL_STRIDE
-        rgb = (pixels[offset], pixels[offset + 1], pixels[offset + 2])
-        counts[rgb] = counts.get(rgb, 0) + 1
+    counts = Counter(
+        (pixels[offset], pixels[offset + 1], pixels[offset + 2])
+        for offset in ((y * width + x) * PIXEL_STRIDE for x, y in points)
+    )
     if not counts:
         return None
     return max(counts, key=counts.__getitem__)
@@ -908,14 +903,13 @@ class ProducerWindow:
 
 def parse_producer_events(trace_text: str, pid: int) -> dict[str, int]:
     """Count one process's producer buffer events in an `atrace` text trace."""
-    counts: dict[str, int] = {}
-    for match in TRACE_MARK_PATTERN.finditer(trace_text):
-        if not captured_text(match, 1).isdigit() or int(captured_text(match, 1)) != pid:
-            continue
-        name = captured_text(match, 2)
-        if name in PRODUCER_TRACKED_EVENTS:
-            counts[name] = counts.get(name, 0) + 1
-    return counts
+    return Counter(
+        name
+        for match in TRACE_MARK_PATTERN.finditer(trace_text)
+        if (captured_pid := captured_text(match, 1)).isdigit()
+        and int(captured_pid) == pid
+        and (name := captured_text(match, 2)) in PRODUCER_TRACKED_EVENTS
+    )
 
 
 def capture_producer_window(
@@ -1038,7 +1032,7 @@ def is_saved_coordinate_in_range(value: object, limit: float) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and -limit <= value <= limit
 
 
-def saved_record_zone_id(record: dict[str, object]) -> str | None:
+def saved_record_zone_id(record: Mapping[str, object]) -> str | None:
     """Return a record's stored zoneId when LocationStore.load() accepts the record, else None."""
     # json.loads rejects trailing data after the object, as Kotlin's parseRecord does.
     version = record.get("version")

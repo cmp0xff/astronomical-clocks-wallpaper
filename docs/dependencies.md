@@ -26,13 +26,24 @@ and non-Gradle inputs; the catalog does not override Gradle's normal conflict re
 | Robolectric 4.17 | [Robolectric](https://github.com/robolectric/robolectric/tree/robolectric-4.17) | MIT; tests only |
 | Hamcrest (JUnit transitive dependency) | [Hamcrest](https://github.com/hamcrest/JavaHamcrest) | BSD-3-Clause; tests only |
 | Eclipse Temurin 21.0.12.1+1 | [Adoptium](https://github.com/adoptium/temurin21-binaries/releases/tag/jdk-21.0.12.1%2B1); macOS via the [`temurin@21` Homebrew cask](https://formulae.brew.sh/cask/temurin%4021) | GPL-2.0 with Classpath Exception; build/test JDK only |
-| uv 0.12.23 | [uv](https://github.com/astral-sh/uv/tree/0.12.23) | Apache-2.0; host tooling only, runs the pinned ty check in CI and the documented local commands; not bundled |
-| Ruff 0.16.10 | [Ruff](https://github.com/astral-sh/ruff/tree/0.16.10) | MIT; host Python linting and formatting only, through its official GitHub action in CI |
-| ty 0.0.84 | [ty](https://github.com/astral-sh/ty/tree/0.0.84) | MIT; host Python type checking only |
+| uv 0.13.1 | [uv](https://github.com/astral-sh/uv/tree/0.13.1) | Apache-2.0; host tooling only, syncs `uv.lock` and runs the pinned host checks in CI and locally; not bundled |
+| Ruff 0.16.10 | [Ruff](https://github.com/astral-sh/ruff/tree/0.16.10) | MIT; host Python linting and formatting only (`[dependency-groups].dev` in `uv.lock`) |
+| ty 0.0.84 | [ty](https://github.com/astral-sh/ty/tree/0.0.84) | MIT; host Python type checking only (`[dependency-groups].dev` in `uv.lock`) |
+| codespell 2.4.3 | [codespell](https://github.com/codespell-project/codespell/tree/v2.4.3) | GPL-2.0; development-time spell checking of repository text files only (`[dependency-groups].dev` in `uv.lock` and local pre-commit hook); not bundled, linked, or distributed |
+| pytest 9.1.1 | [pytest](https://github.com/pytest-dev/pytest/tree/9.1.1) | MIT; host Python test runner only (`[dependency-groups].dev` in `uv.lock`) |
+| pytest-cov 7.1.0 | [pytest-cov](https://github.com/pytest-dev/pytest-cov/tree/v7.1.0) | MIT; host Python coverage plugin for migration-parity evidence (`[dependency-groups].dev` in `uv.lock`) |
+| pytest-mock 3.17.0 | [pytest-mock](https://github.com/pytest-dev/pytest-mock/tree/v3.17.0) | MIT; host Python mock fixture plugin (`[dependency-groups].dev` in `uv.lock`) |
+| pytest-subtests 0.15.0 | [pytest-subtests](https://github.com/pytest-dev/pytest-subtests/tree/0.15.0) | MIT; host Python subtest plugin (`[dependency-groups].dev` in `uv.lock`) |
+| coverage 7.16.2 (transitive) | [coveragepy](https://github.com/coveragepy/coveragepy/tree/7.16.2) | Apache-2.0; host test coverage engine, transitive via `pytest-cov` in `uv.lock` |
+| pluggy 1.7.0 (transitive) | [pluggy](https://github.com/pytest-dev/pluggy/tree/1.7.0) | MIT; plugin manager, transitive via `pytest` and `pytest-cov` in `uv.lock` |
+| iniconfig 2.3.1 (transitive) | [iniconfig](https://github.com/pytest-dev/iniconfig/tree/v2.3.1) | MIT; configuration parser, transitive via `pytest` in `uv.lock` |
+| packaging 26.3 (transitive) | [packaging](https://github.com/pypa/packaging/tree/26.3) | Apache-2.0 OR BSD-2-Clause; version/marker handling, transitive via `pytest` in `uv.lock` |
+| pygments 2.21.0 (transitive) | [pygments](https://github.com/pygments/pygments/tree/2.21.0) | BSD-2-Clause; traceback syntax highlighting, transitive via `pytest` in `uv.lock` |
+| attrs 26.1.0 (transitive) | [attrs](https://github.com/python-attrs/attrs/tree/26.1.0) | MIT; class helpers, transitive via `pytest-subtests` in `uv.lock` |
+| colorama 0.4.6 (transitive, Windows marker) | [colorama](https://github.com/tartley/colorama/tree/0.4.6) | BSD-3-Clause; conditional `sys_platform == 'win32'` terminal color dependency of `pytest` recorded in universal `uv.lock` (not installed on Linux or macOS) |
 | pre-commit 4.6.2 | [pre-commit](https://github.com/pre-commit/pre-commit/tree/v4.6.2) | MIT; local hook runner only, tested with 4.6.2 and not pinned by the repository (CI does not run it) |
-| ruff-pre-commit v0.16.10 | [ruff-pre-commit](https://github.com/astral-sh/ruff-pre-commit/tree/v0.16.10) | MIT; local pre-commit hooks pinning the same Ruff version as CI |
-| ty-pre-commit v0.0.84 | [ty-pre-commit](https://github.com/astral-sh/ty-pre-commit/tree/v0.0.84) | MIT; local pre-commit hook pinning the same ty version as CI |
-| codespell 2.4.3 | [codespell](https://github.com/codespell-project/codespell/tree/v2.4.3) | GPL-2.0; development-time spell checking of repository text files only, in CI through the pinned `uv` runner and locally through its pre-commit hook; not bundled, linked, or distributed |
+| ruff-pre-commit v0.16.10 | [ruff-pre-commit](https://github.com/astral-sh/ruff-pre-commit/tree/v0.16.10) | MIT; local pre-commit hooks pinning the same Ruff version as `uv.lock` |
+| ty-pre-commit v0.0.84 | [ty-pre-commit](https://github.com/astral-sh/ty-pre-commit/tree/v0.0.84) | MIT; local pre-commit hook pinning the same ty version as `uv.lock` |
 
 The tzdb anchor data was diffed against the published releases rather than taken on trust. Every one
 of the 418 zones in release `2026e`'s `zone.tab` is transcribed into `TimeZoneLookup.kt` and no
@@ -48,15 +59,18 @@ absent from tzdata `2017a`'s zone definitions, while every identifier `TimeZoneL
 maps them to is present there. That map and the 2017a check are what keep a device with an old tzdb
 from failing to save; `TimeZoneLookupTest` exercises the lookup with that old tzdb simulated.
 
-The host-tooling entries are the only non-Gradle inputs. They analyse or scan the repository on a
-developer machine, and Ruff, ty, and codespell also run on the CI runner; none of them is imported by
-the scripts, packaged into the APK, or read by the Gradle build, and there is no lockfile because the
-scripts depend on nothing outside the standard library. codespell is GPL-2.0 and used as a
-development-time tool only: it is invoked in CI and through the local hook, but never bundled,
+The host-tooling entries are the only non-Gradle inputs. The runtime ADB harnesses in `scripts/`
+remain standard-library Python (`dependencies = []`, `[tool.uv] package = false`): none of the
+development tools is imported by the runtime harnesses, packaged into the APK, or read by the Gradle
+build or release workflow. The development-only tools (`ruff`, `ty`, `codespell`, `pytest`,
+`pytest-cov`, `pytest-mock`, `pytest-subtests`, and their transitive dependencies) are declared in
+`[dependency-groups].dev` in [`pyproject.toml`](../pyproject.toml) and locked with SHA-256 digests in
+[`uv.lock`](../uv.lock), reproduced via `uv sync --frozen --group dev`. codespell is GPL-2.0 and used
+as a development-time tool only: it is invoked in CI and through the local hook, but never bundled,
 linked, or distributed, so its license does not reach any artifact.
-[`pyproject.toml`](../pyproject.toml) carries their configuration,
+[`pyproject.toml`](../pyproject.toml) carries the tool configuration,
 [`.pre-commit-config.yaml`](../.pre-commit-config.yaml) the local hooks, and
-[development.md](development.md#checking-policy) the commands.
+[development.md](development.md#checking-policy) the commands and recorded policy decisions.
 
 Resolved dependency graphs can be inspected with `./gradlew :app:dependencies` and
 `./gradlew :app:dependencyInsight --configuration debugRuntimeClasspath --dependency kotlin-stdlib`.
