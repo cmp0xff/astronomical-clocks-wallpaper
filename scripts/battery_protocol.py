@@ -316,6 +316,7 @@ class DeviceStateSnapshot:
         airplane_mode: int | None,
         stay_on: int | None,
         screen_on: bool | None,
+        sleep: Callable[[float], None] | None = None,
     ) -> None:
         """Hold the values read before a phase changed anything."""
         self.device = device
@@ -325,9 +326,15 @@ class DeviceStateSnapshot:
         self.airplane_mode = airplane_mode
         self.stay_on = stay_on
         self.screen_on = screen_on
+        self._sleep = sleep
 
     @classmethod
-    def capture(cls, device: device_layer.AdbDevice) -> DeviceStateSnapshot:
+    def capture(
+        cls,
+        device: device_layer.AdbDevice,
+        *,
+        sleep: Callable[[float], None] | None = None,
+    ) -> DeviceStateSnapshot:
         """
         Read the state a measurement phase pins, including the display's own power state.
 
@@ -347,6 +354,7 @@ class DeviceStateSnapshot:
             airplane_mode=require_int_setting(device, "global", "airplane_mode_on"),
             stay_on=read_unsettable_int_setting(device, "global", "stay_on_while_plugged_in"),
             screen_on=device.read_screen_on(),
+            sleep=sleep,
         )
 
     def pin(self) -> None:
@@ -448,7 +456,8 @@ class DeviceStateSnapshot:
         """Run one restore step and verify it, converting a failure into a reported problem."""
         try:
             self.device.run_adb(command)
-            time.sleep(RESTORE_SETTLE_SECONDS)
+            sleep_fn = self._sleep if self._sleep is not None else time.sleep
+            sleep_fn(RESTORE_SETTLE_SECONDS)
         except (subprocess.SubprocessError, OSError) as error:
             return [f"{description} restore failed: {device_layer.error_detail(error)}"]
         # The readback is guarded too: an uncaught transport failure here used to escape the whole
@@ -1278,10 +1287,12 @@ class Recorder:
 def build_record(device: device_layer.AdbDevice, phase: str, duration_seconds: float, **values: object) -> Record:
     """Assemble one record, stamping the device and build identity every report row has to carry."""
     api_level = parse_api_level(device.run_adb(["shell", "getprop", "ro.build.version.sdk"]).decode(errors="replace"))
+    revision_val = values.pop("revision", None)
+    revision = str(revision_val) if revision_val is not None else read_source_revision()
     return Record(
         phase=phase,
         recorded_at=dt.datetime.now(dt.UTC).isoformat(timespec="seconds"),
-        revision=read_source_revision(),
+        revision=revision,
         apk_sha256=read_apk_sha256(device),
         api_level=api_level,
         duration_seconds=duration_seconds,
@@ -1507,7 +1518,11 @@ def power_source_problem(on_battery: Sequence[bool]) -> str | None:
     return None
 
 
-def wait_home_in_front(device: device_layer.AdbDevice) -> bool | None:
+def wait_home_in_front(
+    device: device_layer.AdbDevice,
+    *,
+    sleep: Callable[[float], None] | None = None,
+) -> bool | None:
     """
     Read back that the home screen is in front, bounded the way the service-log confirmations are.
 
@@ -1522,6 +1537,7 @@ def wait_home_in_front(device: device_layer.AdbDevice) -> bool | None:
     read" is not "the home screen is there".
     """
     saw_not_in_front = False
+    sleep_fn = sleep if sleep is not None else time.sleep
     for attempt in range(HOME_CONFIRM_ATTEMPTS):
         reading = device.read_home_in_front()
         if reading is True:
@@ -1531,11 +1547,15 @@ def wait_home_in_front(device: device_layer.AdbDevice) -> bool | None:
         # unreadable dumps is not reported as "another app is in front", and vice versa.
         saw_not_in_front = saw_not_in_front or reading is False
         if attempt + 1 < HOME_CONFIRM_ATTEMPTS:
-            time.sleep(HOME_CONFIRM_INTERVAL_SECONDS)
+            sleep_fn(HOME_CONFIRM_INTERVAL_SECONDS)
     return False if saw_not_in_front else None
 
 
-def ensure_visible_home(device: device_layer.AdbDevice) -> None:
+def ensure_visible_home(
+    device: device_layer.AdbDevice,
+    *,
+    sleep: Callable[[float], None] | None = None,
+) -> None:
     """
     Put the device on the home screen with the display on, or refuse the window.
 
@@ -1603,7 +1623,7 @@ def ensure_visible_home(device: device_layer.AdbDevice) -> None:
     # neither of them names the surface: KEYCODE_HOME is an input event the system may drop, and a
     # dropped one leaves the previous app in front with the bound home component still matching the
     # requested arm. The readback is three-valued for the same reason the keyguard's is.
-    in_front = wait_home_in_front(device)
+    in_front = wait_home_in_front(device, sleep=sleep)
     if in_front is False:
         detail = (
             f"another package is in front after KEYCODE_HOME: the device reports "

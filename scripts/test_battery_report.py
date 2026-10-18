@@ -11,11 +11,25 @@ would carry it, which is what lets a criterion be tested without running one.
 import contextlib
 import io
 import unittest
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
 import battery_report as report
 import device_layer
+from device_test_fixtures import install_no_real_sleep_guard
+
+_module_cleanups: list[Callable[[], None]] = []
+
+
+def setUpModule() -> None:
+    """Enforce that host tests run without real wall-clock sleeps."""
+    _module_cleanups.append(install_no_real_sleep_guard())
+
+
+def tearDownModule() -> None:
+    """Restore time.sleep after the test module finishes."""
+    while _module_cleanups:
+        _module_cleanups.pop()()
 
 
 def visible_record(  # noqa: PLR0913 - the arm, its readings, and the window shape are all its inputs
