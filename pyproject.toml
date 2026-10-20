@@ -71,18 +71,22 @@ notice-rgx = "# SPDX-License-Identifier: Apache-2\\.0"
 "scripts/battery_report.py" = ["INP001"]
 "scripts/device_qualification.py" = ["INP001"]
 "scripts/device_smoke.py" = ["INP001"]
-# The split test modules are not packages either; their methods are described by their docstrings
-# and names rather than a per-method summary line. The PT rules are flake8-pytest-style: while these
-# existing unittest.TestCase modules await the #148 migration, PT009 and PT027 flag
-# assertEqual/assertRaises and PT019 reads positionally injected unittest.mock.patch parameters as
-# pytest fixtures.
+# Every host test module uses pytest now or after H4b/H4c, so bare `assert` (`S101`) is allowed
+# repository-wide for `scripts/test_*.py`. The split test modules are not packages either; their
+# methods are described by their docstrings and names rather than a per-method summary line. The PT
+# rules are flake8-pytest-style: while the remaining unittest.TestCase modules await the #148
+# migration, PT009 and PT027 flag assertEqual/assertRaises and PT019 reads positionally injected
+# unittest.mock.patch parameters as pytest fixtures.
+"scripts/test_*.py" = ["S101"]
 "scripts/test_battery_protocol.py" = ["INP001", "D102", "D103", "PT009", "PT019", "PT027"]
-"scripts/test_battery_report.py" = ["INP001", "D102", "D103", "PT009", "PT019", "PT027"]
+"scripts/test_battery_report.py" = ["INP001", "D103"]
 "scripts/test_device_smoke.py" = ["INP001", "D102", "D103", "PT009", "PT019", "PT027"]
 "scripts/test_device_qualification.py" = ["INP001", "D102", "D103", "PT009", "PT019", "PT027"]
 "scripts/test_host_contract.py" = ["INP001", "D102", "D103", "PT009", "PT019", "PT027"]
 
-# The shared test-only RGBA fixture helper is also a standalone scripts/ module.
+# The shared pytest configuration and test-only RGBA fixture helpers are also standalone scripts/
+# modules.
+"scripts/conftest.py" = ["INP001"]
 "scripts/device_test_fixtures.py" = ["INP001"]
 
 # The host tooling checker is dev tooling run as a script, and its tests follow the same unittest
@@ -107,6 +111,6 @@ error-on-warning = true
 [tool.ty.environment]
 # Matches Ruff's target-version and the CI runner's python3. `extra-paths` matches Ruff's `src` so
 # `ty check scripts` resolves `host.*` imports the same way `python3 scripts/<wrapper>.py` and
-# `python3 -m unittest discover -s scripts` do.
+# `uv run pytest` (through `pythonpath = ["scripts"]`) do.
 python-version = "3.12"
 extra-paths = ["scripts"]

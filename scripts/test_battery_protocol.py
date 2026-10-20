@@ -2737,12 +2737,7 @@ def _counter_window(start_uah: int, end_uah: int) -> battery_snapshot.Window:
 
 
 class WindowDischargeRateTest(unittest.TestCase):
-    """
-    Finding 1: a pack that gained charge across a window is not a discharge measurement.
-
-    The report's own half of this rule — a state file carrying a negative rate — is
-    `NegativeDischargeRecordTest` in `test_battery_report.py`.
-    """
+    """Finding 1: a pack that gained charge across a window is not a discharge measurement."""
 
     def test_a_rising_charge_counter_is_refused(self) -> None:
         window = _counter_window(3_339_000, 3_501_000)

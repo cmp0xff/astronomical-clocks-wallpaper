@@ -116,6 +116,4 @@ jobs:
       - name: Spell-check text files (codespell)
         run: uv run --frozen codespell
       - name: Test host device harnesses
-        run: |
-          uv run --frozen pytest
-          python3 -I -m unittest discover -s scripts -p 'test_*.py' -v
+        run: uv run --frozen pytest
