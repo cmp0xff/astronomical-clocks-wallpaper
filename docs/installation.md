@@ -20,6 +20,9 @@ adb install -r app-debug.apk
 
 Open **Astro Clocks**, set the observing site, and tap **Open wallpaper preview**.
 Follow [device installation and launch](device-testing.md#install-and-launch).
+If a force-stop leaves the stock wallpaper in place, open **Astro Clocks** and tap
+**Open wallpaper preview** to re-apply it. See
+[process death and wallpaper recovery](device-testing.md#process-death-and-wallpaper-recovery).
 Debug keys are disposable: an update signed by a different debug key may require
 uninstalling the old debug app, which removes its settings.
 
