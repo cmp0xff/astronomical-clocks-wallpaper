@@ -36,11 +36,12 @@ WAKE_READ_PATTERN: Final = re.compile(r"mWakefulness=(\w+)")
 DISPLAY_STATE_PATTERN: Final = re.compile(r"Display State=(ON|OFF)")
 KEYGUARD_SHOWING_PATTERN: Final = re.compile(r"\bisKeyguardShowing[ \t]*=[ \t]*([^\s,;}]*)")
 WALLPAPER_VISIBLE_PATTERN: Final = re.compile(r"\bmVisible=([^\s,;}]*)")
-# The two lines `dumpsys window` uses to name what is in front. Either may be absent or carry no
-# package: this device's Android 16 build prints `mCurrentFocus=Window{39e680d u0 NotificationShade}`
-# while the shade is down, which names a window and no package at all. They are read in this order,
-# and `mCurrentFocus` is the answer whenever it names a window: `mFocusedApp` is consulted only when
-# no focused window is reported at all, never to fill a package into one that carries none.
+# The two lines `dumpsys window displays` uses to name what is in front. Either may be absent or
+# carry no package: this device's Android 16 build prints `mCurrentFocus=Window{39e680d u0
+# NotificationShade}` while the shade is down, which names a window and no package at all. They are
+# read in this order, and `mCurrentFocus` is the answer whenever it names a window: `mFocusedApp` is
+# consulted only when no focused window is reported at all, never to fill a package into one that
+# carries none.
 FOCUS_WINDOW_PATTERN: Final = re.compile(r"\bmCurrentFocus=Window\{[^}]*\}")
 FOCUSED_APP_PATTERN: Final = re.compile(r"\bmFocusedApp=ActivityRecord\{[^}]*\}")
 # The `package/class` token inside those bodies. The package is captured and the class is not,
@@ -237,7 +238,7 @@ def read_display_size(serial: str) -> tuple[str | None, str | None]:
 
 def read_keyguard_locked(serial: str) -> bool | None:
     """Read whether the keyguard is currently showing, or None when it cannot be determined."""
-    output = run_adb(["shell", "dumpsys", "window"], serial=serial).decode("utf-8")
+    output = run_adb(["shell", "dumpsys", "window", "displays"], serial=serial).decode("utf-8")
     readings = [captured_text(match, 1) for match in KEYGUARD_SHOWING_PATTERN.finditer(output)]
     if "true" in readings:
         return True
@@ -248,7 +249,7 @@ def read_keyguard_locked(serial: str) -> bool | None:
 
 def read_foreground_package(serial: str) -> str | None:
     """
-    Read the package in front from `dumpsys window`, or None when it cannot be read as one.
+    Read the package in front from `dumpsys window displays`, or None when it cannot be read as one.
 
     `mCurrentFocus` is the window with input focus and is asked first. `mFocusedApp` is the resumed
     activity and is the fallback, but only when `mCurrentFocus` names no window at all — `null`, or
@@ -266,7 +267,7 @@ def read_foreground_package(serial: str) -> str | None:
     Only the package is returned. The activity class after the `/` is not, because it varies between
     launcher builds while the package that owns the home screen does not.
     """
-    output = run_adb(["shell", "dumpsys", "window"], serial=serial).decode("utf-8", errors="replace")
+    output = run_adb(["shell", "dumpsys", "window", "displays"], serial=serial).decode("utf-8", errors="replace")
     focus = FOCUS_WINDOW_PATTERN.search(output)
     if focus is not None:
         component = FOCUS_COMPONENT_PATTERN.search(focus.group(0))
@@ -466,18 +467,19 @@ def is_saved_coordinate_in_range(value: object, limit: float) -> bool:
 def saved_record_zone_id(record: Mapping[str, object]) -> str | None:
     """Return a record's stored zoneId when LocationStore.load() accepts the record, else None."""
     # json.loads rejects trailing data after the object, as Kotlin's parseRecord does.
-    version = record.get("version")
-    if isinstance(version, bool) or not isinstance(version, int) or version != contract.LOCATION_RECORD_VERSION:
+    store = contract.CONTRACT.location_store
+    version = record.get(store.fields.version)
+    if isinstance(version, bool) or not isinstance(version, int) or version != store.record_version:
         return None
     if not (
-        is_saved_coordinate_in_range(record.get("latitude"), contract.LOCATION_MAX_LATITUDE)
-        and is_saved_coordinate_in_range(record.get("longitude"), contract.LOCATION_MAX_LONGITUDE)
+        is_saved_coordinate_in_range(record.get(store.fields.latitude), store.max_latitude)
+        and is_saved_coordinate_in_range(record.get(store.fields.longitude), store.max_longitude)
     ):
         return None
-    source = record.get("source")
-    if not isinstance(source, str) or source not in contract.LOCATION_SOURCES:
+    source = record.get(store.fields.source)
+    if not isinstance(source, str) or source not in store.sources:
         return None
-    zone_id = record.get("zoneId")
+    zone_id = record.get(store.fields.zone_id)
     # A stored zoneId is returned as-is, without testing that Python can build it. The store treats an
     # absent, empty, or non-string id as "no stored zone" (None here, so the caller uses the device
     # zone), but for a present id the app's ZoneId.of and Python's ZoneInfo accept different strings:
@@ -497,7 +499,7 @@ def parse_saved_site_zone(prefs_xml: str) -> str | None:
     except ET.ParseError:
         return None
     for element in root.iter("string"):
-        if element.get("name") != contract.LOCATION_PREFS_KEY:
+        if element.get("name") != contract.CONTRACT.location_store.record_key:
             continue
         raw = element.text
         if not raw:

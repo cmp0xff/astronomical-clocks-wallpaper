@@ -1,0 +1,59 @@
+{
+  "debug_action": "io.github.godaniya.astronomicalclockswallpaper.DEBUG_SET_TIME",
+  "debug_extras": {
+    "diagnostics": "diagnostics",
+    "instant": "instant",
+    "offset_hours": "offset_hours",
+    "offset_millis": "offset_millis",
+    "offset_minutes": "offset_minutes",
+    "offset_seconds": "offset_seconds",
+    "reset": "reset"
+  },
+  "debug_package_name": "io.github.godaniya.astronomicalclockswallpaper.debug",
+  "display_settings": {
+    "max_brightness": 100,
+    "min_brightness": 80
+  },
+  "geometry": {
+    "civil_midnight_angle_deg": 180.0,
+    "civil_seconds_per_degree": 240.0,
+    "outer_radius": 1.37,
+    "radius_fraction": 0.43,
+    "rim_inset": 0.026,
+    "rim_width": 0.008
+  },
+  "location_store": {
+    "fields": {
+      "latitude": "latitude",
+      "longitude": "longitude",
+      "source": "source",
+      "version": "version",
+      "zone_id": "zoneId"
+    },
+    "max_latitude": 90.0,
+    "max_longitude": 180.0,
+    "preferences_name": "observing_location",
+    "record_key": "location",
+    "record_version": 1,
+    "sources": ["CURRENT_COARSE", "MANUAL"]
+  },
+  "logs": {
+    "debug_clock_fixed_instant_prefix": "Debug clock fixed to instant: ",
+    "debug_clock_offset_prefix": "Debug clock offset set to ",
+    "debug_clock_offset_suffix": "ms",
+    "debug_clock_reset_message": "Debug clock reset to system UTC",
+    "dial_layout_prefix": "DialLayout",
+    "display_tag": "DialDisplay",
+    "renderer_tag": "DialRenderer",
+    "service_tag": "AstronomicalClocksWallpaperService"
+  },
+  "palette": {
+    "dark_gold_rgb": [216, 182, 106],
+    "dark_hand_rgb": [244, 229, 184],
+    "dark_rim_rgb": [28, 44, 57],
+    "light_hand_rgb": [78, 52, 27],
+    "light_rim_rgb": [232, 226, 210]
+  },
+  "service_class_name": "io.github.godaniya.astronomicalclockswallpaper.AstronomicalClocksWallpaperService",
+  "service_name": "io.github.godaniya.astronomicalclockswallpaper.debug/io.github.godaniya.astronomicalclockswallpaper.AstronomicalClocksWallpaperService"
+}

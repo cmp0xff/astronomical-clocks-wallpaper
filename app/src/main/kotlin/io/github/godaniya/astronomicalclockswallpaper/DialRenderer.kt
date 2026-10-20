@@ -255,6 +255,7 @@ internal class DialRenderer {
         const val HAND_CASING_WIDTH = 0.010f
         const val HUB_RADIUS = 0.039f
         const val HUB_INNER_RADIUS = 0.018f
+        const val TAG = "DialRenderer"
         private val HOURS_TYPEFACE: Typeface = Typeface.create("serif", Typeface.NORMAL)
         val ROMAN_HOURS =
             listOf(
@@ -268,13 +269,13 @@ internal class DialRenderer {
 internal class RenderFailureContainment {
     private val renderArgumentLog =
         RepeatedFailureLog(
-            tag = TAG,
+            tag = DialRenderer.TAG,
             message = "skipping frame: invalid render argument",
             level = Log.ERROR,
         )
     private val renderStateLog =
         RepeatedFailureLog(
-            tag = TAG,
+            tag = DialRenderer.TAG,
             message = "skipping frame: canvas in an invalid state",
             level = Log.ERROR,
         )
@@ -291,5 +292,3 @@ internal class RenderFailureContainment {
         }
     }
 }
-
-private const val TAG = "DialRenderer"

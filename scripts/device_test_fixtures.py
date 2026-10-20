@@ -6,13 +6,15 @@ import time
 from collections.abc import Callable, Sequence
 from typing import Final
 
+from host import contract
+
 FRAME_WIDTH: Final = 1080
 
 FRAME_HEIGHT: Final = 2408
 
 BYTES_PER_PIXEL: Final = 4
 
-DARK_GOLD_RGB: Final = (0xD8, 0xB6, 0x6A)
+DARK_GOLD_RGB: Final = contract.CONTRACT.palette.dark_gold_rgb
 
 HALF_TURN_DEG: Final = 180.0
 

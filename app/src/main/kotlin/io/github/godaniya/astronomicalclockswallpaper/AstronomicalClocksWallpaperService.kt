@@ -117,7 +117,7 @@ class AstronomicalClocksWallpaperService : WallpaperService() {
             object : BroadcastReceiver() {
                 override fun onReceive(context: Context, intent: Intent) {
                     if (intent.action == ACTION_DEBUG_SET_TIME) {
-                        val token = intent.getStringExtra("diagnostics")
+                        val token = intent.getStringExtra(EXTRA_DIAGNOSTICS)
                         if (token == null) {
                             handleDebugSetTime(intent)
                         } else {
@@ -150,7 +150,7 @@ class AstronomicalClocksWallpaperService : WallpaperService() {
         val isReset = intent.getBooleanExtra(EXTRA_RESET, false)
         if (isReset) {
             mutableDebugClock.reset()
-            Log.i(TAG, "Debug clock reset to system UTC")
+            Log.i(TAG, DEBUG_CLOCK_RESET_MESSAGE)
             triggerDebugTicks()
         } else {
             val instantStr = intent.getStringExtra(EXTRA_INSTANT)
@@ -165,7 +165,7 @@ class AstronomicalClocksWallpaperService : WallpaperService() {
                         return
                     }
                     mutableDebugClock.setInstant(instant)
-                    Log.i(TAG, "Debug clock fixed to instant: $instant")
+                    Log.i(TAG, "$DEBUG_CLOCK_FIXED_INSTANT_PREFIX$instant")
                     triggerDebugTicks()
                 } catch (e: DateTimeParseException) {
                     Log.e(TAG, "Invalid instant extra: $instantStr", e)
@@ -174,7 +174,7 @@ class AstronomicalClocksWallpaperService : WallpaperService() {
                 val totalMillis = combinedOffsetMillisOrNull(intent)
                 if (totalMillis != null) {
                     mutableDebugClock.setOffset(Duration.ofMillis(totalMillis))
-                    Log.i(TAG, "Debug clock offset set to ${totalMillis}ms")
+                    Log.i(TAG, "$DEBUG_CLOCK_OFFSET_PREFIX$totalMillis$DEBUG_CLOCK_OFFSET_SUFFIX")
                     triggerDebugTicks()
                 }
             }
@@ -529,11 +529,11 @@ class AstronomicalClocksWallpaperService : WallpaperService() {
             val placement = usable.resolve(display)
             val layout =
                 if (placement == null) {
-                    "DialLayout token=$diagnosticToken engine=${System.identityHashCode(
+                    "$DIAL_LAYOUT_PREFIX token=$diagnosticToken engine=${System.identityHashCode(
                         this,
                     )} preview=$isPreviewEngine unusable"
                 } else {
-                    "DialLayout token=$diagnosticToken engine=${System.identityHashCode(
+                    "$DIAL_LAYOUT_PREFIX token=$diagnosticToken engine=${System.identityHashCode(
                         this,
                     )} preview=$isPreviewEngine " +
                         // The engine draws in surface coordinates; the framework scrolls the surface so
@@ -547,7 +547,7 @@ class AstronomicalClocksWallpaperService : WallpaperService() {
                         "width=${engineResources.displayMetrics.widthPixels} height=${engineResources.displayMetrics.heightPixels}"
                 }
             if (layout != diagnosedLayout) {
-                Log.d("DialDisplay", layout)
+                Log.d(DISPLAY_LOG_TAG, layout)
                 diagnosedLayout = layout
             }
         }
@@ -579,7 +579,7 @@ class AstronomicalClocksWallpaperService : WallpaperService() {
         }
     }
 
-    /** Debug broadcast intent action and extra constants. */
+    /** Debug broadcast intent action, extra names, and log contract constants. */
     internal companion object {
         /** Intent action to set or reset debug virtual time. */
         const val ACTION_DEBUG_SET_TIME = "io.github.godaniya.astronomicalclockswallpaper.DEBUG_SET_TIME"
@@ -602,12 +602,35 @@ class AstronomicalClocksWallpaperService : WallpaperService() {
         /** Boolean extra to reset virtual time back to system UTC. */
         const val EXTRA_RESET = "reset"
 
+        /** String extra carrying a diagnostic token for layout readback without changing virtual time. */
+        const val EXTRA_DIAGNOSTICS = "diagnostics"
+
+        /** Logcat tag emitted by the wallpaper service. */
+        const val TAG = "AstronomicalClocksWallpaperService"
+
+        /** Logcat tag emitted for resolved dial display layout diagnostics. */
+        const val DISPLAY_LOG_TAG = "DialDisplay"
+
+        /** Leading token of a resolved dial layout diagnostic line. */
+        const val DIAL_LAYOUT_PREFIX = "DialLayout"
+
+        /** Log message emitted when the debug clock resets to system UTC. */
+        const val DEBUG_CLOCK_RESET_MESSAGE = "Debug clock reset to system UTC"
+
+        /** Log message prefix emitted when the debug clock is fixed to an ISO instant. */
+        const val DEBUG_CLOCK_FIXED_INSTANT_PREFIX = "Debug clock fixed to instant: "
+
+        /** Log message prefix emitted when the debug clock offset is updated. */
+        const val DEBUG_CLOCK_OFFSET_PREFIX = "Debug clock offset set to "
+
+        /** Log message unit suffix emitted when the debug clock offset is updated. */
+        const val DEBUG_CLOCK_OFFSET_SUFFIX = "ms"
+
         private const val MILLIS_PER_SECOND = 1000L
         private const val MILLIS_PER_MINUTE = 60_000L
         private const val SECONDS_PER_MINUTE = 60L
         private const val SECONDS_PER_HOUR = 3600L
         private val minSupportedInstant: Instant = Instant.ofEpochMilli(Long.MIN_VALUE)
         private val maxSupportedInstant: Instant = Instant.ofEpochMilli(Long.MAX_VALUE)
-        private const val TAG = "AstronomicalClocksWallpaperService"
     }
 }

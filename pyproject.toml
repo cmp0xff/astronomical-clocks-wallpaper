@@ -80,6 +80,7 @@ notice-rgx = "# SPDX-License-Identifier: Apache-2\\.0"
 "scripts/test_battery_report.py" = ["INP001", "D102", "D103", "PT009", "PT019", "PT027"]
 "scripts/test_device_smoke.py" = ["INP001", "D102", "D103", "PT009", "PT019", "PT027"]
 "scripts/test_device_qualification.py" = ["INP001", "D102", "D103", "PT009", "PT019", "PT027"]
+"scripts/test_host_contract.py" = ["INP001", "D102", "D103", "PT009", "PT019", "PT027"]
 
 # The shared test-only RGBA fixture helper is also a standalone scripts/ module.
 "scripts/device_test_fixtures.py" = ["INP001"]

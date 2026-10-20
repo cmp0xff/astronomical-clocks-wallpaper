@@ -1,5 +1,6 @@
 import dev.detekt.gradle.Detekt
 import dev.detekt.gradle.extensions.FailOnSeverity
+import org.gradle.api.tasks.PathSensitivity
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -96,6 +97,18 @@ tasks.withType<Detekt>().configureEach {
     exclude("**/build/**")
 }
 
+val debugUnitTestTaskName = "testDebugUnitTest"
+val releaseUnitTestTaskName = "testReleaseUnitTest"
+
+// HostContractTest reads these files; a JSON-only edit must not leave either qualityGate test task
+// UP-TO-DATE.
+val hostContractInputs =
+    files(
+        rootProject.file("scripts/host_contract.json"),
+        file("build.gradle.kts"),
+        file("src/main/AndroidManifest.xml"),
+    )
+
 tasks.withType<Test>().configureEach {
     systemProperty("robolectric.dependency.repo.url", "https://repo.maven.apache.org/maven2")
     // Robolectric 4.17 reflects into JDK internals (e.g. jdk.internal.access.SharedSecrets);
@@ -117,6 +130,12 @@ tasks.withType<Test>().configureEach {
             excludeTestsMatching("*OrlojRepresentativeExport*")
         }
     }
+    if (name == debugUnitTestTaskName || name == releaseUnitTestTaskName) {
+        inputs
+            .files(hostContractInputs)
+            .withPropertyName("hostContractInputs")
+            .withPathSensitivity(PathSensitivity.RELATIVE)
+    }
 }
 
 tasks.register<Test>("exportRepresentativeImages") {
@@ -127,10 +146,23 @@ tasks.register<Test>("exportRepresentativeImages") {
     // mapping a provider through it. `testTask.map { it.testClassesDirs }` registers the test task as
     // a producer, so invoking the export would run the entire unit suite first; taking the
     // collections keeps the compilation dependencies without the execution one.
-    val unitTest = tasks.named<Test>("testDebugUnitTest").get()
+    val unitTest = tasks.named<Test>(debugUnitTestTaskName).get()
     testClassesDirs = unitTest.testClassesDirs
     classpath = unitTest.classpath
     filter {
         setIncludePatterns("io.github.godaniya.astronomicalclockswallpaper.OrlojRepresentativeExport.*")
+    }
+}
+
+tasks.register<Test>("exportHostContract") {
+    description = "Exports the canonical Kotlin-to-host debug/test contract to scripts/host_contract.json."
+    group = "verification"
+    systemProperty("exportHostContract", "true")
+    outputs.upToDateWhen { false }
+    val unitTest = tasks.named<Test>(debugUnitTestTaskName).get()
+    testClassesDirs = unitTest.testClassesDirs
+    classpath = unitTest.classpath
+    filter {
+        setIncludePatterns("io.github.godaniya.astronomicalclockswallpaper.HostContractTest.*")
     }
 }

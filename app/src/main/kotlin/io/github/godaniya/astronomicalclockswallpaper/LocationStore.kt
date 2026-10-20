@@ -144,7 +144,7 @@ internal class LocationStore(context: Context, private val deviceZone: () -> Zon
         preferences.unregisterOnSharedPreferenceChangeListener(listener)
     }
 
-    private companion object {
+    internal companion object {
         const val PREFERENCES_NAME = "observing_location"
         const val KEY_RECORD = "location"
         const val KEY_VERSION = "version"
@@ -153,8 +153,8 @@ internal class LocationStore(context: Context, private val deviceZone: () -> Zon
         const val KEY_SOURCE = "source"
         const val KEY_ZONE_ID = "zoneId"
         const val RECORD_VERSION = 1
-        val LEGACY_KEYS = listOf(KEY_LATITUDE, KEY_LONGITUDE, KEY_SOURCE)
-        const val TAG = "LocationStore"
+        private val LEGACY_KEYS = listOf(KEY_LATITUDE, KEY_LONGITUDE, KEY_SOURCE)
+        private const val TAG = "LocationStore"
 
         fun parseRecord(raw: Any?): JSONObject? {
             if (raw !is String) return null

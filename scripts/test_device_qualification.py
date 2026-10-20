@@ -51,7 +51,7 @@ def tearDownModule() -> None:
 
 NUMERAL_GLYPH_OUTER_RADIUS: Final = 1.254
 
-RIM_INSET_STROKE_RADIUS: Final = 1.344
+RIM_INSET_STROKE_RADIUS: Final = round(contract.OUTER_RADIUS - contract.CONTRACT.geometry.rim_inset, 6)
 
 MIN_PROBE_POINTS: Final = 2
 
@@ -165,9 +165,9 @@ HAND_UP_BEARING_DEG: Final = 0.0
 
 HAND_DOWN_BEARING_DEG: Final = 180.0
 
-DARK_HAND_RGB: Final = (244, 229, 184)
+DARK_HAND_RGB: Final = contract.CONTRACT.palette.dark_hand_rgb
 
-LIGHT_HAND_RGB: Final = (78, 52, 27)
+LIGHT_HAND_RGB: Final = contract.CONTRACT.palette.light_hand_rgb
 
 
 class DeviceQualificationTest(unittest.TestCase):
@@ -2860,18 +2860,25 @@ class DeviceStateParsingTest(unittest.TestCase):
         for output, expected in cases:
             with (
                 self.subTest(output=output),
-                patch.object(device_probes, "run_adb", return_value=output.encode()),
+                patch.object(device_probes, "run_adb", return_value=output.encode()) as run_adb,
             ):
                 self.assertIs(device_probes.read_keyguard_locked("device"), expected)
+                run_adb.assert_called_once_with(["shell", "dumpsys", "window", "displays"], serial="device")
 
 
 class ForegroundProbeTest(unittest.TestCase):
     """Finding 3: the surface in front is read back, and it is read as a package."""
 
     def read(self, output: str) -> object:
-        """Run the foreground probe against a `dumpsys window` body."""
+        """Run the foreground probe against a `dumpsys window displays` body."""
         with patch.object(device_probes, "run_adb", return_value=output.encode()):
             return device_probes.read_foreground_package("device")
+
+    def test_the_foreground_probe_narrows_dumpsys_window_to_displays(self) -> None:
+        output = "  mCurrentFocus=Window{a1b2c3d u0 com.example.app/com.example.app.MainActivity}\n"
+        with patch.object(device_probes, "run_adb", return_value=output.encode()) as run_adb:
+            device_probes.read_foreground_package("device")
+        run_adb.assert_called_once_with(["shell", "dumpsys", "window", "displays"], serial="device")
 
     def test_the_focus_window_names_the_package(self) -> None:
         output = "  mCurrentFocus=Window{a1b2c3d u0 com.example.app/com.example.app.MainActivity}\n"

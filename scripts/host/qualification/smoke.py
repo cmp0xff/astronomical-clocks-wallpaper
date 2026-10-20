@@ -137,8 +137,10 @@ def step_time_travel(device: probes.AdbDevice) -> AdvanceMeasurement | None:
 
     # Advance virtual time by +30 minutes
     print("Advancing virtual time +30 minutes via debug broadcast...")
-    offset_message = "Debug clock offset set to 1800000ms"
-    if not device.send_debug_clock_broadcast(["--el", "offset_minutes", "30"], offset_message):
+    offset_message = contract.debug_offset_message(30 * 60 * 1000)
+    if not device.send_debug_clock_broadcast(
+        ["--el", contract.CONTRACT.debug_extras.offset_minutes, "30"], offset_message
+    ):
         print("ERROR: +30m time offset was not confirmed by the service log", file=sys.stderr)
         return None
 
@@ -244,7 +246,15 @@ def read_baseline(requested_serial: str | None) -> SmokeBaseline:
 def scan_renderer_log(device: probes.AdbDevice, log_start: str) -> list[str]:
     """Return this run's renderer warning records, isolated by the device-time marker."""
     logs = device.run_adb(
-        ["logcat", "-d", "-T", log_start, "-s", f"{contract.SERVICE_LOG_TAG}:W", "DialRenderer:W"]
+        [
+            "logcat",
+            "-d",
+            "-T",
+            log_start,
+            "-s",
+            f"{contract.SERVICE_LOG_TAG}:W",
+            f"{contract.CONTRACT.logs.renderer_tag}:W",
+        ]
     ).decode("utf-8")
     return [line for line in logs.splitlines() if line.strip() and not line.startswith("---------")]
 

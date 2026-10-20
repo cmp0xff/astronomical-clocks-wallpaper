@@ -63,7 +63,9 @@ def undim_rgb(rgb: tuple[int, int, int], brightness: int) -> tuple[int, int, int
 
 def parse_dial_layout(output: str, token: str, width: int, height: int) -> DialLayout:
     """Require one fresh, usable engine report matching the captured screen size."""
-    lines = [line for line in output.splitlines() if f"{contract.DISPLAY_LOG_TAG}: DialLayout token={token} " in line]
+    logs = contract.CONTRACT.logs
+    marker = f"{logs.display_tag}: {logs.dial_layout_prefix} token={token} "
+    lines = [line for line in output.splitlines() if marker in line]
     if len(lines) != 1:
         message = f"Expected one fresh visible dial layout, found {len(lines)}"
         raise ScreencapError(message)
@@ -96,13 +98,22 @@ def read_dial_layout(serial: str | None, width: int, height: int) -> DialLayout:
     """Request diagnostics without changing virtual time; reject ambiguity rather than guessing."""
     token = uuid4().hex
     probes.run_adb(
-        ["shell", "am", "broadcast", "-a", contract.DEBUG_ACTION, "--es", "diagnostics", token],
+        [
+            "shell",
+            "am",
+            "broadcast",
+            "-a",
+            contract.DEBUG_ACTION,
+            "--es",
+            contract.CONTRACT.debug_extras.diagnostics,
+            token,
+        ],
         serial=serial,
     )
     output = ""
     for attempt in range(probes.LOG_CONFIRM_ATTEMPTS):
         output = probes.run_adb(["logcat", "-d"], serial=serial).decode("utf-8", errors="replace")
-        if f"DialLayout token={token} " in output:
+        if f"{contract.CONTRACT.logs.dial_layout_prefix} token={token} " in output:
             break
         if attempt + 1 < probes.LOG_CONFIRM_ATTEMPTS:
             time.sleep(probes.LOG_CONFIRM_INTERVAL_SECONDS)
@@ -144,7 +155,8 @@ def is_dark_palette(width: int, height: int, pixels: bytes) -> bool:
     """Classify the visible palette from the civil scale's own rim tone."""
     layout = frame_layout(width, height, pixels)
     rgb = modal_pixel_rgb(width, pixels, rim_probe_points(width, height, layout))
-    return rgb is not None and nearest_rim_rgb(undim_rgb(rgb, layout.brightness)) == contract.DARK_RIM_RGB
+    undimmed = None if rgb is None else undim_rgb(rgb, layout.brightness)
+    return undimmed is not None and nearest_rim_rgb(undimmed) == contract.DARK_RIM_RGB
 
 
 def within_rgb_bounds(channels: tuple[int, int, int], bounds: tuple[tuple[int, int], ...]) -> bool:

@@ -233,6 +233,23 @@ geometry), `host.device.{probes,frame,trace}` (ADB transport, screencap analysis
 producer accounting), `host.battery.{stats,report,snapshot,probes,phases,cli}`, and
 `host.qualification.{checks,phases,smoke}`.
 
+**Committed Kotlin↔host debug/test contract (#153).** `scripts/host_contract.json` is the single checked-in
+contract file bridging Kotlin production constants and the Python host harnesses. `host.contract` loads and
+validates it into frozen sections at import, and `host.device`, `host.qualification`, and `host.battery` read
+those sections behind the thin `scripts/device_smoke.py`, `scripts/device_qualification.py`, and
+`scripts/battery_protocol.py` wrappers. We chose the committed-generation path over gitignored build-time
+generation so `python3 -I -m unittest discover -s scripts` and standalone ADB runs work in a fresh checkout and
+in the `host-checks` CI job without invoking Gradle first. `HostContractTest` (run inside
+`./gradlew qualityGate`) constructs the canonical JSON directly from Kotlin constants
+(`AstronomicalClocksWallpaperService`, `DialRenderer`, `DialStyle`, `WallpaperLayout`,
+`DisplaySettingsStore`, `LocationStore`, `LocationRecord`, and `LocationSource`) and fails the build if
+`scripts/host_contract.json` drifts; `./gradlew :app:exportHostContract` regenerates the file from those same
+Kotlin constants. Host-only vision/probe tolerances (`DARK_HAND_RGB_BOUNDS`, `LIGHT_HAND_RGB_BOUNDS`,
+`DARK_HAND_MIN_RED_MINUS_BLUE`, `HAND_SCAN_INNER_FRACTION`, `RIM_PROBE_RADIUS_FRACTION`, and ADB timeouts)
+remain in `scripts/host/contract.py` because Kotlin production code does not use them, and
+`scripts/test_host_contract.py` verifies that the antialiased RGB bounds cover the contract's exact hand
+colors.
+
 ## Rule exceptions
 
 | Rule ID | Example and reason | Scope |

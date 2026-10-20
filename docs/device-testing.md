@@ -116,6 +116,32 @@ comparison protocol) are carried by [#125](https://github.com/godaniya/astronomi
 and do not block Milestone v0.3. Historical observations retain their original APK/source attribution
 in the reports directory; future runs require new dated reports.
 
+## Kotlin↔host contract and `dumpsys` surfaces (#153)
+
+All app-defined constants shared between Kotlin production code and the Python host harnesses live in
+[`scripts/host_contract.json`](../scripts/host_contract.json): debug package and service component names,
+logcat tags (`AstronomicalClocksWallpaperService`, `DialDisplay`, `DialRenderer`) and `DialLayout` prefix,
+`DEBUG_SET_TIME` intent action, extra keys and log confirmation strings, dial geometry (`OUTER_RADIUS`,
+`RIM_INSET`, `RIM_WIDTH`), display brightness bounds (`MIN_BRIGHTNESS`, `MAX_BRIGHTNESS`), palette colors
+(`RIM`, `LIGHT_RIM`, `HAND`, `LIGHT_HAND`, `GOLD`), and `LocationStore` preference/JSON schema constants.
+`HostContractTest` verifies this file against Kotlin constants during `./gradlew qualityGate`, and
+`./gradlew :app:exportHostContract` regenerates it when a Kotlin constant changes.
+
+System `dumpsys` surfaces used by `host.device`, `host.qualification`, and `host.battery` (behind the
+`scripts/device_qualification.py` and `scripts/battery_protocol.py` wrappers) were audited on the physical device (Android 14 / API 34) to prefer narrower
+`cmd` or sub-dump invocations where supported and to record why the remaining surfaces stay text-parsed:
+
+| Surface | Invocation | Why no `cmd` getter or `--proto` replacement is used |
+| --- | --- | --- |
+| Keyguard and foreground window (`read_keyguard_locked`, `read_foreground_package`) | `adb shell dumpsys window displays` | Narrowed in #153 from full `dumpsys window` (~5x smaller output) while still emitting `isKeyguardShowing=`, `mCurrentFocus=`, and `mFocusedApp=`. `cmd window` exposes no getter for keyguard or focus state, and `dumpsys window --proto` requires external protobuf descriptors outside the stdlib-only host constraint. |
+| Active wallpaper component (`read_wallpaper_component`) | `adb shell dumpsys wallpaper` | `cmd wallpaper` has no subcommand that prints the bound home-screen component. |
+| Engine visibility (`read_wallpaper_visible`) | `adb shell dumpsys activity service <component>` | Already narrowed to the single wallpaper service component; reports `mVisible=` per engine. |
+| Screen wakefulness and display state (`read_screen_on`) | `adb shell dumpsys power` and `adb shell dumpsys display` | `cmd power` and `cmd display` offer no state getters for `mWakefulness=` or `Display State=`. |
+| Process total PSS (`phase_total_pss_growth`) | `adb shell dumpsys meminfo <package>` | Already scoped to the debug package; `TOTAL <pss>` is the standard text summary row. |
+| Battery level, status, and voltage (`battery_protocol.py`) | `adb shell dumpsys battery` | `cmd battery get status` and `cmd battery get level` exist, but `cmd battery get voltage` fails (`Unknown get option: voltage`), so one `dumpsys battery` call remains the single consistent snapshot for all four fields. |
+| Alarm and JobScheduler census (`battery_protocol.py`) | `adb shell dumpsys alarm` and `adb shell dumpsys jobscheduler` | `cmd alarm` and `cmd jobscheduler` have no census getters. `dumpsys jobscheduler <package>` still prints the system-wide `Registered <n> jobs:` header while filtering the body to `None.`, which would trip the census truncation guard (`census_entry_block`). |
+| Historical per-app CPU and service time (`battery_protocol.py`) | `adb shell dumpsys batterystats <package>` | Scoped to the debug package; its `Total cpu time:`, `Fg Service for:`, and `Total running:` lines are recorded as corroboration, not as whole-device discharge or per-UID power attribution. |
+
 ## Standard acceptance test matrix
 
 The expected behavior describes the implementation contract; diagnostics describe how to investigate

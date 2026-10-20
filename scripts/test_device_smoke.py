@@ -43,7 +43,7 @@ def tearDownModule() -> None:
 
 NUMERAL_GLYPH_OUTER_RADIUS: Final = 1.254
 
-RIM_INSET_STROKE_RADIUS: Final = 1.344
+RIM_INSET_STROKE_RADIUS: Final = round(contract.OUTER_RADIUS - contract.CONTRACT.geometry.rim_inset, 6)
 
 MIN_PROBE_POINTS: Final = 2
 
@@ -51,9 +51,9 @@ HAND_UP_BEARING_DEG: Final = 0.0
 
 HAND_DOWN_BEARING_DEG: Final = 180.0
 
-DARK_HAND_RGB: Final = (244, 229, 184)
+DARK_HAND_RGB: Final = contract.CONTRACT.palette.dark_hand_rgb
 
-LIGHT_HAND_RGB: Final = (78, 52, 27)
+LIGHT_HAND_RGB: Final = contract.CONTRACT.palette.light_hand_rgb
 
 
 class SmokeHarnessHardeningTest(unittest.TestCase):

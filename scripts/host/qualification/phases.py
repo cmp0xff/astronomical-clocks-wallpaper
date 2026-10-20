@@ -336,14 +336,18 @@ def phase_time_travel(device: probes.AdbDevice, results: list[tuple[str, str]], 
 
     # Advance +30 minutes
     confirmed_30m, a_30m = measure_hand_advance(
-        device, ["--el", "offset_minutes", "30"], "Debug clock offset set to 1800000ms"
+        device,
+        ["--el", contract.CONTRACT.debug_extras.offset_minutes, "30"],
+        contract.debug_offset_message(30 * 60 * 1000),
     )
     if not confirmed_30m:
         failures.append("+30m time offset was not confirmed by the service log")
 
     # Advance +12 hours
     confirmed_12h, a_12h = measure_hand_advance(
-        device, ["--el", "offset_hours", "12"], "Debug clock offset set to 43200000ms"
+        device,
+        ["--el", contract.CONTRACT.debug_extras.offset_hours, "12"],
+        contract.debug_offset_message(12 * 60 * 60 * 1000),
     )
     if not confirmed_12h:
         failures.append("+12h time offset was not confirmed by the service log")
@@ -384,8 +388,10 @@ def phase_time_travel(device: probes.AdbDevice, results: list[tuple[str, str]], 
 
 def set_debug_instant(device: probes.AdbDevice, instant_str: str) -> tuple[bool, float | None]:
     """Set the virtual clock to an ISO instant, returning (confirmed, hand angle after)."""
-    expected_message = f"Debug clock fixed to instant: {instant_str}"
-    if not device.send_debug_clock_broadcast(["--es", "instant", instant_str], expected_message):
+    expected_message = contract.debug_fixed_instant_message(instant_str)
+    if not device.send_debug_clock_broadcast(
+        ["--es", contract.CONTRACT.debug_extras.instant, instant_str], expected_message
+    ):
         return False, None
     time.sleep(0.3)
     w_after, h_after, px_after = device.capture_frame()
@@ -516,7 +522,7 @@ def phase_renderer_log_scan(
                 run_start_marker,
                 "-s",
                 f"{contract.SERVICE_LOG_TAG}:W",
-                "DialRenderer:W",
+                f"{contract.CONTRACT.logs.renderer_tag}:W",
             ]
         ).decode("utf-8")
         warnings = checks.matching_renderer_warnings(log_check)
